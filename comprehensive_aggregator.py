@@ -10725,6 +10725,54 @@ class Aggregator:
             logger.debug(f"🎯 Default FX pair: {symbol_upper} -> 0.0001")
             return 0.0001  # Major FX pairs: 1 pip = 0.0001 (EUR/USD: 1.0850 -> 1.0857 = 7 pips)
 
+    def _calculate_spread_adjusted_entry(self, current_price: float, signal_direction: str) -> float:
+        """
+        🔧 CRITICAL FIX: Calculate spread-adjusted entry price for market orders
+        
+        For BUY orders: Use ASK price (higher)
+        For SELL orders: Use BID price (lower)
+        If spread data unavailable, add conservative buffer
+        """
+        try:
+            import MetaTrader5 as mt5
+            
+            # Try to get real-time tick data for accurate spread
+            tick = mt5.symbol_info_tick(self.symbol)
+            symbol_info = mt5.symbol_info(self.symbol)
+            
+            if tick and symbol_info:
+                spread_points = tick.ask - tick.bid
+                spread_pips = spread_points / self._get_pip_value(self.symbol)
+                
+                if signal_direction == 'BUY':
+                    # For BUY: Use ASK price (we buy at higher price)
+                    adjusted_entry = tick.ask
+                    logger.debug(f"🔧 BUY Entry: Current={current_price:.5f} → ASK={adjusted_entry:.5f} (spread={spread_pips:.1f}pips)")
+                else:  # SELL
+                    # For SELL: Use BID price (we sell at lower price) 
+                    adjusted_entry = tick.bid
+                    logger.debug(f"🔧 SELL Entry: Current={current_price:.5f} → BID={adjusted_entry:.5f} (spread={spread_pips:.1f}pips)")
+                    
+                return adjusted_entry
+            else:
+                # Fallback: Add conservative spread buffer
+                pip_value = self._get_pip_value(self.symbol)
+                conservative_spread_pips = 2.0  # Conservative 2 pip spread assumption
+                spread_buffer = conservative_spread_pips * pip_value
+                
+                if signal_direction == 'BUY':
+                    adjusted_entry = current_price + spread_buffer
+                    logger.warning(f"⚠️ BUY Entry fallback: {current_price:.5f} + {conservative_spread_pips}pips = {adjusted_entry:.5f}")
+                else:  # SELL
+                    adjusted_entry = current_price - spread_buffer  
+                    logger.warning(f"⚠️ SELL Entry fallback: {current_price:.5f} - {conservative_spread_pips}pips = {adjusted_entry:.5f}")
+                    
+                return adjusted_entry
+                
+        except Exception as e:
+            logger.error(f"❌ Spread adjustment error: {e}, using current price")
+            return current_price
+
     def _calculate_sl_tp_legacy_modes(self, entry_price: float, signal: str, atr: float = None,
                                     support_levels: List[float] = None, resistance_levels: List[float] = None,
                                     signal_data: dict = None) -> Tuple[float, float]:
@@ -14051,6 +14099,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     
     # 🛡️ Load risk settings from JSON and override args defaults
     try:
+        import json  # Ensure json is available in main scope
         risk_settings_path = os.path.join(os.path.dirname(__file__), 'risk_management', 'risk_settings.json')
         if os.path.exists(risk_settings_path):
             with open(risk_settings_path, 'r', encoding='utf-8') as f:
@@ -15084,78 +15133,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         import traceback
         traceback.print_exc()
 
-    # 📊 AUTO-SAVE TRADING HISTORY (Tối ưu cho auto trading)
-    try:
-        # Kiểm tra auto history settings từ args
-        auto_history_enabled = False
-        
-        if hasattr(args, 'no_history') and args.no_history:
-            auto_history_enabled = False  # Tắt hoàn toàn
-        elif hasattr(args, 'auto_history') and args.auto_history:
-            auto_history_enabled = True   # Bắt buộc bật
-        elif hasattr(args, 'history') and args.history:
-            auto_history_enabled = True   # Bắt buộc bật
-        else:
-            # Mặc định: Chỉ chạy nếu không phải auto trading (ít symbols + không có --limit cao)
-            is_likely_auto_trading = (
-                len(symbols) <= 3 and 
-                args.limit > 0 and args.limit <= 5 and
-                any(['--verbose' in str(arg) for arg in sys.argv if isinstance(arg, str)])
-            )
-            auto_history_enabled = not is_likely_auto_trading
-        
-        if auto_history_enabled:
-            logger.info("📊 Thu thập nhanh lịch sử giao dịch (chế độ tối ưu)...")
-            
-            # Chỉ lưu execution reports hiện có, không query MT5 để tránh xung đột
-            final_actions = []
-            try:
-                import os
-                execution_reports_file = "reports/execution_reports.json"
-                if os.path.exists(execution_reports_file):
-                    import json
-                    with open(execution_reports_file, 'r', encoding='utf-8') as f:
-                        execution_data = json.load(f)
-                    
-                    # Lấy các actions gần đây
-                    recent_reports = execution_data.get('execution_reports', [])[-10:]  # Giảm xuống 10
-                    for report in recent_reports:
-                        final_actions.extend(report.get('actions', []))
-                    
-                    logger.info(f"📋 Cập nhật từ {len(final_actions)} actions gần đây (không query MT5)")
-            except Exception as e:
-                logger.debug(f"Không thể đọc execution reports: {e}")
-            
-            # Chỉ lưu action summary, không query MT5 closed positions
-            if final_actions:
-                try:
-                    # Tạo summary từ actions thay vì closed positions
-                    action_summary_file = "reports/action_summary.json"
-                    summary_data = {
-                        'timestamp': datetime.now().isoformat(),
-                        'total_actions': len(final_actions),
-                        'action_types': {},
-                        'recent_actions': final_actions[-5:],  # 5 actions gần nhất
-                        'note': 'Auto-trading optimized summary (no MT5 query)'
-                    }
-                    
-                    # Đếm loại actions
-                    for action in final_actions:
-                        action_type = action.get('type', action.get('action', 'unknown'))
-                        summary_data['action_types'][action_type] = summary_data['action_types'].get(action_type, 0) + 1
-                    
-                    os.makedirs('reports', exist_ok=True)
-                    with open(action_summary_file, 'w', encoding='utf-8') as f:
-                        json.dump(summary_data, f, indent=2, ensure_ascii=False, default=str)
-                    
-                    logger.info(f"� Đã cập nhật action summary ({len(final_actions)} actions)")
-                except Exception as e:
-                    logger.debug(f"Lỗi tạo action summary: {e}")
-        else:
-            logger.debug("📊 Auto-history bị tắt để tối ưu cho auto trading")
-    except Exception as e:
-        logger.debug(f"Lỗi auto-save (bỏ qua): {e}")
-        # Không log error để tránh làm nhiễu auto trading
+    # 📊 TRADING HISTORY - CHỈ KHI CÓ LỆNH ĐÓNG
+    # Hàm này đã bị tắt hoàn toàn - chỉ chạy manual khi cần
+    # Sử dụng: python save_trading_history.py để lưu history thủ công
+    pass
 
     # Close MT5 connection if it was opened
     try:
@@ -15318,276 +15299,73 @@ def _get_pip_value_static(entry_price: float) -> float:
     else:                    # Likely small crypto or JPY pairs
         return 0.01    # Use 0.01 for small crypto/JPY
 
-    def _calculate_spread_adjusted_entry(self, current_price: float, signal_direction: str) -> float:
-        """
-        🔧 CRITICAL FIX: Calculate spread-adjusted entry price for market orders
-        
-        For BUY orders: Use ASK price (higher)
-        For SELL orders: Use BID price (lower)
-        If spread data unavailable, add conservative buffer
-        """
-        try:
-            import MetaTrader5 as mt5
-            
-            # Try to get real-time tick data for accurate spread
-            tick = mt5.symbol_info_tick(self.symbol)
-            symbol_info = mt5.symbol_info(self.symbol)
-            
-            if tick and symbol_info:
-                spread_points = tick.ask - tick.bid
-                spread_pips = spread_points / self._get_pip_value(self.symbol)
-                
-                if signal_direction == 'BUY':
-                    # For BUY: Use ASK price (we buy at higher price)
-                    adjusted_entry = tick.ask
-                    logger.debug(f"🔧 BUY Entry: Current={current_price:.5f} → ASK={adjusted_entry:.5f} (spread={spread_pips:.1f}pips)")
-                else:  # SELL
-                    # For SELL: Use BID price (we sell at lower price) 
-                    adjusted_entry = tick.bid
-                    logger.debug(f"🔧 SELL Entry: Current={current_price:.5f} → BID={adjusted_entry:.5f} (spread={spread_pips:.1f}pips)")
-                    
-                return adjusted_entry
-            else:
-                # Fallback: Add conservative spread buffer
-                pip_value = self._get_pip_value(self.symbol)
-                conservative_spread_pips = 2.0  # Conservative 2 pip spread assumption
-                spread_buffer = conservative_spread_pips * pip_value
-                
-                if signal_direction == 'BUY':
-                    adjusted_entry = current_price + spread_buffer
-                    logger.warning(f"⚠️ BUY Entry fallback: {current_price:.5f} + {conservative_spread_pips}pips = {adjusted_entry:.5f}")
-                else:  # SELL
-                    adjusted_entry = current_price - spread_buffer  
-                    logger.warning(f"⚠️ SELL Entry fallback: {current_price:.5f} - {conservative_spread_pips}pips = {adjusted_entry:.5f}")
-                    
-                return adjusted_entry
-                
-        except Exception as e:
-            logger.error(f"❌ Spread adjustment error: {e}, using current price")
-            return current_price
 
+
+
+
+# ========================================
+# 🚫 TRADING HISTORY DISABLED TEMPORARILY  
+# ========================================
+# Functions moved to trading_history_manager.py to avoid auto trading interference
 
 def save_trading_history(closed_positions: List[Dict], final_actions: List[Dict] = None, 
-                        symbol: str = None) -> None:
+                        symbol: str = None, quick_mode: bool = True) -> None:
     """
-    Lưu lịch sử giao dịch các lệnh đã đóng với kết quả lãi/lỗ và các hành động cuối cùng
-    
-    Args:
-        closed_positions: Danh sách các lệnh đã đóng
-        final_actions: Các hành động cuối cùng được thực hiện
-        symbol: Symbol cụ thể (tùy chọn)
+    🚫 DISABLED - Trading history functions moved to trading_history_manager.py
+    This function is disabled to prevent interference with auto trading system.
     """
-    try:
-        from datetime import datetime
-        import json
-        import os
-        
-        if not closed_positions:
-            logger.info("📊 Không có lệnh đã đóng để lưu lịch sử")
-            return
-            
-        # Tạo thư mục reports nếu chưa tồn tại
-        reports_dir = "reports"
-        os.makedirs(reports_dir, exist_ok=True)
-        
-        # Tên file lịch sử giao dịch
-        history_file = os.path.join(reports_dir, "trading_history.json")
-        
-        # Load dữ liệu hiện tại nếu có
-        try:
-            if os.path.exists(history_file):
-                with open(history_file, 'r', encoding='utf-8') as f:
-                    history_data = json.load(f)
-            else:
-                history_data = {
-                    'metadata': {
-                        'created': datetime.now().isoformat(),
-                        'version': '1.0',
-                        'description': 'Lịch sử giao dịch các lệnh đã đóng'
-                    },
-                    'closed_trades': [],
-                    'summary_stats': {
-                        'total_trades': 0,
-                        'profitable_trades': 0,
-                        'losing_trades': 0,
-                        'total_profit': 0.0,
-                        'total_loss': 0.0,
-                        'net_profit': 0.0,
-                        'win_rate': 0.0,
-                        'symbols_traded': {}
-                    }
-                }
-        except (FileNotFoundError, json.JSONDecodeError):
-            history_data = {
-                'metadata': {
-                    'created': datetime.now().isoformat(),
-                    'version': '1.0',
-                    'description': 'Lịch sử giao dịch các lệnh đã đóng'
-                },
-                'closed_trades': [],
-                'summary_stats': {
-                    'total_trades': 0,
-                    'profitable_trades': 0,
-                    'losing_trades': 0,
-                    'total_profit': 0.0,
-                    'total_loss': 0.0,
-                    'net_profit': 0.0,
-                    'win_rate': 0.0,
-                    'symbols_traded': {}
-                }
-            }
-        
-        # Xử lý từng lệnh đã đóng
-        for position in closed_positions:
-            try:
-                # Lấy thông tin cơ bản
-                ticket = position.get('ticket') or position.get('Ticket')
-                symbol = position.get('symbol') or position.get('Symbol', 'UNKNOWN')
-                position_type = position.get('type') or position.get('Type')
-                volume = position.get('volume') or position.get('Volume', 0)
-                open_price = position.get('price_open') or position.get('price_open', 0)
-                close_price = position.get('price_close') or position.get('price_close', 0)
-                open_time = position.get('time_open') or position.get('time_open')
-                close_time = position.get('time_close') or position.get('time_close')
-                profit = position.get('profit') or position.get('Profit', 0.0)
-                swap = position.get('swap') or position.get('Swap', 0.0)
-                commission = position.get('commission') or position.get('Commission', 0.0)
-                sl = position.get('sl') or position.get('SL', 0)
-                tp = position.get('tp') or position.get('TP', 0)
-                
-                # Tính toán pips
-                direction = 'BUY' if str(position_type).lower() in ['0', 'buy', 'long'] else 'SELL'
-                pips = calculate_pips(symbol, open_price, close_price, direction) if open_price and close_price else 0
-                
-                # Xác định loại kết quả
-                net_profit = float(profit) + float(swap) + float(commission)
-                result_type = 'PROFIT' if net_profit > 0 else ('LOSS' if net_profit < 0 else 'BREAKEVEN')
-                
-                # Tìm các hành động liên quan đến ticket này
-                related_actions = []
-                if final_actions:
-                    related_actions = [
-                        action for action in final_actions
-                        if action.get('ticket') == ticket or 
-                           action.get('position_id') == ticket or
-                           action.get('symbol') == symbol
-                    ]
-                
-                # Tạo record lịch sử giao dịch
-                trade_record = {
-                    'timestamp': datetime.now().isoformat(),
-                    'ticket': ticket,
-                    'symbol': symbol,
-                    'direction': direction,
-                    'volume': float(volume),
-                    'open_price': float(open_price) if open_price else 0,
-                    'close_price': float(close_price) if close_price else 0,
-                    'open_time': open_time,
-                    'close_time': close_time,
-                    'sl': float(sl) if sl else 0,
-                    'tp': float(tp) if tp else 0,
-                    'profit': float(profit),
-                    'swap': float(swap),
-                    'commission': float(commission),
-                    'net_profit': net_profit,
-                    'pips': pips,
-                    'result_type': result_type,
-                    'final_actions': related_actions[:5],  # Lưu tối đa 5 hành động cuối cùng
-                    'actions_count': len(related_actions)
-                }
-                
-                # Thêm vào lịch sử
-                history_data['closed_trades'].append(trade_record)
-                
-                # Cập nhật thống kê
-                stats = history_data['summary_stats']
-                stats['total_trades'] += 1
-                
-                if net_profit > 0:
-                    stats['profitable_trades'] += 1
-                    stats['total_profit'] += net_profit
-                elif net_profit < 0:
-                    stats['losing_trades'] += 1
-                    stats['total_loss'] += abs(net_profit)
-                
-                stats['net_profit'] = stats['total_profit'] - stats['total_loss']
-                stats['win_rate'] = (stats['profitable_trades'] / stats['total_trades'] * 100) if stats['total_trades'] > 0 else 0
-                
-                # Thống kê theo symbol
-                if symbol not in stats['symbols_traded']:
-                    stats['symbols_traded'][symbol] = {
-                        'trades': 0, 'profit': 0.0, 'loss': 0.0, 'net': 0.0
-                    }
-                
-                symbol_stats = stats['symbols_traded'][symbol]
-                symbol_stats['trades'] += 1
-                if net_profit > 0:
-                    symbol_stats['profit'] += net_profit
-                else:
-                    symbol_stats['loss'] += abs(net_profit)
-                symbol_stats['net'] = symbol_stats['profit'] - symbol_stats['loss']
-                
-                logger.info(f"💰 Đã lưu lịch sử: {symbol} #{ticket} {direction} {result_type} {net_profit:.2f}$")
-                
-            except Exception as e:
-                logger.error(f"❌ Lỗi xử lý position {position}: {e}")
-                continue
-        
-        # Giữ lại chỉ 1000 giao dịch gần nhất
-        max_trades = 1000
-        if len(history_data['closed_trades']) > max_trades:
-            history_data['closed_trades'] = history_data['closed_trades'][-max_trades:]
-        
-        # Cập nhật metadata
-        history_data['metadata']['last_updated'] = datetime.now().isoformat()
-        history_data['metadata']['total_records'] = len(history_data['closed_trades'])
-        
-        # Lưu file
-        with open(history_file, 'w', encoding='utf-8') as f:
-            json.dump(history_data, f, indent=2, ensure_ascii=False, default=str)
-        
-        # Tạo file tóm tắt nhanh
-        summary_file = os.path.join(reports_dir, "trading_summary.txt")
-        stats = history_data['summary_stats']
-        
-        with open(summary_file, 'w', encoding='utf-8') as f:
-            f.write(f"=== TỔNG KẾT GIAO DỊCH ===\n")
-            f.write(f"Cập nhật lần cuối: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
-            f.write(f"📊 Tổng số giao dịch: {stats['total_trades']}\n")
-            f.write(f"✅ Giao dịch có lãi: {stats['profitable_trades']}\n")
-            f.write(f"❌ Giao dịch thua lỗ: {stats['losing_trades']}\n")
-            f.write(f"📈 Tỷ lệ thắng: {stats['win_rate']:.1f}%\n")
-            f.write(f"💰 Tổng lãi: {stats['total_profit']:.2f}$\n")
-            f.write(f"💸 Tổng lỗ: {stats['total_loss']:.2f}$\n")
-            f.write(f"💵 Lãi ròng: {stats['net_profit']:.2f}$\n\n")
-            
-            f.write("=== THỐNG KÊ THEO SYMBOL ===\n")
-            for sym, sym_stats in stats['symbols_traded'].items():
-                win_rate = (sym_stats.get('profitable_trades', 0) / sym_stats['trades'] * 100) if sym_stats['trades'] > 0 else 0
-                f.write(f"{sym}: {sym_stats['trades']} lệnh, Lãi ròng: {sym_stats['net']:.2f}$\n")
-        
-        logger.info(f"📋 Đã lưu lịch sử giao dịch: {len(closed_positions)} lệnh đóng vào {history_file}")
-        logger.info(f"📈 Tổng kết: {stats['total_trades']} lệnh, Tỷ lệ thắng: {stats['win_rate']:.1f}%, Lãi ròng: {stats['net_profit']:.2f}$")
-        
-    except Exception as e:
-        logger.error(f"❌ Lỗi lưu lịch sử giao dịch: {e}")
+    # DISABLED: Original function moved to trading_history_manager.py
+    # Uncomment below if you need trading history back:
+    # from trading_history_manager import save_trading_history as _save_trading_history  
+    # return _save_trading_history(closed_positions, final_actions, symbol, quick_mode)
+    return  # Do nothing - auto trading safety
 
 
-def get_mt5_closed_positions(symbol: str = None, days_back: int = 7, auto_trading_safe: bool = True) -> List[Dict]:
+# ========================================
+# 🚫 GET_MT5_CLOSED_POSITIONS DISABLED TOO
+# ========================================
+
+def get_mt5_closed_positions(symbol: str = None, days_back: int = 7, auto_trading_safe: bool = True, 
+                           quick_mode: bool = True, timeout_seconds: float = 3.0) -> List[Dict]:
     """
-    Lấy danh sách các lệnh đã đóng từ MT5 (Tối ưu cho auto trading)
+    🚫 DISABLED - Trading history functions moved to trading_history_manager.py  
+    This function is disabled to prevent interference with auto trading system.
+    """
+    # DISABLED: Original function moved to trading_history_manager.py
+    # Uncomment below if you need trading history back:
+    # from trading_history_manager import get_mt5_closed_positions as _get_mt5_closed_positions
+    # return _get_mt5_closed_positions(symbol, days_back, auto_trading_safe, quick_mode, timeout_seconds)
+    return []  # Return empty list - auto trading safety
+
+
+# Để tôi đọc tiếp để tìm hàm get_mt5_closed_positions gốc
+
+# ========================================
+
+# END OF DISABLED FUNCTIONS SECTION
+    """
+    ⚡ SIÊU TỐI ỐI - Lấy lệnh đã đóng từ MT5 với timeout và kiểm soát an toàn
     
     Args:
         symbol: Symbol cụ thể (tùy chọn)
-        days_back: Số ngày quay lại để lấy lịch sử  
+        days_back: Số ngày quay lại (mặc định 7, quick_mode giảm xuống 2)
         auto_trading_safe: Nếu True, sẽ tránh xung đột với auto trading
+        quick_mode: Chế độ nhanh - ít dữ liệu hơn
+        timeout_seconds: Timeout tối đa (mặc định 3 giây)
     
     Returns:
-        List các position đã đóng
+        List các position đã đóng (rỗng nếu timeout)
     """
     try:
+        import time
+        start_time = time.time()
+        
         import MetaTrader5 as mt5
         from datetime import datetime, timedelta
+        
+        # ⚡ QUICK MODE - giảm days_back để nhanh hơn
+        if quick_mode:
+            days_back = min(days_back, 2)  # Tối đa 2 ngày trong quick mode
         
         # Auto trading safety check
         if auto_trading_safe:

@@ -204,19 +204,19 @@ def execute_sl_tp_adjustments(sl_tp_actions):
         try:
             if action_type == 'sl_adjustment_signal_based':
                 result = executor.modify_order(ticket=ticket, sl=new_sl, tp=None)
-                if result.get('success', False):
+                if result.success:
                     print(f"   [OK] S/L updated to {new_sl}")
                     success_count += 1
                 else:
-                    print(f"   [ERROR] S/L update failed: {result.get('error', 'Unknown error')}")
+                    print(f"   [ERROR] S/L update failed: {result.error_message}")
                     
             elif action_type == 'tp_adjustment_signal_based':
                 result = executor.modify_order(ticket=ticket, sl=None, tp=new_tp)
-                if result.get('success', False):
+                if result.success:
                     print(f"   [OK] T/P updated to {new_tp}")
                     success_count += 1
                 else:
-                    print(f"   [ERROR] T/P update failed: {result.get('error', 'Unknown error')}")
+                    print(f"   [ERROR] T/P update failed: {result.error_message}")
                     
         except Exception as e:
             print(f"   [ERROR] Execution error: {e}")

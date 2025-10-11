@@ -839,6 +839,14 @@ if GUI_AVAILABLE:
                 print(f"[CLEANUP] ❌ Error during thread cleanup: {e}")
                 # Even if cleanup fails, clear the reference
                 self.thread = None
+                
+            # Stop signal refresh timer
+            try:
+                if hasattr(self, 'signal_refresh_timer'):
+                    self.signal_refresh_timer.stop()
+                    print("[CLEANUP] ✅ Signal refresh timer stopped")
+            except Exception as e:
+                print(f"[CLEANUP] ❌ Error stopping signal timer: {e}")
 
         def _build_indicator_list_for_export(self) -> List[Dict[str, Any]]:
             """Build exporter-compatible indicator_list using IndicatorTab rows.
@@ -1095,6 +1103,12 @@ if GUI_AVAILABLE:
 
             # Load actions initially
             self.load_actions_text()
+            
+            # Setup auto-refresh timer for signals (every 10 seconds)
+            self.signal_refresh_timer = QTimer()
+            self.signal_refresh_timer.timeout.connect(self.load_latest_signals)
+            self.signal_refresh_timer.start(10000)  # Refresh every 10 seconds
+            print("✅ Signal auto-refresh timer started (10s interval)")
 
         def retranslate_ui(self):
             """Refresh visible texts based on current AppState language"""
@@ -6473,9 +6487,9 @@ class RiskManagementTab(QWidget):
                     'min_confidence_threshold': 3.0,
                     'default_sl_pips': 50,
                     'default_tp_pips': 100,
-                    'default_sl_atr_multiplier': 10.0,
-                    'default_tp_atr_multiplier': 13.0,
-                    'sltp_mode': 'Fixed Pips',
+                    'default_sl_atr_multiplier': 2.0,
+                    'default_tp_atr_multiplier': 1.5,
+                    'sltp_mode': 'Bội số ATR',
                     'max_positions': 5,
                     'max_positions_per_symbol': 2,
                     'max_correlation': 0.7,
@@ -6733,7 +6747,9 @@ class RiskManagementTab(QWidget):
             I18N.t("Percentage", "Phần trăm"),
             I18N.t("Signal Based", "Theo Signal")
         ])
-        self.sltp_mode_combo.setCurrentText(self.settings.get('sltp_mode', I18N.t('Fixed Pips', 'Pips cố định')))
+        # Load sltp_mode with proper conversion
+        sltp_mode_key = self.settings.get('sltp_mode', 'Bội số ATR')
+        self.sltp_mode_combo.setCurrentText(self.get_sltp_mode_display_text(sltp_mode_key))
         # Connect mode change to update labels and ranges
         self.sltp_mode_combo.currentTextChanged.connect(self.update_sltp_mode_controls)
         self.sltp_mode_combo.currentTextChanged.connect(self.auto_save_settings)
@@ -7283,11 +7299,51 @@ class RiskManagementTab(QWidget):
         
         panel.setLayout(layout)
         return panel
+    
+    def update_existing_risk_manager_params(self):
+        """Update existing risk manager parameters without recreating instance"""
+        try:
+            if not self.risk_manager:
+                return
+                
+            # Get current values from UI
+            avoid_news_value = self.get_combo_value(self.avoid_news_combo, 30) if hasattr(self, 'avoid_news_combo') else 30
+            emergency_dd_value = self.get_combo_value(self.emergency_dd_combo, 10.0) if hasattr(self, 'emergency_dd_combo') else 10.0
+            max_dd_value = self.get_combo_value(self.max_drawdown_combo, 5.0) if hasattr(self, 'max_drawdown_combo') else 5.0
+            max_risk_value = self.get_combo_value(self.max_risk_combo, 2.0) if hasattr(self, 'max_risk_combo') else 2.0
+            daily_loss_value = self.get_combo_value(self.daily_loss_combo, 3.0) if hasattr(self, 'daily_loss_combo') else 3.0
+            
+            # Update existing risk parameters
+            if hasattr(self.risk_manager, 'risk_params') and self.risk_manager.risk_params:
+                self.risk_manager.risk_params.max_risk_percent = max_risk_value
+                self.risk_manager.risk_params.max_drawdown_percent = max_dd_value  
+                self.risk_manager.risk_params.max_daily_loss_percent = daily_loss_value
+                self.risk_manager.risk_params.emergency_stop_drawdown = emergency_dd_value
+                self.risk_manager.risk_params.avoid_news_minutes = avoid_news_value
+                
+                # Update auto mode based on current trading mode
+                is_auto_mode = self.mode_combo.currentText() in [I18N.t("🤖 Auto Mode", "🤖 Tự động")]
+                self.risk_manager.risk_params.auto_mode_enabled = is_auto_mode
+                self.risk_manager.risk_params.auto_scan_enabled = is_auto_mode
+                
+                # Save updated parameters to file
+                self.risk_manager._save_risk_parameters()
+                
+                print(f"🔄 Risk Manager parameters updated - Auto Mode: {'ENABLED' if is_auto_mode else 'DISABLED'}")
+                
+        except Exception as e:
+            print(f"❌ Failed to update risk manager params: {e}")
         
     def init_risk_manager(self):
         """Initialize the risk management system"""
         try:
             if RISK_MANAGER_AVAILABLE:
+                # 🛡️ PREVENT DUPLICATE INITIALIZATION - Check if already exists
+                if hasattr(self, 'risk_manager') and self.risk_manager is not None:
+                    print("🔄 Risk Manager already initialized - updating parameters only")
+                    self.update_existing_risk_manager_params()
+                    return
+                
                 # Get values from combos with OFF support
                 avoid_news_value = self.get_combo_value(self.avoid_news_combo, 30) if hasattr(self, 'avoid_news_combo') else 30
                 emergency_dd_value = self.get_combo_value(self.emergency_dd_combo, 10.0) if hasattr(self, 'emergency_dd_combo') else 10.0
@@ -7496,19 +7552,30 @@ class RiskManagementTab(QWidget):
                 'min_volume_auto': self.min_lot_spin.value() if hasattr(self, 'min_lot_spin') and self.min_lot_spin else 0.01,
                 'max_total_volume': self.get_combo_value(self.max_lot_combo, 10.0) if hasattr(self, 'max_lot_combo') and self.max_lot_combo else 10.0,
                 'min_risk_reward_ratio': self.get_combo_value(self.min_rr_combo, 1.5) if hasattr(self, 'min_rr_combo') and self.min_rr_combo else (self.min_rr_spin.value() if hasattr(self, 'min_rr_spin') and self.min_rr_spin else 1.5),
-                # Dynamic SL/TP settings based on mode
-                # 🔧 SIMPLIFIED: Always save current SL/TP values regardless of mode
-                'default_sl_pips': self.default_sl_spin.value() if hasattr(self, 'default_sl_spin') and self.default_sl_spin else self.settings.get('default_sl_pips', 50.0),
-                'default_tp_pips': self.default_tp_spin.value() if hasattr(self, 'default_tp_spin') and self.default_tp_spin else self.settings.get('default_tp_pips', 100.0),
-                'default_sl_atr_multiplier': self.default_sl_spin.value() if hasattr(self, 'default_sl_spin') and self.default_sl_spin else self.settings.get('default_sl_atr_multiplier', 2.0),
-                'default_tp_atr_multiplier': self.default_tp_spin.value() if hasattr(self, 'default_tp_spin') and self.default_tp_spin else self.settings.get('default_tp_atr_multiplier', 3.0),
-                'default_sl_percentage': self.default_sl_spin.value() if hasattr(self, 'default_sl_spin') and self.default_sl_spin else self.settings.get('default_sl_percentage', 2.0),
-                'default_tp_percentage': self.default_tp_spin.value() if hasattr(self, 'default_tp_spin') and self.default_tp_spin else self.settings.get('default_tp_percentage', 4.0),
-                'default_sl_buffer': self.default_sl_spin.value() if hasattr(self, 'default_sl_spin') and self.default_sl_spin else self.settings.get('default_sl_buffer', 10.0),
-                'default_tp_buffer': self.default_tp_spin.value() if hasattr(self, 'default_tp_spin') and self.default_tp_spin else self.settings.get('default_tp_buffer', 20.0),
-                'signal_sl_factor': self.default_sl_spin.value() if hasattr(self, 'default_sl_spin') and self.default_sl_spin else self.settings.get('signal_sl_factor', 1.0),
-                'signal_tp_factor': self.default_tp_spin.value() if hasattr(self, 'default_tp_spin') and self.default_tp_spin else self.settings.get('signal_tp_factor', 1.0),
-                'sltp_mode': self.sltp_mode_combo.currentText() if hasattr(self, 'sltp_mode_combo') and self.sltp_mode_combo else 'Dynamic ATR',
+                # Dynamic SL/TP settings based on current mode
+                # 🔧 FIXED: Save values to correct fields based on current sltp_mode
+                'default_sl_pips': (self.default_sl_spin.value() if (hasattr(self, 'default_sl_spin') and self.default_sl_spin and self.get_sltp_mode_key() == 'Pips cố định') 
+                                   else self.settings.get('default_sl_pips', 50.0)),
+                'default_tp_pips': (self.default_tp_spin.value() if (hasattr(self, 'default_tp_spin') and self.default_tp_spin and self.get_sltp_mode_key() == 'Pips cố định') 
+                                   else self.settings.get('default_tp_pips', 100.0)),
+                'default_sl_atr_multiplier': (self.default_sl_spin.value() if (hasattr(self, 'default_sl_spin') and self.default_sl_spin and self.get_sltp_mode_key() == 'Bội số ATR') 
+                                            else self.settings.get('default_sl_atr_multiplier', 2.0)),
+                'default_tp_atr_multiplier': (self.default_tp_spin.value() if (hasattr(self, 'default_tp_spin') and self.default_tp_spin and self.get_sltp_mode_key() == 'Bội số ATR') 
+                                            else self.settings.get('default_tp_atr_multiplier', 1.5)),
+                'default_sl_percentage': (self.default_sl_spin.value() if (hasattr(self, 'default_sl_spin') and self.default_sl_spin and self.get_sltp_mode_key() == 'Phần trăm') 
+                                        else self.settings.get('default_sl_percentage', 2.0)),
+                'default_tp_percentage': (self.default_tp_spin.value() if (hasattr(self, 'default_tp_spin') and self.default_tp_spin and self.get_sltp_mode_key() == 'Phần trăm') 
+                                        else self.settings.get('default_tp_percentage', 1.5)),
+                'default_sl_buffer': (self.default_sl_spin.value() if (hasattr(self, 'default_sl_spin') and self.default_sl_spin and self.get_sltp_mode_key() == 'Hỗ trợ/Kháng cự') 
+                                    else self.settings.get('default_sl_buffer', 10.0)),
+                'default_tp_buffer': (self.default_tp_spin.value() if (hasattr(self, 'default_tp_spin') and self.default_tp_spin and self.get_sltp_mode_key() == 'Hỗ trợ/Kháng cự') 
+                                    else self.settings.get('default_tp_buffer', 20.0)),
+                # 🔧 FIXED: Use appropriate values based on current mode for signal factors
+                'signal_sl_factor': (self.default_sl_spin.value() if (hasattr(self, 'default_sl_spin') and self.default_sl_spin and self.get_sltp_mode_key() == 'Bội số ATR') 
+                                    else self.settings.get('signal_sl_factor', 2.0)),
+                'signal_tp_factor': (self.default_tp_spin.value() if (hasattr(self, 'default_tp_spin') and self.default_tp_spin and self.get_sltp_mode_key() == 'Bội số ATR') 
+                                    else self.settings.get('signal_tp_factor', 1.5)),
+                'sltp_mode': self.get_sltp_mode_key() if hasattr(self, 'sltp_mode_combo') and self.sltp_mode_combo else 'Bội số ATR',
                 'max_positions': self.max_positions_spin.value() if hasattr(self, 'max_positions_spin') and self.max_positions_spin else 5,
                 'max_positions_per_symbol': self.max_positions_per_symbol_spin.value() if hasattr(self, 'max_positions_per_symbol_spin') and self.max_positions_per_symbol_spin else 3,
                 'max_correlation': self.max_correlation_spin.value() if hasattr(self, 'max_correlation_spin') and self.max_correlation_spin else 0.8,
@@ -7602,10 +7669,27 @@ class RiskManagementTab(QWidget):
                     self.settings['dca_mode_legacy'] = 'Mức Fibonacci'
                     print("🔧 Protected DCA mode: fibo_levels (Fibonacci)")
             
-            # Save to file
-            os.makedirs("risk_management", exist_ok=True)
-            with open("risk_management/risk_settings.json", 'w', encoding='utf-8') as f:
-                json.dump(self.settings, f, indent=2, ensure_ascii=False)
+            # 🧹 Apply mode-specific filtering before saving (Manual Mode)
+            cleaned_settings = self._clean_settings_by_mode_manual(self.settings)
+            
+            # 🔧 PRIORITY: Save through risk_manager to avoid conflicts
+            try:
+                if hasattr(self, 'risk_manager') and self.risk_manager:
+                    # Update risk manager parameters from GUI settings and save
+                    self.risk_manager.update_gui_settings(cleaned_settings, force_save=True)
+                    print("✅ Settings synchronized with risk_manager and saved (Mode-filtered)")
+                else:
+                    # Fallback: Save directly to file if risk_manager not available
+                    os.makedirs("risk_management", exist_ok=True)
+                    with open("risk_management/risk_settings.json", 'w', encoding='utf-8') as f:
+                        json.dump(cleaned_settings, f, indent=2, ensure_ascii=False)
+                    print("📁 Settings saved directly to file (Mode-filtered)")
+            except Exception as e:
+                print(f"⚠️ Risk manager sync failed, saving directly: {e}")
+                # Fallback: Save directly to file with mode filtering
+                os.makedirs("risk_management", exist_ok=True)
+                with open("risk_management/risk_settings.json", 'w', encoding='utf-8') as f:
+                    json.dump(cleaned_settings, f, indent=2, ensure_ascii=False)
             
             # DEBUG: Log DCA settings
             print("✅ Risk settings saved successfully")
@@ -7619,8 +7703,19 @@ class RiskManagementTab(QWidget):
             print(f"   default_sl_pips: {self.settings.get('default_sl_pips')}")
             print(f"   default_tp_pips: {self.settings.get('default_tp_pips')}")
             
-            # Reinitialize risk manager with new settings
-            self.init_risk_manager()
+            # ✅ USE UNIFIED RISK MANAGER SAVE SYSTEM
+            # Instead of reinitializing, update existing risk manager with GUI settings
+            if hasattr(self, 'risk_manager') and self.risk_manager is not None:
+                # 💾 FORCE SAVE when user clicks save button (even in manual mode)
+                success = self.risk_manager.update_gui_settings(self.settings, force_save=True)
+                if success:
+                    print("✅ Settings saved via risk manager unified system (forced)")
+                else:
+                    print("⚠️ Risk manager save failed, falling back to init")
+                    self.init_risk_manager()
+            else:
+                # Initialize if doesn't exist
+                self.init_risk_manager()
             
             # Only show message for manual saves (button click), not auto-saves
             if show_message:
@@ -7884,7 +7979,9 @@ class RiskManagementTab(QWidget):
             
             # Update SL/TP Mode combo
             if hasattr(self, 'sltp_mode_combo'):
-                self.sltp_mode_combo.setCurrentText(file_settings.get('sltp_mode', I18N.t('Fixed Pips', 'Pips cố định')))
+                # Load sltp_mode with proper conversion
+                sltp_mode_key = file_settings.get('sltp_mode', 'Bội số ATR')
+                self.sltp_mode_combo.setCurrentText(self.get_sltp_mode_display_text(sltp_mode_key))
                 self.update_sltp_mode_controls()  # Refresh controls based on loaded mode
             
             # 🔧 FIXED: Load SL/TP values after mode is set
@@ -8304,6 +8401,170 @@ class RiskManagementTab(QWidget):
                 
         except Exception as e:
             print(f"❌ Error updating SL/TP mode controls: {e}")
+            
+    def get_sltp_mode_key(self):
+        """Convert display text to standardized key for sltp_mode"""
+        try:
+            current_text = self.sltp_mode_combo.currentText()
+            
+            # Map display text to standardized keys
+            mode_mapping = {
+                # English to key
+                "Fixed Pips": "Pips cố định",
+                "ATR Multiple": "Bội số ATR", 
+                "Support/Resistance": "Hỗ trợ/Kháng cự",
+                "Percentage": "Phần trăm",
+                "Signal Based": "Theo Signal",
+                # Vietnamese to key (keep as is)
+                "Pips cố định": "Pips cố định",
+                "Bội số ATR": "Bội số ATR",
+                "Hỗ trợ/Kháng cự": "Hỗ trợ/Kháng cự", 
+                "Phần trăm": "Phần trăm",
+                "Theo Signal": "Theo Signal",
+                "Theo Tín hiệu": "Theo Signal"
+            }
+            
+            return mode_mapping.get(current_text, "Pips cố định")  # Default fallback
+        except Exception as e:
+            print(f"❌ Error getting sltp mode key: {e}")
+            return "Pips cố định"  # Safe fallback
+            
+    def get_sltp_mode_display_text(self, key):
+        """Convert standardized key to display text for sltp_mode"""
+        try:
+            # Map keys to display text (always use Vietnamese)
+            key_to_display = {
+                "Pips cố định": I18N.t("Fixed Pips", "Pips cố định"),
+                "Bội số ATR": I18N.t("ATR Multiple", "Bội số ATR"),
+                "Hỗ trợ/Kháng cự": I18N.t("Support/Resistance", "Hỗ trợ/Kháng cự"),
+                "Phần trăm": I18N.t("Percentage", "Phần trăm"),
+                "Theo Signal": I18N.t("Signal Based", "Theo Signal"),
+                # Handle backward compatibility with English keys
+                "Fixed Pips": I18N.t("Fixed Pips", "Pips cố định"),
+                "ATR Multiple": I18N.t("ATR Multiple", "Bội số ATR"),
+                "Support/Resistance": I18N.t("Support/Resistance", "Hỗ trợ/Kháng cự"),
+                "Percentage": I18N.t("Percentage", "Phần trăm"),
+                "Signal Based": I18N.t("Signal Based", "Theo Signal")
+            }
+            
+            return key_to_display.get(key, I18N.t("ATR Multiple", "Bội số ATR"))  # Default to ATR
+            
+        except Exception as e:
+            print(f"❌ Error getting sltp mode display: {e}")
+            return I18N.t("ATR Multiple", "Bội số ATR")
+    
+    def _clean_settings_by_mode_manual(self, settings_dict):
+        """
+        🧹 Clean settings for Manual Mode - only save relevant settings for selected modes
+        
+        Args:
+            settings_dict: Raw settings dictionary from GUI
+            
+        Returns:
+            Dict: Cleaned settings with only values relevant to current modes
+        """
+        try:
+            cleaned = {}
+            current_sltp_mode = settings_dict.get('sltp_mode', 'Bội số ATR')
+            current_dca_mode = settings_dict.get('dca_mode', 'atr_multiple')
+            
+            print(f"🧹 Cleaning settings for Manual Mode:")
+            print(f"   SL/TP Mode: {current_sltp_mode}")
+            print(f"   DCA Mode: {current_dca_mode}")
+            
+            # Core settings (always included)
+            core_settings = [
+                'max_risk_percent', 'max_drawdown_percent', 'max_positions', 'max_positions_per_symbol',
+                'max_correlation', 'trading_hours_start', 'trading_hours_end', 'max_spread_multiplier', 
+                'max_slippage', 'auto_reduce_on_losses', 'enable_dca', 'max_dca_levels',
+                'trading_mode', 'volume_mode', 'fixed_volume_lots', 'default_volume_lots',
+                'sltp_mode', 'disable_news_avoidance', 'disable_emergency_stop', 'disable_max_dd_close',
+                'enable_auto_mode', 'enable_auto_scan', 'auto_scan_interval',
+                'symbol_exposure', 'symbol_multipliers'
+            ]
+            
+            # SL/TP Mode-specific settings (ONLY include current mode)
+            if current_sltp_mode in ['Bội số ATR', 'ATR Multiplier']:
+                sltp_settings = ['default_sl_atr_multiplier', 'default_tp_atr_multiplier', 'signal_sl_factor', 'signal_tp_factor']
+                print(f"   ✅ Including ATR settings: {sltp_settings}")
+            elif current_sltp_mode in ['Pips cố định', 'Fixed Pips']:
+                sltp_settings = ['default_sl_pips', 'default_tp_pips']
+                print(f"   ✅ Including Pips settings: {sltp_settings}")
+            elif current_sltp_mode in ['Phần trăm', 'Percentage']:
+                sltp_settings = ['default_sl_percentage', 'default_tp_percentage']
+                print(f"   ✅ Including Percentage settings: {sltp_settings}")
+            elif current_sltp_mode in ['Hỗ trợ/Kháng cự', 'Support/Resistance']:
+                sltp_settings = ['default_sl_buffer', 'default_tp_buffer']
+                print(f"   ✅ Including S/R settings: {sltp_settings}")
+            else:
+                sltp_settings = []
+            
+            # DCA Mode-specific settings (ONLY include current mode)
+            dca_common = ['dca_mode', 'dca_mode_legacy', 'dca_volume_multiplier', 'dca_min_drawdown', 'dca_sl_mode', 'dca_avg_sl_profit_percent']
+            if current_dca_mode == 'atr_multiple':
+                dca_settings = dca_common + ['dca_atr_period', 'dca_atr_multiplier']
+                print(f"   ✅ Including DCA ATR settings")
+            elif current_dca_mode == 'fixed_pips':
+                dca_settings = dca_common + ['dca_distance_pips']
+                print(f"   ✅ Including DCA Pips settings")
+            elif current_dca_mode == 'fibo_levels':
+                dca_settings = dca_common + ['dca_fibo_start_level', 'dca_fibo_levels', 'dca_fibo_exec_mode']
+                print(f"   ✅ Including DCA Fibonacci settings")
+            else:
+                dca_settings = dca_common
+            
+            # Optional settings that can be OFF (handle OFF values)
+            optional_settings = [
+                'max_daily_loss_percent', 'max_weekly_loss_percent', 'max_monthly_loss_percent',
+                'emergency_stop_daily_loss', 'min_confidence_threshold', 'high_confidence_threshold',
+                'avoid_news_minutes', 'max_total_volume', 'min_risk_reward_ratio', 'emergency_stop_drawdown',
+                'min_volume_auto'
+            ]
+            
+            # Process core settings
+            for key in core_settings:
+                if key in settings_dict:
+                    cleaned[key] = settings_dict[key]
+            
+            # Process SL/TP mode-specific settings (EXCLUDE other modes)
+            for key in sltp_settings:
+                if key in settings_dict:
+                    cleaned[key] = settings_dict[key]
+                    print(f"   📋 Added SL/TP setting: {key} = {settings_dict[key]}")
+            
+            # Process DCA mode-specific settings (EXCLUDE other modes)  
+            for key in dca_settings:
+                if key in settings_dict:
+                    cleaned[key] = settings_dict[key]
+                    print(f"   📋 Added DCA setting: {key} = {settings_dict[key]}")
+            
+            # Process optional settings (handle OFF values)
+            for key in optional_settings:
+                if key in settings_dict:
+                    value = settings_dict[key]
+                    if value in ["OFF", "TẮT"]:
+                        # Skip OFF values - don't include them in output
+                        print(f"   🚫 Skipping OFF value for {key}")
+                        continue
+                    else:
+                        cleaned[key] = value
+                        print(f"   📋 Added optional setting: {key} = {value}")
+            
+            print(f"🧹 Manual Mode cleaning complete: {len(cleaned)} parameters")
+            
+            # Log what was excluded
+            excluded_count = len(settings_dict) - len(cleaned)
+            if excluded_count > 0:
+                print(f"   🗑️ Excluded {excluded_count} non-relevant settings")
+            
+            return cleaned
+            
+        except Exception as e:
+            print(f"❌ Error cleaning settings for Manual Mode: {e}")
+            return settings_dict  # Return original if cleaning fails
+        except Exception as e:
+            print(f"❌ Error getting sltp mode display text: {e}")
+            return I18N.t("ATR Multiple", "Bội số ATR")  # Safe fallback
 
 class AutoTradingTab(QWidget):
     def __init__(self, news_tab=None, risk_tab=None):
@@ -8450,6 +8711,15 @@ class AutoTradingTab(QWidget):
         except Exception as e:
             print(f"Error processing events: {e}")
 
+    # 🔧 FIX: Add missing method aliases for unified_auto_trading_system.py
+    def update_auto_trading_status(self, message):
+        """Alias for update_status - used by UnifiedAutoTradingSystem"""
+        self.update_status(message)
+    
+    def add_auto_trading_log(self, message):
+        """Alias for add_log - used by UnifiedAutoTradingSystem"""
+        self.add_log(message)
+
     def closeEvent(self, event):
         """Handle close event to cleanup threads properly - improved version"""
         try:
@@ -8580,10 +8850,18 @@ class AutoTradingTab(QWidget):
                         self.add_log("⚠️ Không có tham chiếu MainWindow - sử dụng phương pháp dự phòng")
                 
                     print(f"[DEBUG] Creating AutoTradingManager with main_window_ref: {main_window_ref}")
+                    # 🔧 FIX: Pass actual MainWindow for GUI operations but keep status callbacks
                     self.auto_manager = AutoTradingManager(
-                        main_window_ref=main_window_ref,
+                        main_window_ref=main_window_ref,  # Pass MainWindow for GUI clicks
                         update_interval=60  # 1 phút per cycle
                     )
+                    
+                    # 🔧 FIX: Override main_window callbacks to AutoTradingTab for status updates
+                    if hasattr(self.auto_manager, 'main_window'):
+                        # Keep GUI reference for tab clicks
+                        self.auto_manager._gui_main_window = self.auto_manager.main_window
+                        # Override for status callbacks
+                        self.auto_manager.main_window = self
                     print(f"[DEBUG] AutoTradingManager created: {self.auto_manager}")
                     print(f"[DEBUG] AutoTradingManager.main_window: {self.auto_manager.main_window}")
                 
@@ -8607,7 +8885,7 @@ class AutoTradingTab(QWidget):
                                 print("[PIPELINE DEBUG] Testing auto_manager.update_gui_status...")
                                 self.auto_manager.update_gui_status("🧪 Test status update từ Auto Manager")
                             
-                            # Initialize and start the pipeline
+                            # Initialize and start the pipeline (CONTINUOUS MODE)
                             result = self.auto_manager.start()
                             if result is False:
                                 print("[BLOCKED] Auto Trading Pipeline BLOCKED by risk settings!")
@@ -8623,8 +8901,15 @@ class AutoTradingTab(QWidget):
                                 self.auto_manager = None
                             else:
                                 print("[SUCCESS] Auto Trading Pipeline Successfully Started!")
-                                self.update_status("✅ Auto Trading đang hoạt động")
-                                self.add_log("🎉 Pipeline khởi động thành công!")
+                                self.update_status("🔄 Auto Trading đang chạy liên tục...")
+                                self.add_log("🎉 Pipeline khởi động thành công - chế độ lặp lại!")
+                                
+                                # CONTINUOUS MODE - Keep running until stopped
+                                print("[CONTINUOUS] Auto Trading running in continuous mode...")
+                                self.add_log("🔄 Chạy liên tục - pipeline sẽ lặp lại sau mỗi 60 giây")
+                                
+                                # The auto_manager will handle its own cycling
+                                # No need to wait or clean up - it runs continuously
                         except Exception as e:
                             print(f"[ERROR] Error starting simplified auto trading pipeline: {e}")
                             self.update_status(f"❌ Lỗi khởi động: {str(e)}")
