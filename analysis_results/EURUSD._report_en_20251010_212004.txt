@@ -1,0 +1,50 @@
+Time: 2025-10-10 21:20:04
+
+Symbol: EURUSD.
+
+Signal: SELL
+Confidence: 68%
+Entry: 1.15711
+Stoploss: 1.16211
+Takeprofit: 1.14711
+
+Technical analysis:
+  - Trend: sideways (H4)
+  - Support zone: 1.1542 (H4)
+  - Resistance zone: 1.1681 (H4)
+  - Price channel: H4: Inside channel – wait for breakout
+  - Trendline: H4: Trendline down (slope -0.000003)
+        → WARNING: Trendline breakout down
+  - Technical indicators:
+        • ATR: 0.0027 – biến động rất thấp
+        • Bollinger: within bands – average width (width 0.0127)
+        • Donchian: inside channel – vị trí 18.3% near biên dưới
+        • EMA100: price =1.1567 below EMA100 1.16894 medium-long term (negative) – dốc xuống
+          → EMA20 < EMA50 < EMA200 (bearish stack)
+        • EMA20: price =1.1567 below EMA20 1.16101 short-term (negative) – dốc xuống
+          → EMA20 sloping down
+        • EMA200: price =1.1567 below EMA200 1.16969 long-term (negative) – dốc xuống
+        • EMA50: price =1.1567 below EMA50 1.16584 medium-term (negative) – dốc xuống
+        • Fibonacci: not near level important
+        • Ichimoku: Tenkan <= Kijun (xu hướng down hoặc chuyển đổi) – supports SELL
+        • SMA20: SMA20 chưa có (not computable)
+        • Stochastic: K 24.0 / D 28.9 – near oversold (<30)
+
+Summary:
+  - Indicator convergence: Supports BUY 0 | Supports SELL 1 | Neutral 5
+  - Convergence score: -0.17 (positive = biased toward BUY)
+  - Volatility (ATR14): 0.0023 relative to price
+  - Top notable signals: EMA20 > EMA50 > EMA200
+  - Donchian(20): wide 0.0120, near biên dưới, percentile 18.3% (thấp)
+  - Conflict breakdown: BUY=∅ | SELL=Ichimoku
+
+  - Price patterns:
+        • descending triangle ↓ (M15) – Continuation down – 77% (high)
+        • rising wedge ↓ (H1) – Accumulation/reversal down – 70% (high)
+        • falling wedge ↑ (H4) – Accumulation/reversal up – 70% (high)
+        • falling wedge ↑ (M30) – Accumulation/reversal up – 70% (high)
+  - Candlestick patterns:
+        • hammer Bullish ↑ (H4) – Rũ bỏ đáy – 72% (high)
+        • side by side white lines Bullish ↑ (M15) – Pattern – 70% (high)
+        • inside bar Bullish → (H1) – Accumulation – 66% (fair)
+        • inside bar Neutral → (M30) – Accumulation – 60% (fair)

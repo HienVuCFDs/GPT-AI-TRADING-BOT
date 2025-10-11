@@ -1,0 +1,97 @@
+[
+  {
+    "symbol": "XAUUSD.",
+    "timeframe": "H4",
+    "type": "pin_bar",
+    "time": "2025-10-10 12:00:00",
+    "confidence": 0.78,
+    "score": 0.0,
+    "signal": "Neutral",
+    "pattern_length": 1,
+    "indicator_analysis": {
+      "score": 0.0,
+      "signals": [
+        {
+          "indicator": "stoch",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "volume",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "overall",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "bb",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "donchian",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "fib",
+          "signal": "Neutral",
+          "weight": 1.0
+        }
+      ],
+      "strength": "Neutral",
+      "confidence": 0.0,
+      "bullish_weight": 0,
+      "bearish_weight": 0,
+      "total_weight": 6.0
+    },
+    "trend_analysis": {
+      "strength": "Neutral",
+      "context": [
+        "Below channel_upper at 3986.04063",
+        "Above channel_lower at 3984.71595"
+      ],
+      "levels": [
+        {
+          "type": "channel_upper",
+          "value": 3986.0406301369862,
+          "distance": 0.014317762697660193,
+          "position": "below"
+        },
+        {
+          "type": "channel_lower",
+          "value": 3984.7159530332683,
+          "distance": 0.01891990070760773,
+          "position": "above"
+        },
+        {
+          "type": "channel_upper",
+          "value": 3982.4919804305287,
+          "distance": 0.07472191659882382,
+          "position": "above"
+        },
+        {
+          "type": "channel_upper",
+          "value": 3989.5892798434443,
+          "distance": 0.10335744199415564,
+          "position": "below"
+        },
+        {
+          "type": "channel_lower",
+          "value": 3981.1673033268103,
+          "distance": 0.10795958000410315,
+          "position": "above"
+        }
+      ],
+      "trend_direction": "Sideways",
+      "momentum": "Neutral"
+    },
+    "confidence_factors": [
+      "Trend: Neutral",
+      "Pattern: pin_bar (neutral)"
+    ]
+  }
+]

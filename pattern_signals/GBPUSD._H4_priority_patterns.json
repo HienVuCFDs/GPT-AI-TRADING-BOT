@@ -1,0 +1,94 @@
+[
+  {
+    "symbol": "GBPUSD.",
+    "timeframe": "H4",
+    "type": "three_inside_down",
+    "time": "2025-10-10 12:00:00",
+    "confidence": 0.6,
+    "score": -0.2,
+    "signal": "Neutral",
+    "pattern_length": 3,
+    "indicator_analysis": {
+      "score": 0.0,
+      "signals": [
+        {
+          "indicator": "stoch",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "volume",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "overall",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "bb",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "donchian",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "fib",
+          "signal": "Neutral",
+          "weight": 1.0
+        }
+      ],
+      "strength": "Neutral",
+      "confidence": 0.0,
+      "bullish_weight": 0,
+      "bearish_weight": 0,
+      "total_weight": 6.0
+    },
+    "trend_analysis": {
+      "strength": "Neutral",
+      "context": [],
+      "levels": [
+        {
+          "type": "channel_lower",
+          "value": 1.3393147903320353,
+          "distance": 0.8618908727537622,
+          "position": "below"
+        },
+        {
+          "type": "channel_lower",
+          "value": 1.3393351436337462,
+          "distance": 0.8634236509407013,
+          "position": "below"
+        },
+        {
+          "type": "channel_lower",
+          "value": 1.339355496935457,
+          "distance": 0.8649564291276403,
+          "position": "below"
+        },
+        {
+          "type": "channel_lower",
+          "value": 1.339375850237168,
+          "distance": 0.8664892073145792,
+          "position": "below"
+        },
+        {
+          "type": "channel_lower",
+          "value": 1.339396203538879,
+          "distance": 0.8680219855015183,
+          "position": "below"
+        }
+      ],
+      "trend_direction": "Sideways",
+      "momentum": "Neutral"
+    },
+    "confidence_factors": [
+      "Trend: Neutral",
+      "Pattern: three_inside_down (bearish)"
+    ]
+  }
+]

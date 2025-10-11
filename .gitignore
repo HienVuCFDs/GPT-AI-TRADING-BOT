@@ -1,0 +1,49 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Logs 
+logs/
+*.log
+
+# Cache and temporary files
+cache/
+*.tmp
+*.temp
+
+# Debug files
+debug_*.txt
+
+# Analysis results (temporary)
+analysis_results/*_20*.txt
+analysis_results/*_20*.json
+
+# News output (temporary) 
+news_output/news_forexfactory_*.json
+news_output/recent_news_*.json
+
+# Pattern output (temporary data)
+pattern_price/*_20*.json
+pattern_signals/*_20*.json
+
+# Backup files
+*_backup.py
+*.backup_*
+backups/
+
+# User config (contains sensitive data)
+user_config.pkl
+.env
+
+# Large model files (optional - uncomment if you don't want to track)
+# Mistral-7B-Instruct-v0.1/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/settings.json
+.idea/

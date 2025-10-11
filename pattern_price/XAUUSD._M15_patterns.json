@@ -1,0 +1,35 @@
+[
+    {
+        "pattern": "falling_wedge",
+        "type": "falling_wedge",
+        "confidence": 0.7,
+        "signal": "Bullish",
+        "pattern_length": 29,
+        "symbol": "XAUUSD.",
+        "timeframe": "M15",
+        "time": "2025-10-07 09:30:00",
+        "confirmed": true,
+        "end_price": 0,
+        "start_time": "2025-10-07 02:15:00",
+        "end_time": "2025-10-07 09:30:00",
+        "peak1_price": 3969.94,
+        "peak2_price": 3964.42,
+        "valley_price": 3955.68,
+        "valley_depth": 0.0035919938336600094,
+        "height_similarity": 0.9986095507740671,
+        "volume_confirmation": false,
+        "confirmation_score": 0.388,
+        "confirmation_details": {
+            "trend_confirmation": false,
+            "indicator_confirmation": false,
+            "volume_confirmation": false,
+            "candlestick_confirmation": false,
+            "support_resistance_confirmation": true,
+            "total_score": 0.388
+        },
+        "high_slope": -0.031092324805390398,
+        "low_slope": -0.05266073414907807,
+        "convergence_ratio": 0.5904271048969933,
+        "duration": 26100.0
+    }
+]

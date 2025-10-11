@@ -1,0 +1,35 @@
+[
+    {
+        "pattern": "rising_wedge",
+        "type": "rising_wedge",
+        "confidence": 0.7,
+        "signal": "Bearish",
+        "pattern_length": 41,
+        "symbol": "USDJPY.",
+        "timeframe": "H4",
+        "time": "2025-07-04 12:00:00",
+        "confirmed": true,
+        "end_price": 0,
+        "start_time": "2025-06-27 16:00:00",
+        "end_time": "2025-07-04 12:00:00",
+        "peak1_price": 144.939,
+        "peak2_price": 144.438,
+        "valley_price": 142.675,
+        "valley_depth": 0.015620364429173526,
+        "height_similarity": 0.9965433734191625,
+        "volume_confirmation": false,
+        "confirmation_score": 0.588,
+        "confirmation_details": {
+            "trend_confirmation": true,
+            "indicator_confirmation": false,
+            "volume_confirmation": false,
+            "candlestick_confirmation": false,
+            "support_resistance_confirmation": true,
+            "total_score": 0.588
+        },
+        "high_slope": 0.005624916573969673,
+        "low_slope": 0.00852413793103331,
+        "convergence_ratio": 1.5154247745611575,
+        "duration": 590400.0
+    }
+]

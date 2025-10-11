@@ -1,0 +1,97 @@
+[
+  {
+    "symbol": "GBPUSD.",
+    "timeframe": "M30",
+    "type": "tweezer_bottom",
+    "time": "2025-10-10 16:30:00",
+    "confidence": 0.7,
+    "score": 0.55,
+    "signal": "Bullish",
+    "pattern_length": 2,
+    "indicator_analysis": {
+      "score": 0.0,
+      "signals": [
+        {
+          "indicator": "stoch",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "volume",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "overall",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "bb",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "donchian",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "fib",
+          "signal": "Neutral",
+          "weight": 1.0
+        }
+      ],
+      "strength": "Neutral",
+      "confidence": 0.0,
+      "bullish_weight": 0,
+      "bearish_weight": 0,
+      "total_weight": 6.0
+    },
+    "trend_analysis": {
+      "strength": "Bullish_Strong",
+      "context": [
+        "Above trendline at 1.32759",
+        "Above channel_lower at 1.32755"
+      ],
+      "levels": [
+        {
+          "type": "trendline",
+          "value": 1.3275850551442137,
+          "distance": 0.002632142916374219,
+          "position": "above"
+        },
+        {
+          "type": "channel_lower",
+          "value": 1.3276646961226803,
+          "distance": 0.0033666352329974752,
+          "position": "below"
+        },
+        {
+          "type": "channel_lower",
+          "value": 1.327551495187051,
+          "distance": 0.005159971448829873,
+          "position": "above"
+        },
+        {
+          "type": "trendline",
+          "value": 1.327698256079843,
+          "distance": 0.005894463765453129,
+          "position": "below"
+        },
+        {
+          "type": "trendline",
+          "value": 1.3274718542085844,
+          "distance": 0.011158749598201567,
+          "position": "above"
+        }
+      ],
+      "trend_direction": "Uptrend",
+      "momentum": "Neutral"
+    },
+    "confidence_factors": [
+      "Trend: Bullish_Strong",
+      "Pattern: tweezer_bottom (bullish)"
+    ]
+  }
+]

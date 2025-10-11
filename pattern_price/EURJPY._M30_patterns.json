@@ -1,0 +1,35 @@
+[
+    {
+        "pattern": "double_bottom",
+        "type": "double_bottom",
+        "confidence": 0.95,
+        "signal": "Bullish",
+        "pattern_length": 32,
+        "symbol": "EURJPY.",
+        "timeframe": "M30",
+        "time": "2025-09-29 11:00:00",
+        "confirmed": true,
+        "end_price": 0,
+        "start_time": "2025-09-26 18:30:00",
+        "end_time": "2025-09-29 11:00:00",
+        "peak1_price": 174.762,
+        "peak2_price": 173.981,
+        "valley_price": 175.008,
+        "valley_depth": 0.01,
+        "height_similarity": 0.9955310651056866,
+        "volume_confirmation": true,
+        "confirmation_score": 0.618,
+        "confirmation_details": {
+            "trend_confirmation": true,
+            "indicator_confirmation": false,
+            "volume_confirmation": false,
+            "candlestick_confirmation": false,
+            "support_resistance_confirmation": true,
+            "total_score": 0.618
+        },
+        "high_slope": NaN,
+        "low_slope": NaN,
+        "convergence_ratio": NaN,
+        "duration": 232200.0
+    }
+]

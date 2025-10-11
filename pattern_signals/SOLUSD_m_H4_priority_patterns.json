@@ -1,0 +1,96 @@
+[
+  {
+    "symbol": "SOLUSD_m",
+    "timeframe": "H4",
+    "type": "inside_bar",
+    "time": "2025-10-10 12:00:00",
+    "confidence": 0.6599999999999999,
+    "score": 0.21,
+    "signal": "Bullish",
+    "pattern_length": 3,
+    "indicator_analysis": {
+      "score": 0.0,
+      "signals": [
+        {
+          "indicator": "stoch",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "volume",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "overall",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "bb",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "donchian",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "fib",
+          "signal": "Neutral",
+          "weight": 1.0
+        }
+      ],
+      "strength": "Neutral",
+      "confidence": 0.0,
+      "bullish_weight": 0,
+      "bearish_weight": 0,
+      "total_weight": 6.0
+    },
+    "trend_analysis": {
+      "strength": "Bullish",
+      "context": [
+        "Above trendline at 221.53689"
+      ],
+      "levels": [
+        {
+          "type": "trendline",
+          "value": 221.6590009254376,
+          "distance": 0.022111333169794706,
+          "position": "below"
+        },
+        {
+          "type": "trendline",
+          "value": 221.53689401251827,
+          "distance": 0.03298857789889401,
+          "position": "above"
+        },
+        {
+          "type": "trendline",
+          "value": 221.7811078383569,
+          "distance": 0.0772112442384706,
+          "position": "below"
+        },
+        {
+          "type": "trendline",
+          "value": 221.41478709959898,
+          "distance": 0.0880884889675699,
+          "position": "above"
+        },
+        {
+          "type": "trendline",
+          "value": 221.9032147512762,
+          "distance": 0.1323111553071593,
+          "position": "below"
+        }
+      ],
+      "trend_direction": "Uptrend",
+      "momentum": "Neutral"
+    },
+    "confidence_factors": [
+      "Trend: Bullish",
+      "Pattern: inside_bar (neutral)"
+    ]
+  }
+]

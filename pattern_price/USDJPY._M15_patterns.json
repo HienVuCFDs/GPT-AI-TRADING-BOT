@@ -1,0 +1,35 @@
+[
+    {
+        "pattern": "falling_wedge",
+        "type": "falling_wedge",
+        "confidence": 0.7,
+        "signal": "Bullish",
+        "pattern_length": 29,
+        "symbol": "USDJPY.",
+        "timeframe": "M15",
+        "time": "2025-10-06 16:30:00",
+        "confirmed": true,
+        "end_price": 0,
+        "start_time": "2025-10-06 09:15:00",
+        "end_time": "2025-10-06 16:30:00",
+        "peak1_price": 150.317,
+        "peak2_price": 150.075,
+        "valley_price": 149.745,
+        "valley_depth": 0.0038052914839971706,
+        "height_similarity": 0.9983900689875396,
+        "volume_confirmation": false,
+        "confirmation_score": 0.497,
+        "confirmation_details": {
+            "trend_confirmation": false,
+            "indicator_confirmation": false,
+            "volume_confirmation": false,
+            "candlestick_confirmation": false,
+            "support_resistance_confirmation": true,
+            "total_score": 0.497
+        },
+        "high_slope": -0.006272969966634135,
+        "low_slope": -0.006356840934374425,
+        "convergence_ratio": 0.9868061874433951,
+        "duration": 26100.0
+    }
+]

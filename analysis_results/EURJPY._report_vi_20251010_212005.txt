@@ -1,0 +1,50 @@
+Thời gian: 2025-10-10 21:20:05
+
+Ký hiệu: EURJPY.
+
+Tín hiệu: BUY
+Độ tin cậy: 69%
+Entry: 176.49500
+Stoploss: 175.99500
+Takeprofit: 177.49500
+
+Phân tích kỹ thuật:
+  - Xu hướng: đi ngang (H4)
+  - Vùng hỗ trợ: 175.786 (H4)
+  - Vùng kháng cự: 177.931 (H4)
+  - Kênh giá: H4: Trong kênh – chờ phá vỡ
+  - Trendline: H4: Trendline tăng (slope 0.004448)
+        → CẢNH BÁO: Trendline phá vỡ lên
+  - Chỉ báo kỹ thuật:
+        • ATR: 0.4630 – biến động rất thấp
+        • Bollinger: trong dải – độ rộng trung bình (width 0.0101)
+        • Donchian: trong kênh – vị trí 33.4% trong kênh
+        • EMA100: giá =176.5 cao hơn EMA100 174.934 trung-dài hạn (tích cực) – dốc lên
+          → EMA20 > EMA50 > EMA200 (xếp chồng tăng)
+        • EMA20: giá =176.5 thấp hơn EMA20 176.672 ngắn hạn (tiêu cực) – dốc xuống
+          → EMA20 đang dốc xuống
+        • EMA200: giá =176.5 cao hơn EMA200 174.015 dài hạn (tích cực) – dốc lên
+        • EMA50: giá =176.5 cao hơn EMA50 175.759 trung hạn (tích cực) – dốc lên
+        • Fibonacci: không gần mức quan trọng
+        • Ichimoku: Tenkan > Kijun (xu hướng tăng mạnh) – ủng hộ BUY
+        • SMA20: SMA20 chưa có (không tính được)
+        • Stochastic: K 10.9 / D 16.9 – quá bán (<20)
+
+Tóm tắt:
+  - Độ hội tụ chỉ báo: Ủng hộ BUY 1 | Ủng hộ SELL 0 | Trung tính 5
+  - Chỉ số hội tụ: +0.17 (dương = nghiêng BUY)
+  - Biến động (ATR14): 0.0026 so với giá
+  - Top tín hiệu nổi bật: EMA20 > EMA50 > EMA200
+  - Donchian(20): rộng 0.0122, gần biên dưới, percentile 33.4% (trung bình)
+  - Phân rã xung đột: BUY=Ichimoku | SELL=∅
+
+  - Mô hình giá:
+        • double bottom ↑ (M30) – Đảo chiều tăng – 95% (rất cao)
+        • falling wedge ↑ (M15) – Tích lũy/đảo chiều tăng – 70% (cao)
+        • falling wedge ↑ (H1) – Tích lũy/đảo chiều tăng – 70% (cao)
+        • falling wedge ↑ (H4) – Tích lũy/đảo chiều tăng – 70% (cao)
+  - Mô hình nến:
+        • kicker bull Bullish ↑ (M15) – Mô hình – 70% (cao)
+        • three white soldiers Bullish ↑ (H1) – Mô hình – 70% (cao)
+        • three white soldiers Bullish ↑ (M30) – Mô hình – 70% (cao)
+        • inside bar Neutral → (H4) – Tích lũy – 60% (khá)

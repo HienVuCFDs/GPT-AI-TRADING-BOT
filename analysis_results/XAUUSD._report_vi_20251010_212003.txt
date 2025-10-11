@@ -1,0 +1,51 @@
+Thời gian: 2025-10-10 21:20:03
+
+Ký hiệu: XAUUSD.
+
+Tín hiệu: SELL
+Độ tin cậy: 55%
+Entry: 3984.85
+Stoploss: 3989.85
+Takeprofit: 3974.85
+
+Phân tích kỹ thuật:
+  - Xu hướng: đi ngang (H4)
+  - Vùng hỗ trợ: 3944.39 (H4)
+  - Vùng kháng cự: 4059.13 (H4)
+  - Kênh giá: H4: Trong kênh – chờ phá vỡ
+  - Trendline: H4: Trendline tăng (slope 3.548650)
+        → CẢNH BÁO: Trendline phá vỡ xuống (đảo chiều)
+  - Chỉ báo kỹ thuật:
+        • ATR: 32.7984 – biến động thấp
+        • Bollinger: trong dải – mở rộng (biến động cao) (width 0.0311)
+        • Donchian: trong kênh – vị trí 35.2% trong kênh
+        • EMA100: giá =3984.73 cao hơn EMA100 3856.234 trung-dài hạn (tích cực) – dốc lên
+          → EMA20 > EMA50 > EMA200 (xếp chồng tăng)
+        • EMA20: giá =3984.73 thấp hơn EMA20 3989.779 ngắn hạn (tiêu cực) – dốc xuống
+          → EMA20 đang dốc xuống
+        • EMA200: giá =3984.73 cao hơn EMA200 3734.736 dài hạn (tích cực) – dốc lên
+        • EMA50: giá =3984.73 cao hơn EMA50 3938.417 trung hạn (tích cực) – dốc lên
+        • Fibonacci: không gần mức quan trọng
+        • Ichimoku: Tenkan > Kijun (xu hướng tăng mạnh) – ủng hộ BUY
+        • SMA20: SMA20 chưa có (không tính được)
+        • Stochastic: K 35.2 / D 37.5 – giảm ngắn hạn (K<D)
+
+Tóm tắt:
+  - Độ hội tụ chỉ báo: Ủng hộ BUY 1 | Ủng hộ SELL 0 | Trung tính 5
+  - Chỉ số hội tụ: +0.17 (dương = nghiêng BUY)
+  - Biến động (ATR14): 0.0082 so với giá
+  - Top tín hiệu nổi bật: EMA20 > EMA50 > EMA200
+  - Donchian(20): rộng 0.0288, gần biên dưới, percentile 35.2% (trung bình)
+  - Bollinger: Rộng (độ rộng 0.0311) – biến động cao
+  - Phân rã xung đột: BUY=Ichimoku | SELL=∅
+
+  - Mô hình giá:
+        • falling wedge ↑ (M15) – Tích lũy/đảo chiều tăng – 70% (cao)
+        • rising wedge ↓ (H1) – Tích lũy/đảo chiều giảm – 70% (cao)
+        • rising wedge ↓ (H4) – Tích lũy/đảo chiều giảm – 70% (cao)
+        • falling wedge ↑ (M30) – Tích lũy/đảo chiều tăng – 70% (cao)
+  - Mô hình nến:
+        • pin bar Bearish ↓ (H1) – Phản ứng giá – 84% (cao)
+        • pin bar Neutral → (H4) – Phản ứng giá – 78% (cao)
+        • kicker bear Bearish ↓ (M30) – Mô hình – 66% (khá)
+        • breakaway Neutral → (M15) – Mô hình – 60% (khá)

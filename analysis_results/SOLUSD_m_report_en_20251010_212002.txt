@@ -1,0 +1,48 @@
+Time: 2025-10-10 21:20:02
+
+Symbol: SOLUSD_m
+
+Signal: BUY
+Confidence: 61%
+Entry: 222.64
+Stoploss: 217.64
+Takeprofit: 232.64
+
+Technical analysis:
+  - Trend: sideways (H4)
+  - Support zone: 216.4 (H4)
+  - Resistance zone: 231.49 (H4)
+  - Price channel: H4: Inside channel – wait for breakout
+  - Trendline: H4: Trendline flat (slope -0.122107)
+  - Technical indicators:
+        • ATR: 4.6843 – biến động very high
+        • Bollinger: within bands – expanding (high volatility) (width 0.0641)
+        • Donchian: inside channel – vị trí 41.7% inside channel
+        • EMA100: price =222.69 above EMA100 222.59 medium-long term (positive) – dốc lên
+        • EMA20: price =222.69 below EMA20 223.347 short-term (negative) – dốc xuống
+          → EMA20 sloping down
+        • EMA200: price =222.69 above EMA200 219.281 long-term (positive) – dốc lên
+        • EMA50: price =222.69 below EMA50 223.942 medium-term (negative) – dốc xuống
+        • Fibonacci: not near level important
+        • Ichimoku: Tenkan <= Kijun (xu hướng down hoặc chuyển đổi) – supports SELL
+        • SMA20: SMA20 chưa có (not computable)
+        • Stochastic: K 47.8 / D 38.0 – up short-term (K>D)
+
+Summary:
+  - Indicator convergence: Supports BUY 0 | Supports SELL 1 | Neutral 5
+  - Convergence score: -0.17 (positive = biased toward BUY)
+  - Volatility (ATR14): 0.0210 relative to price
+  - Donchian(20): wide 0.0678, near biên dưới, percentile 41.7% (average)
+  - Bollinger: Rộng (width 0.0641) – high volatility
+  - Conflict breakdown: BUY=∅ | SELL=Ichimoku
+
+  - Price patterns:
+        • head and shoulders ↓ (H4) – Reversal down – 95% (very high)
+        • bearish flag ↓ (M15) – Continuation down – 75% (high)
+        • falling wedge ↑ (H1) – Accumulation/reversal up – 70% (high)
+        • bullish pennant ↑ (M30) – Continuation up – 55% (fair)
+  - Candlestick patterns:
+        • pin bar Bullish ↑ (M15) – Price reaction – 84% (high)
+        • three white soldiers Bullish ↑ (H1) – Pattern – 70% (high)
+        • inside bar Bullish → (H4) – Accumulation – 66% (fair)
+        • inside bar Bullish → (M30) – Accumulation – 66% (fair)

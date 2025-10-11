@@ -1,0 +1,37 @@
+[
+    {
+        "pattern": "falling_wedge",
+        "type": "falling_wedge",
+        "confidence": 0.7,
+        "signal": "Bullish",
+        "pattern_length": 7,
+        "symbol": "EURUSD.",
+        "timeframe": "M30",
+        "time": "2025-09-30 08:00:00",
+        "confirmed": true,
+        "end_price": 0,
+        "start_time": "2025-09-29 17:30:00",
+        "end_time": "2025-09-30 08:00:00",
+        "peak1_price": 1.1736900000000001,
+        "peak2_price": 1.17333,
+        "valley_price": 1.17116,
+        "valley_depth": 0.0021555947481874628,
+        "height_similarity": 0.9996932750555938,
+        "volume_confirmation": false,
+        "confirmation_score": 0.497,
+        "confirmation_details": {
+            "trend_confirmation": false,
+            "indicator_confirmation": false,
+            "volume_confirmation": false,
+            "candlestick_confirmation": false,
+            "support_resistance_confirmation": true,
+            "total_score": 0.497
+        },
+        "high_slope": -2.2865406006704912e-05,
+        "low_slope": -2.313014460514717e-05,
+        "high_correlation": NaN,
+        "low_correlation": NaN,
+        "convergence_ratio": 0.9885543906896568,
+        "duration": 52200.0
+    }
+]

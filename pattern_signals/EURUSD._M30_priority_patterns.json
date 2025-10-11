@@ -1,0 +1,97 @@
+[
+  {
+    "symbol": "EURUSD.",
+    "timeframe": "M30",
+    "type": "inside_bar",
+    "time": "2025-10-10 16:30:00",
+    "confidence": 0.6,
+    "score": 0.0,
+    "signal": "Neutral",
+    "pattern_length": 3,
+    "indicator_analysis": {
+      "score": 0.0,
+      "signals": [
+        {
+          "indicator": "stoch",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "volume",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "overall",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "bb",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "donchian",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "fib",
+          "signal": "Neutral",
+          "weight": 1.0
+        }
+      ],
+      "strength": "Neutral",
+      "confidence": 0.0,
+      "bullish_weight": 0,
+      "bearish_weight": 0,
+      "total_weight": 6.0
+    },
+    "trend_analysis": {
+      "strength": "Neutral",
+      "context": [
+        "Above channel_lower at 1.15685",
+        "Below channel_upper at 1.15689"
+      ],
+      "levels": [
+        {
+          "type": "channel_lower",
+          "value": 1.1568456263300766,
+          "distance": 0.00037806715852020434,
+          "position": "above"
+        },
+        {
+          "type": "trendline",
+          "value": 1.1568601054731409,
+          "distance": 0.000873533573147196,
+          "position": "below"
+        },
+        {
+          "type": "channel_upper",
+          "value": 1.156892824836392,
+          "distance": 0.0037018486746055756,
+          "position": "below"
+        },
+        {
+          "type": "channel_upper",
+          "value": 1.156807159986849,
+          "distance": 0.0037031605783734486,
+          "position": "above"
+        },
+        {
+          "type": "trendline",
+          "value": 1.1567744406235978,
+          "distance": 0.006531475679831829,
+          "position": "above"
+        }
+      ],
+      "trend_direction": "Sideways",
+      "momentum": "Neutral"
+    },
+    "confidence_factors": [
+      "Trend: Neutral",
+      "Pattern: inside_bar (neutral)"
+    ]
+  }
+]

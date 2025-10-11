@@ -1,0 +1,8 @@
+=== TỔNG KẾT GIAO DỊCH ===
+Cập nhật: 2025-10-10 18:37:45
+
+Tổng giao dịch: 264
+Lệnh thắng: 191
+Lệnh thua: 73
+Tỷ lệ thắng: 72.3%
+Tổng P/L: $4260.50

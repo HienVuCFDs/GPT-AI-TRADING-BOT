@@ -1,0 +1,34 @@
+[
+  {
+    "date": "2025-10-10",
+    "time": "9:00pm",
+    "currency": "USD",
+    "event": "Prelim UoM Consumer Sentiment",
+    "impact": "high",
+    "actual": "55.0",
+    "forecast": "54.1",
+    "previous": "55.4",
+    "time_vn_24h": "21:00",
+    "timezone": "Vietnam Time (UTC+7)",
+    "time_mt5": "21:00",
+    "date_mt5": "2025-10-10",
+    "datetime_mt5": "2025-10-10 21:00",
+    "mt5_timezone": "MT5 Server Time (fallback=VN)"
+  },
+  {
+    "date": "2025-10-10",
+    "time": "9:00pm",
+    "currency": "USD",
+    "event": "Prelim UoM Inflation Expectations",
+    "impact": "high",
+    "actual": "4.6%",
+    "forecast": "",
+    "previous": "4.8%",
+    "time_vn_24h": "21:00",
+    "timezone": "Vietnam Time (UTC+7)",
+    "time_mt5": "21:00",
+    "date_mt5": "2025-10-10",
+    "datetime_mt5": "2025-10-10 21:00",
+    "mt5_timezone": "MT5 Server Time (fallback=VN)"
+  }
+]

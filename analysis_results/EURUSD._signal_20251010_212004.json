@@ -1,0 +1,47 @@
+{
+  "symbol": "EURUSD.",
+  "timestamp": "2025-10-10 21:20:04",
+  "final_signal": {
+    "signal": "SELL",
+    "confidence": 68.07,
+    "entry": 1.15711,
+    "stoploss": 1.16211,
+    "takeprofit": 1.14711,
+    "order_type": "limit",
+    "entry_reason": "EMA Resistance: 1.15731",
+    "confidence_boost": 4.71211503159007,
+    "smart_entry_used": true
+  },
+  "risk_aware_actions": [
+    {
+      "action_type": "unknown",
+      "symbol": "EURUSD.",
+      "direction": "",
+      "entry_price": 0.0,
+      "volume": 0.0,
+      "stop_loss": null,
+      "take_profit": null,
+      "reason": "Strengthen SELL resistance: 1.16211 < 0.00000",
+      "confidence": 68.1,
+      "risk_level": "low",
+      "order_type": "market",
+      "priority": "medium",
+      "conditions": {}
+    },
+    {
+      "action_type": "unknown",
+      "symbol": "EURUSD.",
+      "direction": "",
+      "entry_price": 0.0,
+      "volume": 0.0,
+      "stop_loss": null,
+      "take_profit": null,
+      "reason": "Strengthen SELL resistance: 1.16211 < 0.00000",
+      "confidence": 68.1,
+      "risk_level": "low",
+      "order_type": "market",
+      "priority": "medium",
+      "conditions": {}
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "symbol": "USDCAD.",
+  "timestamp": "2025-10-10 21:20:04",
+  "final_signal": {
+    "signal": "BUY",
+    "confidence": 64.59,
+    "entry": 1.39951,
+    "stoploss": 1.39451,
+    "takeprofit": 1.40951,
+    "order_type": "market",
+    "entry_reason": "Giá thị trường",
+    "confidence_boost": 0.0,
+    "smart_entry_used": true
+  },
+  "risk_aware_actions": [
+    {
+      "action_type": "primary_entry",
+      "symbol": "USDCAD.",
+      "direction": "BUY",
+      "entry_price": 1.39951,
+      "volume": 0.15,
+      "stop_loss": 1.39451,
+      "take_profit": 1.40951,
+      "reason": "Giá thị trường with DCA backup plan",
+      "confidence": 64.6,
+      "risk_level": "low",
+      "order_type": "limit",
+      "priority": 1,
+      "conditions": {
+        "dca_enabled": true,
+        "max_dca_levels": 5,
+        "dca_mode": "atr_multiple"
+      }
+    }
+  ]
+}

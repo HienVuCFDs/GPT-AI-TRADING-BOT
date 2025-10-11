@@ -1,0 +1,96 @@
+[
+  {
+    "symbol": "GBPJPY.",
+    "timeframe": "H4",
+    "type": "pin_bar",
+    "time": "2025-10-10 08:00:00",
+    "confidence": 0.8400000000000001,
+    "score": -0.21,
+    "signal": "Bearish",
+    "pattern_length": 1,
+    "indicator_analysis": {
+      "score": 0.0,
+      "signals": [
+        {
+          "indicator": "stoch",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "volume",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "overall",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "bb",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "donchian",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "fib",
+          "signal": "Neutral",
+          "weight": 1.0
+        }
+      ],
+      "strength": "Neutral",
+      "confidence": 0.0,
+      "bullish_weight": 0,
+      "bearish_weight": 0,
+      "total_weight": 6.0
+    },
+    "trend_analysis": {
+      "strength": "Bearish",
+      "context": [
+        "Below resistance at 203.34786"
+      ],
+      "levels": [
+        {
+          "type": "resistance",
+          "value": 203.34786453125,
+          "distance": 0.10380409834249592,
+          "position": "below"
+        },
+        {
+          "type": "channel_upper",
+          "value": 202.39397483300462,
+          "distance": 0.3657753964050766,
+          "position": "above"
+        },
+        {
+          "type": "channel_upper",
+          "value": 202.37856567244958,
+          "distance": 0.37336099654441,
+          "position": "above"
+        },
+        {
+          "type": "channel_upper",
+          "value": 202.36315651189457,
+          "distance": 0.38094659668372943,
+          "position": "above"
+        },
+        {
+          "type": "channel_upper",
+          "value": 202.34774735133956,
+          "distance": 0.38853219682304885,
+          "position": "above"
+        }
+      ],
+      "trend_direction": "Downtrend",
+      "momentum": "Neutral"
+    },
+    "confidence_factors": [
+      "Trend: Bearish",
+      "Pattern: pin_bar (neutral)"
+    ]
+  }
+]

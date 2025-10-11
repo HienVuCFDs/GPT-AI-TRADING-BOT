@@ -1,0 +1,97 @@
+[
+  {
+    "symbol": "EURJPY.",
+    "timeframe": "H1",
+    "type": "three_white_soldiers",
+    "time": "2025-10-10 16:00:00",
+    "confidence": 0.7,
+    "score": 0.55,
+    "signal": "Bullish",
+    "pattern_length": 3,
+    "indicator_analysis": {
+      "score": 0.0,
+      "signals": [
+        {
+          "indicator": "stoch",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "volume",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "overall",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "bb",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "donchian",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "fib",
+          "signal": "Neutral",
+          "weight": 1.0
+        }
+      ],
+      "strength": "Neutral",
+      "confidence": 0.0,
+      "bullish_weight": 0,
+      "bearish_weight": 0,
+      "total_weight": 6.0
+    },
+    "trend_analysis": {
+      "strength": "Bullish_Strong",
+      "context": [
+        "Above trendline at 176.60576",
+        "Above channel_lower at 176.59974"
+      ],
+      "levels": [
+        {
+          "type": "channel_upper",
+          "value": 176.60651629662533,
+          "distance": 0.00367113597224998,
+          "position": "above"
+        },
+        {
+          "type": "trendline",
+          "value": 176.6057601197741,
+          "distance": 0.00409929066711406,
+          "position": "above"
+        },
+        {
+          "type": "channel_lower",
+          "value": 176.5997407711534,
+          "distance": 0.0075075044569805904,
+          "position": "above"
+        },
+        {
+          "type": "trendline",
+          "value": 176.63411592202385,
+          "distance": 0.011956040622067923,
+          "position": "below"
+        },
+        {
+          "type": "channel_upper",
+          "value": 176.6348720988751,
+          "distance": 0.012384195316932002,
+          "position": "below"
+        }
+      ],
+      "trend_direction": "Uptrend",
+      "momentum": "Neutral"
+    },
+    "confidence_factors": [
+      "Trend: Bullish_Strong",
+      "Pattern: three_white_soldiers (bullish)"
+    ]
+  }
+]

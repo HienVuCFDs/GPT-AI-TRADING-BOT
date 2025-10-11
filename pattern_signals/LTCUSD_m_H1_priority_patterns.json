@@ -1,0 +1,94 @@
+[
+  {
+    "symbol": "LTCUSD_m",
+    "timeframe": "H1",
+    "type": "pin_bar",
+    "time": "2025-10-10 16:00:00",
+    "confidence": 0.78,
+    "score": 0.0,
+    "signal": "Neutral",
+    "pattern_length": 1,
+    "indicator_analysis": {
+      "score": 0.0,
+      "signals": [
+        {
+          "indicator": "stoch",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "volume",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "overall",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "bb",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "donchian",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "fib",
+          "signal": "Neutral",
+          "weight": 1.0
+        }
+      ],
+      "strength": "Neutral",
+      "confidence": 0.0,
+      "bullish_weight": 0,
+      "bearish_weight": 0,
+      "total_weight": 6.0
+    },
+    "trend_analysis": {
+      "strength": "Neutral",
+      "context": [],
+      "levels": [
+        {
+          "type": "resistance",
+          "value": 135,
+          "distance": 0.8968609865470767,
+          "position": "below"
+        },
+        {
+          "type": "support",
+          "value": 130,
+          "distance": 2.840059790732445,
+          "position": "above"
+        },
+        {
+          "type": "channel_upper",
+          "value": 122.58665729701121,
+          "distance": 8.38067466591091,
+          "position": "above"
+        },
+        {
+          "type": "channel_upper",
+          "value": 122.57411881624792,
+          "distance": 8.390045727766886,
+          "position": "above"
+        },
+        {
+          "type": "channel_upper",
+          "value": 122.56158033548463,
+          "distance": 8.399416789622851,
+          "position": "above"
+        }
+      ],
+      "trend_direction": "Sideways",
+      "momentum": "Neutral"
+    },
+    "confidence_factors": [
+      "Trend: Neutral",
+      "Pattern: pin_bar (neutral)"
+    ]
+  }
+]

@@ -1,0 +1,35 @@
+[
+    {
+        "pattern": "falling_wedge",
+        "type": "falling_wedge",
+        "confidence": 0.7,
+        "signal": "Bullish",
+        "pattern_length": 29,
+        "symbol": "GBPJPY.",
+        "timeframe": "H1",
+        "time": "2025-09-25 19:00:00",
+        "confirmed": true,
+        "end_price": 0,
+        "start_time": "2025-09-24 14:00:00",
+        "end_time": "2025-09-25 19:00:00",
+        "peak1_price": 199.909,
+        "peak2_price": 200.023,
+        "valley_price": 199.612,
+        "valley_depth": 0.002054763702174257,
+        "height_similarity": 0.9994300655424626,
+        "volume_confirmation": false,
+        "confirmation_score": 0.618,
+        "confirmation_details": {
+            "trend_confirmation": true,
+            "indicator_confirmation": false,
+            "volume_confirmation": false,
+            "candlestick_confirmation": false,
+            "support_resistance_confirmation": true,
+            "total_score": 0.618
+        },
+        "high_slope": -0.0009221357063452026,
+        "low_slope": -0.003852725250284217,
+        "convergence_ratio": 0.2393463448443868,
+        "duration": 104400.0
+    }
+]

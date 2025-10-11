@@ -1,0 +1,50 @@
+Time: 2025-10-10 21:20:03
+
+Symbol: GBPJPY.
+
+Signal: BUY
+Confidence: 62%
+Entry: 202.67400
+Stoploss: 202.17400
+Takeprofit: 203.67400
+
+Technical analysis:
+  - Trend: sideways (H4)
+  - Support zone: 202.109 (H4)
+  - Resistance zone: 205.319 (H4)
+  - Price channel: H4: Inside channel – wait for breakout
+  - Trendline: H4: Trendline up (slope 0.015409)
+        → WARNING: Trendline breakout up
+  - Technical indicators:
+        • ATR: 0.6109 – biến động rất thấp
+        • Bollinger: within bands – average width (width 0.0153)
+        • Donchian: inside channel – vị trí 17.3% near biên dưới
+        • EMA100: price =202.66 above EMA100 201.094 medium-long term (positive) – dốc lên
+          → EMA20 > EMA50 > EMA200 (bullish stack)
+        • EMA20: price =202.66 below EMA20 203.231 short-term (negative) – dốc xuống
+          → EMA20 sloping down
+        • EMA200: price =202.66 above EMA200 200.268 long-term (positive) – dốc lên
+        • EMA50: price =202.66 above EMA50 202.065 medium-term (positive) – dốc lên
+        • Fibonacci: Price near level 38.2% Fibonacci
+        • Ichimoku: Tenkan > Kijun (xu hướng strong up) – supports BUY
+        • SMA20: SMA20 chưa có (not computable)
+        • Stochastic: K 6.2 / D 9.2 – quá bán (<20)
+
+Summary:
+  - Indicator convergence: Supports BUY 1 | Supports SELL 0 | Neutral 5
+  - Convergence score: +0.17 (positive = biased toward BUY)
+  - Volatility (ATR14): 0.0030 relative to price
+  - Top notable signals: EMA20 > EMA50 > EMA200
+  - Donchian(20): wide 0.0158, near biên dưới, percentile 17.3% (thấp)
+  - Conflict breakdown: BUY=Ichimoku | SELL=∅
+
+  - Price patterns:
+        • symmetrical triangle → (M30) – Accumulation – 80% (high)
+        • falling wedge ↑ (M15) – Accumulation/reversal up – 70% (high)
+        • falling wedge ↑ (H1) – Accumulation/reversal up – 70% (high)
+        • falling wedge ↑ (H4) – Accumulation/reversal up – 70% (high)
+  - Candlestick patterns:
+        • pin bar Bullish ↑ (M15) – Price reaction – 84% (high)
+        • pin bar Bearish ↓ (H4) – Price reaction – 84% (high)
+        • three inside up Bullish ↑ (M30) – Pattern – 70% (high)
+        • inside bar Neutral → (H1) – Accumulation – 60% (fair)

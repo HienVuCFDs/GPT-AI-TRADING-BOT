@@ -1,0 +1,51 @@
+Thời gian: 2025-10-10 21:20:04
+
+Ký hiệu: GBPUSD.
+
+Tín hiệu: BUY
+Độ tin cậy: 67%
+Entry: 1.32822
+Stoploss: 1.32322
+Takeprofit: 1.33822
+
+Phân tích kỹ thuật:
+  - Xu hướng: đi ngang (H4)
+  - Vùng hỗ trợ: 1.3261 (H4)
+  - Vùng kháng cự: 1.3454 (H4)
+  - Kênh giá: H4: Trong kênh – chờ phá vỡ
+  - Trendline: H4: Trendline giảm (slope -0.000020)
+        → CẢNH BÁO: Trendline phá vỡ xuống
+  - Chỉ báo kỹ thuật:
+        • ATR: 0.0035 – biến động rất thấp
+        • Bollinger: trong dải – độ rộng trung bình (width 0.0169)
+        • Donchian: trong kênh – vị trí 11.0% gần biên dưới
+        • EMA100: giá =1.3282 thấp hơn EMA100 1.34373 trung-dài hạn (tiêu cực) – dốc xuống
+          → EMA20 < EMA50 < EMA200 (xếp chồng giảm)
+        • EMA20: giá =1.3282 thấp hơn EMA20 1.33555 ngắn hạn (tiêu cực) – dốc xuống
+          → EMA20 đang dốc xuống
+        • EMA200: giá =1.3282 thấp hơn EMA200 1.34617 dài hạn (tiêu cực) – dốc xuống
+        • EMA50: giá =1.3282 thấp hơn EMA50 1.34031 trung hạn (tiêu cực) – dốc xuống
+        • Fibonacci: không gần mức quan trọng
+        • Ichimoku: Tenkan <= Kijun (xu hướng giảm hoặc chuyển đổi) – ủng hộ SELL
+        • SMA20: SMA20 chưa có (không tính được)
+        • Stochastic: K 12.0 / D 13.4 – quá bán (<20)
+
+Tóm tắt:
+  - Độ hội tụ chỉ báo: Ủng hộ BUY 0 | Ủng hộ SELL 1 | Trung tính 5
+  - Chỉ số hội tụ: -0.17 (dương = nghiêng BUY)
+  - Biến động (ATR14): 0.0026 so với giá
+  - Top tín hiệu nổi bật: EMA20 > EMA50 > EMA200
+  - Donchian(20): rộng 0.0145, gần biên dưới, percentile 11.0% (thấp)
+  - Cảnh báo: Giá đang gần vùng hỗ trợ
+  - Phân rã xung đột: BUY=∅ | SELL=Ichimoku
+
+  - Mô hình giá:
+        • ascending triangle ↑ (M30) – Tiếp diễn tăng – 78% (cao)
+        • ascending triangle ↑ (H1) – Tiếp diễn tăng – 77% (cao)
+        • falling wedge ↑ (M15) – Tích lũy/đảo chiều tăng – 70% (cao)
+        • falling wedge ↑ (H4) – Tích lũy/đảo chiều tăng – 70% (cao)
+  - Mô hình nến:
+        • pin bar Neutral → (H1) – Phản ứng giá – 78% (cao)
+        • tweezer bottom Bullish ↑ (M30) – Mô hình – 70% (cao)
+        • three white soldiers Bullish ↑ (M15) – Mô hình – 66% (khá)
+        • three inside down Neutral → (H4) – Mô hình – 60% (khá)

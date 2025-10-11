@@ -1,0 +1,50 @@
+Time: 2025-10-10 21:20:04
+
+Symbol: USDCAD.
+
+Signal: BUY
+Confidence: 65%
+Entry: 1.39951
+Stoploss: 1.39451
+Takeprofit: 1.40951
+
+Technical analysis:
+  - Trend: sideways (H4)
+  - Support zone: 1.3931 (H4)
+  - Resistance zone: 1.4033 (H4)
+  - Price channel: H4: Inside channel – wait for breakout
+  - Trendline: H4: Trendline up (slope 0.000118)
+  - Technical indicators:
+        • ATR: 0.0021 – biến động rất thấp
+        • Bollinger: within bands – narrowing (squeeze) (width 0.0088)
+        • Donchian: inside channel – vị trí 61.9% inside channel
+        • EMA100: price =1.3994 above EMA100 1.39195 medium-long term (positive) – dốc lên
+          → EMA20 > EMA50 > EMA200 (bullish stack)
+        • EMA20: price =1.3994 above EMA20 1.39782 short-term (positive) – dốc lên
+          → EMA20 sloping up
+        • EMA200: price =1.3994 above EMA200 1.38747 long-term (positive) – dốc lên
+        • EMA50: price =1.3994 above EMA50 1.39535 medium-term (positive) – dốc lên
+        • Fibonacci: not near level important
+        • Ichimoku: Tenkan > Kijun (xu hướng strong up) – supports BUY
+        • SMA20: SMA20 chưa có (not computable)
+        • Stochastic: K 61.9 / D 65.3 – down short-term (K<D)
+
+Summary:
+  - Indicator convergence: Supports BUY 1 | Supports SELL 0 | Neutral 5
+  - Convergence score: +0.17 (positive = biased toward BUY)
+  - Volatility (ATR14): 0.0015 relative to price
+  - Top notable signals: EMA20 > EMA50 > EMA200
+  - Donchian(20): wide 0.0073, near biên trên, percentile 61.9% (average)
+  - Bollinger: Squeeze (width 0.0088) – potential breakout soon
+  - Conflict breakdown: BUY=Ichimoku | SELL=∅
+
+  - Price patterns:
+        • descending triangle ↓ (M15) – Continuation down – 76% (high)
+        • falling wedge ↑ (H1) – Accumulation/reversal up – 70% (high)
+        • falling wedge ↑ (H4) – Accumulation/reversal up – 70% (high)
+        • rising wedge ↓ (M30) – Accumulation/reversal down – 70% (high)
+  - Candlestick patterns:
+        • kicker bear Bearish ↓ (H4) – Pattern – 70% (high)
+        • tweezer bottom Neutral → (M15) – Pattern – 66% (fair)
+        • inside bar Bearish → (H1) – Accumulation – 66% (fair)
+        • inside bar Bearish → (M30) – Accumulation – 66% (fair)

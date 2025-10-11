@@ -1,0 +1,87 @@
+{
+  "timestamp": "2025-10-10T21:20:06.759931",
+  "total_actions": 93,
+  "action_types": {
+    "sl_adjustment_signal_based": 62,
+    "": 28,
+    "⚠️ XUNG ĐỘT: Tín hiệu BUY (BUY) nhưng đang SELL — xem xét đóng/hedge": 3
+  },
+  "recent_actions": [
+    {
+      "symbol": "GBPJPY.",
+      "action": "modify_position",
+      "type": "sl_adjustment_signal_based",
+      "ticket": 50225044191,
+      "reason": "Strengthen BUY support: 202.17400 > 0.00000",
+      "signal_trigger": "BUY",
+      "confidence": 61.611213235294116,
+      "priority": "medium",
+      "risk_level": "low",
+      "current_profit_pips": -32.099999999999795,
+      "position_type": "BUY",
+      "new_sl": 202.174,
+      "new_tp": 0
+    },
+    {
+      "symbol": "GBPJPY.",
+      "action": "modify_position",
+      "type": "sl_adjustment_signal_based",
+      "ticket": 50225056320,
+      "reason": "Strengthen BUY support: 202.17400 > 0.00000",
+      "signal_trigger": "BUY",
+      "confidence": 61.611213235294116,
+      "priority": "medium",
+      "risk_level": "low",
+      "current_profit_pips": -5.400000000000205,
+      "position_type": "BUY",
+      "new_sl": 202.174,
+      "new_tp": 0
+    },
+    {
+      "symbol": "XAUUSD.",
+      "action": "",
+      "type": "",
+      "ticket": "",
+      "reason": "Giá thị trường with DCA backup plan",
+      "signal_trigger": "",
+      "confidence": 55.38235294117647,
+      "priority": 1,
+      "risk_level": "low",
+      "current_profit_pips": 0,
+      "position_type": "",
+      "new_sl": 0,
+      "new_tp": 0
+    },
+    {
+      "symbol": "USDCAD.",
+      "action": "",
+      "type": "",
+      "ticket": "",
+      "reason": "Giá thị trường with DCA backup plan",
+      "signal_trigger": "",
+      "confidence": 64.59170036764706,
+      "priority": 1,
+      "risk_level": "low",
+      "current_profit_pips": 0,
+      "position_type": "",
+      "new_sl": 0,
+      "new_tp": 0
+    },
+    {
+      "symbol": "EURUSD.",
+      "action": "modify_position",
+      "type": "sl_adjustment_signal_based",
+      "ticket": 50224743052,
+      "reason": "Strengthen SELL resistance: 1.16211 < 0.00000",
+      "signal_trigger": "SELL",
+      "confidence": 68.06824554629596,
+      "priority": "medium",
+      "risk_level": "low",
+      "current_profit_pips": -16.599999999999948,
+      "position_type": "SELL",
+      "new_sl": 1.16211,
+      "new_tp": 0
+    }
+  ],
+  "note": "Auto-trading optimized summary (no MT5 query)"
+}

@@ -1,0 +1,96 @@
+[
+  {
+    "symbol": "USDJPY.",
+    "timeframe": "H1",
+    "type": "breakaway",
+    "time": "2025-10-10 16:00:00",
+    "confidence": 0.6599999999999999,
+    "score": -0.21,
+    "signal": "Bearish",
+    "pattern_length": 1,
+    "indicator_analysis": {
+      "score": 0.0,
+      "signals": [
+        {
+          "indicator": "stoch",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "volume",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "overall",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "bb",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "donchian",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "fib",
+          "signal": "Neutral",
+          "weight": 1.0
+        }
+      ],
+      "strength": "Neutral",
+      "confidence": 0.0,
+      "bullish_weight": 0,
+      "bearish_weight": 0,
+      "total_weight": 6.0
+    },
+    "trend_analysis": {
+      "strength": "Bearish",
+      "context": [
+        "Below channel_upper at 152.65596"
+      ],
+      "levels": [
+        {
+          "type": "trendline",
+          "value": 152.651048810055,
+          "distance": 0.0013421706365498076,
+          "position": "below"
+        },
+        {
+          "type": "channel_upper",
+          "value": 152.65595673161346,
+          "distance": 0.004557338478114281,
+          "position": "below"
+        },
+        {
+          "type": "channel_lower",
+          "value": 152.6651221267718,
+          "distance": 0.01056156723711953,
+          "position": "below"
+        },
+        {
+          "type": "channel_lower",
+          "value": 152.6221099770343,
+          "distance": 0.01761559064631139,
+          "position": "above"
+        },
+        {
+          "type": "channel_upper",
+          "value": 152.61294458187598,
+          "distance": 0.02361981940531664,
+          "position": "above"
+        }
+      ],
+      "trend_direction": "Downtrend",
+      "momentum": "Neutral"
+    },
+    "confidence_factors": [
+      "Trend: Bearish",
+      "Pattern: breakaway (neutral)"
+    ]
+  }
+]

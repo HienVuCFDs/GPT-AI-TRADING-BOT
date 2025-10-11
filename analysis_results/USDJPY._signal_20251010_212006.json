@@ -1,0 +1,62 @@
+{
+  "symbol": "USDJPY.",
+  "timestamp": "2025-10-10 21:20:06",
+  "final_signal": {
+    "signal": "BUY",
+    "confidence": 65.07,
+    "entry": 152.58,
+    "stoploss": 152.08,
+    "takeprofit": 153.58,
+    "order_type": "market",
+    "entry_reason": "Giá thị trường",
+    "confidence_boost": 0.0,
+    "smart_entry_used": true
+  },
+  "risk_aware_actions": [
+    {
+      "action_type": "unknown",
+      "symbol": "USDJPY.",
+      "direction": "",
+      "entry_price": 0.0,
+      "volume": 0.0,
+      "stop_loss": null,
+      "take_profit": null,
+      "reason": "Strengthen BUY support: 152.08000 > 0.00000",
+      "confidence": 65.1,
+      "risk_level": "low",
+      "order_type": "market",
+      "priority": "medium",
+      "conditions": {}
+    },
+    {
+      "action_type": "unknown",
+      "symbol": "USDJPY.",
+      "direction": "",
+      "entry_price": 0.0,
+      "volume": 0.0,
+      "stop_loss": null,
+      "take_profit": null,
+      "reason": "Strengthen BUY support: 152.08000 > 0.00000",
+      "confidence": 65.1,
+      "risk_level": "low",
+      "order_type": "market",
+      "priority": "medium",
+      "conditions": {}
+    },
+    {
+      "action_type": "unknown",
+      "symbol": "USDJPY.",
+      "direction": "",
+      "entry_price": 0.0,
+      "volume": 0.0,
+      "stop_loss": null,
+      "take_profit": null,
+      "reason": "Strengthen BUY support: 152.08000 > 0.00000",
+      "confidence": 65.1,
+      "risk_level": "low",
+      "order_type": "market",
+      "priority": "medium",
+      "conditions": {}
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+[
+    {
+        "pattern": "falling_wedge",
+        "type": "falling_wedge",
+        "confidence": 0.7,
+        "signal": "Bullish",
+        "pattern_length": 41,
+        "symbol": "USDCAD.",
+        "timeframe": "H4",
+        "time": "2025-06-26 16:00:00",
+        "confirmed": true,
+        "end_price": 0,
+        "start_time": "2025-06-19 20:00:00",
+        "end_time": "2025-06-26 16:00:00",
+        "peak1_price": 1.37311,
+        "peak2_price": 1.36725,
+        "valley_price": 1.36171,
+        "valley_depth": 0.008302321008513577,
+        "height_similarity": 0.995732315692115,
+        "volume_confirmation": false,
+        "confirmation_score": 0.348,
+        "confirmation_details": {
+            "trend_confirmation": false,
+            "indicator_confirmation": false,
+            "volume_confirmation": false,
+            "candlestick_confirmation": true,
+            "support_resistance_confirmation": false,
+            "total_score": 0.348
+        },
+        "high_slope": -8.26318131257183e-05,
+        "low_slope": -8.936818687434318e-05,
+        "convergence_ratio": 0.9246222399241846,
+        "duration": 590400.0
+    }
+]

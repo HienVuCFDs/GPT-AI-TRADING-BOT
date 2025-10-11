@@ -1,0 +1,40 @@
+[
+    {
+        "pattern": "bullish_pennant",
+        "type": "bullish_pennant",
+        "confidence": 0.55,
+        "signal": "Bullish",
+        "pattern_length": 4,
+        "symbol": "SOLUSD_m",
+        "timeframe": "M30",
+        "time": "2025-10-09 02:30:00",
+        "confirmed": true,
+        "end_price": 0,
+        "start_time": "2025-10-08 17:00:00",
+        "end_time": "2025-10-09 02:30:00",
+        "peak1_price": NaN,
+        "peak2_price": NaN,
+        "valley_price": NaN,
+        "valley_depth": NaN,
+        "height_similarity": NaN,
+        "volume_confirmation": NaN,
+        "confirmation_score": 0.347,
+        "confirmation_details": {
+            "trend_confirmation": false,
+            "indicator_confirmation": false,
+            "volume_confirmation": false,
+            "candlestick_confirmation": false,
+            "support_resistance_confirmation": false,
+            "total_score": 0.347
+        },
+        "pole_return": 0.03048340548340557,
+        "flag_range": NaN,
+        "consolidation_quality": NaN,
+        "pennant_range": 0.010326479076479041,
+        "convergence_quality": 1.1642201834864192,
+        "high_slope": NaN,
+        "low_slope": NaN,
+        "convergence_ratio": NaN,
+        "duration": 34200.0
+    }
+]

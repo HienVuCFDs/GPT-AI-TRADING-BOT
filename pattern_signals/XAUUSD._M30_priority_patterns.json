@@ -1,0 +1,96 @@
+[
+  {
+    "symbol": "XAUUSD.",
+    "timeframe": "M30",
+    "type": "kicker_bear",
+    "time": "2025-10-10 16:30:00",
+    "confidence": 0.6599999999999999,
+    "score": -0.41000000000000003,
+    "signal": "Bearish",
+    "pattern_length": 1,
+    "indicator_analysis": {
+      "score": 0.0,
+      "signals": [
+        {
+          "indicator": "stoch",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "volume",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "overall",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "bb",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "donchian",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "fib",
+          "signal": "Neutral",
+          "weight": 1.0
+        }
+      ],
+      "strength": "Neutral",
+      "confidence": 0.0,
+      "bullish_weight": 0,
+      "bearish_weight": 0,
+      "total_weight": 6.0
+    },
+    "trend_analysis": {
+      "strength": "Bearish",
+      "context": [
+        "Below channel_upper at 3981.66367"
+      ],
+      "levels": [
+        {
+          "type": "channel_lower",
+          "value": 3981.032666666667,
+          "distance": 0.0010717602070634078,
+          "position": "below"
+        },
+        {
+          "type": "channel_upper",
+          "value": 3980.692000000001,
+          "distance": 0.007485575196091047,
+          "position": "above"
+        },
+        {
+          "type": "channel_upper",
+          "value": 3981.6636666666677,
+          "distance": 0.016922088894168064,
+          "position": "below"
+        },
+        {
+          "type": "channel_lower",
+          "value": 3980.061,
+          "distance": 0.023335903883195702,
+          "position": "above"
+        },
+        {
+          "type": "channel_lower",
+          "value": 3982.0043333333333,
+          "distance": 0.025479424297311096,
+          "position": "below"
+        }
+      ],
+      "trend_direction": "Downtrend",
+      "momentum": "Neutral"
+    },
+    "confidence_factors": [
+      "Trend: Bearish",
+      "Pattern: kicker_bear (bearish)"
+    ]
+  }
+]

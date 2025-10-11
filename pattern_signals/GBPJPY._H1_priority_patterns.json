@@ -1,0 +1,97 @@
+[
+  {
+    "symbol": "GBPJPY.",
+    "timeframe": "H1",
+    "type": "inside_bar",
+    "time": "2025-10-10 16:00:00",
+    "confidence": 0.6,
+    "score": 0.0,
+    "signal": "Neutral",
+    "pattern_length": 3,
+    "indicator_analysis": {
+      "score": 0.0,
+      "signals": [
+        {
+          "indicator": "stoch",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "volume",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "overall",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "bb",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "donchian",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "fib",
+          "signal": "Neutral",
+          "weight": 1.0
+        }
+      ],
+      "strength": "Neutral",
+      "confidence": 0.0,
+      "bullish_weight": 0,
+      "bearish_weight": 0,
+      "total_weight": 6.0
+    },
+    "trend_analysis": {
+      "strength": "Neutral",
+      "context": [
+        "Below channel_upper at 202.67631",
+        "Above channel_lower at 202.67143"
+      ],
+      "levels": [
+        {
+          "type": "channel_upper",
+          "value": 202.67631076281467,
+          "distance": 0.00015332985389385063,
+          "position": "below"
+        },
+        {
+          "type": "channel_lower",
+          "value": 202.67142767426643,
+          "distance": 0.0022559778827105164,
+          "position": "above"
+        },
+        {
+          "type": "trendline",
+          "value": 202.6871157350646,
+          "distance": 0.0054844851213793075,
+          "position": "below"
+        },
+        {
+          "type": "trendline",
+          "value": 202.64326930805862,
+          "distance": 0.016149268754745132,
+          "position": "above"
+        },
+        {
+          "type": "channel_lower",
+          "value": 202.7152741012724,
+          "distance": 0.019377775993413924,
+          "position": "below"
+        }
+      ],
+      "trend_direction": "Sideways",
+      "momentum": "Neutral"
+    },
+    "confidence_factors": [
+      "Trend: Neutral",
+      "Pattern: inside_bar (neutral)"
+    ]
+  }
+]

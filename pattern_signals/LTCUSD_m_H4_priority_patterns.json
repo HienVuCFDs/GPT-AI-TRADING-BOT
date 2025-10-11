@@ -1,0 +1,94 @@
+[
+  {
+    "symbol": "LTCUSD_m",
+    "timeframe": "H4",
+    "type": "kicker_bull",
+    "time": "2025-10-10 12:00:00",
+    "confidence": 0.6,
+    "score": 0.2,
+    "signal": "Neutral",
+    "pattern_length": 1,
+    "indicator_analysis": {
+      "score": 0.0,
+      "signals": [
+        {
+          "indicator": "stoch",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "volume",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "overall",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "bb",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "donchian",
+          "signal": "Neutral",
+          "weight": 1.0
+        },
+        {
+          "indicator": "fib",
+          "signal": "Neutral",
+          "weight": 1.0
+        }
+      ],
+      "strength": "Neutral",
+      "confidence": 0.0,
+      "bullish_weight": 0,
+      "bearish_weight": 0,
+      "total_weight": 6.0
+    },
+    "trend_analysis": {
+      "strength": "Neutral",
+      "context": [],
+      "levels": [
+        {
+          "type": "support",
+          "value": 130,
+          "distance": 2.3510854052429924,
+          "position": "above"
+        },
+        {
+          "type": "channel_upper",
+          "value": 120.70986269162735,
+          "distance": 9.329330209849504,
+          "position": "above"
+        },
+        {
+          "type": "channel_upper",
+          "value": 120.68763539209904,
+          "distance": 9.346026145798058,
+          "position": "above"
+        },
+        {
+          "type": "channel_upper",
+          "value": 120.66540809257074,
+          "distance": 9.362722081746604,
+          "position": "above"
+        },
+        {
+          "type": "channel_upper",
+          "value": 120.64318079304245,
+          "distance": 9.379418017695148,
+          "position": "above"
+        }
+      ],
+      "trend_direction": "Sideways",
+      "momentum": "Neutral"
+    },
+    "confidence_factors": [
+      "Trend: Neutral",
+      "Pattern: kicker_bull (bullish)"
+    ]
+  }
+]

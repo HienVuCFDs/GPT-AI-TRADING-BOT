@@ -1,0 +1,35 @@
+[
+    {
+        "pattern": "falling_wedge",
+        "type": "falling_wedge",
+        "confidence": 0.7,
+        "signal": "Bullish",
+        "pattern_length": 41,
+        "symbol": "GBPUSD.",
+        "timeframe": "H4",
+        "time": "2025-07-02 16:00:00",
+        "confirmed": true,
+        "end_price": 0,
+        "start_time": "2025-06-25 20:00:00",
+        "end_time": "2025-07-02 16:00:00",
+        "peak1_price": 1.3671,
+        "peak2_price": 1.36316,
+        "valley_price": 1.35621,
+        "valley_depth": 0.007965766951942116,
+        "height_similarity": 0.9971179869797381,
+        "volume_confirmation": false,
+        "confirmation_score": 0.527,
+        "confirmation_details": {
+            "trend_confirmation": true,
+            "indicator_confirmation": false,
+            "volume_confirmation": false,
+            "candlestick_confirmation": false,
+            "support_resistance_confirmation": false,
+            "total_score": 0.527
+        },
+        "high_slope": -5.446051167992532e-06,
+        "low_slope": -3.274304783096268e-05,
+        "convergence_ratio": 0.16632694659666358,
+        "duration": 590400.0
+    }
+]

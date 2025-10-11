@@ -1,0 +1,47 @@
+{
+  "symbol": "EURJPY.",
+  "timestamp": "2025-10-10 21:20:05",
+  "final_signal": {
+    "signal": "BUY",
+    "confidence": 68.72,
+    "entry": 176.495,
+    "stoploss": 175.995,
+    "takeprofit": 177.495,
+    "order_type": "market",
+    "entry_reason": "Giá thị trường",
+    "confidence_boost": 0.0,
+    "smart_entry_used": true
+  },
+  "risk_aware_actions": [
+    {
+      "action_type": "unknown",
+      "symbol": "EURJPY.",
+      "direction": "",
+      "entry_price": 0.0,
+      "volume": 0.0,
+      "stop_loss": null,
+      "take_profit": null,
+      "reason": "Strengthen BUY support: 175.99500 > 0.00000",
+      "confidence": 68.7,
+      "risk_level": "low",
+      "order_type": "market",
+      "priority": "medium",
+      "conditions": {}
+    },
+    {
+      "action_type": "unknown",
+      "symbol": "EURJPY.",
+      "direction": "",
+      "entry_price": 0.0,
+      "volume": 0.0,
+      "stop_loss": null,
+      "take_profit": null,
+      "reason": "Strengthen BUY support: 175.99500 > 0.00000",
+      "confidence": 68.7,
+      "risk_level": "low",
+      "order_type": "market",
+      "priority": "medium",
+      "conditions": {}
+    }
+  ]
+}

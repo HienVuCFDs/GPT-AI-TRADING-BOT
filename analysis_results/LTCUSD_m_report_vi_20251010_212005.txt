@@ -1,0 +1,51 @@
+Thời gian: 2025-10-10 21:20:05
+
+Ký hiệu: LTCUSD_m
+
+Tín hiệu: BUY
+Độ tin cậy: 95%
+Entry: 133.67
+Stoploss: 128.67
+Takeprofit: 143.67
+
+Phân tích kỹ thuật:
+  - Xu hướng: đi ngang (H4)
+  - Vùng hỗ trợ: 115.1 (H4)
+  - Vùng kháng cự: 135.8 (H4)
+  - Kênh giá: H4: Trong kênh – chờ phá vỡ
+  - Trendline: H4: Trendline tăng (slope 0.022227)
+        → CẢNH BÁO: Trendline phá vỡ lên
+  - Chỉ báo kỹ thuật:
+        • ATR: 3.4911 – biến động rất cao
+        • Bollinger: trên dải (giá 133.6200 > 132.9652) – mở rộng (biến động cao) (width 0.1826)
+        • Donchian: trong kênh – vị trí 89.5% gần biên trên
+        • EMA100: giá =133.62 cao hơn EMA100 116.224 trung-dài hạn (tích cực) – dốc lên
+          → EMA20 > EMA50 > EMA200 (xếp chồng tăng)
+        • EMA20: giá =133.62 cao hơn EMA20 123.002 ngắn hạn (tích cực) – dốc lên
+          → EMA20 đang dốc lên
+        • EMA200: giá =133.62 cao hơn EMA200 114.468 dài hạn (tích cực) – dốc lên
+        • EMA50: giá =133.62 cao hơn EMA50 119.228 trung hạn (tích cực) – dốc lên
+        • Fibonacci: không gần mức quan trọng
+        • Ichimoku: Tenkan > Kijun (xu hướng tăng mạnh) – ủng hộ BUY
+        • SMA20: SMA20 chưa có (không tính được)
+        • Stochastic: K 89.3 / D 89.1 – quá mua (>80)
+
+Tóm tắt:
+  - Độ hội tụ chỉ báo: Ủng hộ BUY 1 | Ủng hộ SELL 0 | Trung tính 5
+  - Chỉ số hội tụ: +0.17 (dương = nghiêng BUY)
+  - Biến động (ATR14): 0.0261 so với giá
+  - Top tín hiệu nổi bật: EMA20 > EMA50 > EMA200
+  - Donchian(20): rộng 0.1549, gần biên trên, percentile 89.5% (cao)
+  - Bollinger: Rộng (độ rộng 0.1826) – biến động cao
+  - Phân rã xung đột: BUY=Ichimoku | SELL=∅
+
+  - Mô hình giá:
+        • bullish flag ↑ (M15) – Tiếp diễn tăng – 75% (cao)
+        • bearish flag ↓ (H4) – Tiếp diễn giảm – 75% (cao)
+        • bullish flag ↑ (M30) – Tiếp diễn tăng – 75% (cao)
+        • falling wedge ↑ (H1) – Tích lũy/đảo chiều tăng – 70% (cao)
+  - Mô hình nến:
+        • pin bar Neutral → (H1) – Phản ứng giá – 78% (cao)
+        • three black crows Neutral → (M15) – Mô hình – 60% (khá)
+        • kicker bull Neutral → (H4) – Mô hình – 60% (khá)
+        • inside bar Neutral → (M30) – Tích lũy – 60% (khá)
