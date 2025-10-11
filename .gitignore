@@ -16,9 +16,21 @@ cache/
 # Debug files
 debug_*.txt
 
-# Analysis results (temporary)
+# Analysis results (temporary and dynamic data)
 analysis_results/*_20*.txt
 analysis_results/*_20*.json
+analysis_results/account_positions_actions*.json
+analysis_results/account_positions_actions*.txt
+
+# Dynamic data files (updated by bot)
+data/*.json
+indicator_output/*.json
+pattern_price/*.json
+pattern_signals/*.json
+trendline_sr/*.json
+
+# Account scans (sensitive and dynamic)
+account_scans/*.json
 
 # News output (temporary) 
 news_output/news_forexfactory_*.json
