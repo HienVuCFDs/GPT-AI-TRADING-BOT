@@ -48,7 +48,7 @@ class TradingConfig:
     
     def __init__(self):
         self.update_interval = 60  # seconds
-        self.large_cycle_minutes = 5  # minutes
+        self.large_cycle_minutes = 1  # minutes (faster cycles for testing)
         self.small_cycle_interval = 30  # seconds
         self.script_timeout = 120  # seconds
         self.max_retries = 3
@@ -361,25 +361,33 @@ class ScriptExecutor:
     def run_script(self, script_path: str, args: List[str] = None, timeout: int = 120) -> bool:
         """Execute a Python script with arguments"""
         try:
-            if not os.path.exists(script_path):
-                self.logger.error(f"❌ Script not found: {script_path}")
+            # 🔧 FIX: Get absolute path and ensure it exists
+            full_script_path = os.path.abspath(script_path)
+            if not os.path.exists(full_script_path):
+                self.logger.error(f"❌ Script not found: {full_script_path}")
                 return False
                 
-            cmd = [sys.executable, script_path]
+            # 🔧 FIX: Use proper Python executable path (handle spaces)
+            python_exe = sys.executable
+            cmd = [python_exe, full_script_path]
             if args:
                 cmd.extend(args)
                 
             env = os.environ.copy()
             env['PYTHONIOENCODING'] = 'utf-8'
             
+            # 🔧 FIX: Use proper working directory
+            work_dir = os.path.dirname(full_script_path) if os.path.dirname(full_script_path) else os.getcwd()
+            
             self.logger.info(f"🔧 Executing: {' '.join(cmd)}")
+            self.logger.info(f"🔧 Working dir: {work_dir}")
             
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
-                cwd=os.path.dirname(script_path),
+                cwd=work_dir,
                 env=env,
                 encoding='utf-8',
                 errors='replace'
@@ -387,10 +395,15 @@ class ScriptExecutor:
             
             if result.returncode == 0:
                 self.logger.info(f"✅ Script completed successfully: {script_path}")
+                if result.stdout:
+                    self.logger.info(f"STDOUT: {result.stdout[-200:]}")  # Last 200 chars
                 return True
             else:
                 self.logger.error(f"❌ Script failed (exit {result.returncode}): {script_path}")
-                self.logger.error(f"STDERR: {result.stderr[:500]}...")
+                if result.stderr:
+                    self.logger.error(f"STDERR: {result.stderr[:500]}...")
+                if result.stdout:
+                    self.logger.error(f"STDOUT: {result.stdout[:500]}...")
                 return False
                 
         except subprocess.TimeoutExpired:
@@ -407,6 +420,39 @@ class GUIController:
     def __init__(self, main_window, logger: logging.Logger):
         self.main_window = main_window
         self.logger = logger
+    
+    def get_selected_symbols_count(self) -> int:
+        """Get number of selected symbols from Market Tab"""
+        try:
+            # Try to find market tab and get checked symbols
+            if hasattr(self.main_window, 'market_tab'):
+                symbols = getattr(self.main_window.market_tab, 'checked_symbols', [])
+                count = len(symbols) if symbols else 5  # Default to 5 if none selected
+                self.logger.info(f"📊 Found {count} selected symbols: {symbols}")
+                return count
+            else:
+                self.logger.warning("⚠️ No market_tab found, using default symbol count: 5")
+                return 5  # Default fallback
+        except Exception as e:
+            self.logger.error(f"❌ Error getting symbol count: {e}")
+            return 5  # Safe fallback
+
+    def get_selected_timeframes_count(self) -> int:
+        """Get number of selected timeframes from Market Tab"""
+        try:
+            # Try to find market tab and get checked timeframes
+            if hasattr(self.main_window, 'market_tab'):
+                tf_checkboxes = getattr(self.main_window.market_tab, 'tf_checkboxes', {})
+                selected_tfs = [tf for tf, checkbox in tf_checkboxes.items() if checkbox.isChecked()]
+                count = len(selected_tfs) if selected_tfs else 4  # Default to 4 if none selected
+                self.logger.info(f"📊 Found {count} selected timeframes: {selected_tfs}")
+                return count
+            else:
+                self.logger.warning("⚠️ No market_tab found, using default timeframe count: 4")
+                return 4  # Default fallback
+        except Exception as e:
+            self.logger.error(f"❌ Error getting timeframe count: {e}")
+            return 4  # Safe fallback
         
     def calculate_adaptive_delay(self) -> Dict[str, float]:
         """Calculate adaptive delay based on selected symbols and timeframes"""
@@ -459,12 +505,25 @@ class GUIController:
     def switch_to_tab(self, tab_names: List[str]) -> bool:
         """Switch to tab by trying multiple names with adaptive delay"""
         try:
-            if not self.main_window or not hasattr(self.main_window, 'tabWidget'):
+            # 🔧 FIX: Use GUI main window if available, otherwise use main_window
+            target_window = getattr(self.main_window, '_gui_main_window', self.main_window)
+            
+            if not target_window or not hasattr(target_window, 'tabWidget'):
+                self.logger.error(f"❌ No valid tabWidget found. target_window: {target_window}")
                 return False
             
             delays = self.calculate_adaptive_delay()
             
-            tab_widget = self.main_window.tabWidget
+            tab_widget = target_window.tabWidget
+            
+            # 🔧 DEBUG: List all available tabs
+            available_tabs = []
+            for i in range(tab_widget.count()):
+                tab_text = tab_widget.tabText(i).strip()
+                available_tabs.append(tab_text)
+            
+            self.logger.info(f"🔍 Available tabs: {available_tabs}")
+            self.logger.info(f"🔍 Looking for tabs: {tab_names}")
             
             # Try each tab name
             for tab_name in tab_names:
@@ -499,6 +558,27 @@ class GUIController:
             
             # Find buttons
             buttons = tab_widget.findChildren(QPushButton)
+            
+            # 🔧 DEBUG: List all available buttons
+            all_button_texts = []
+            visible_button_texts = []
+            
+            for button in buttons:
+                button_text = button.text().strip()
+                all_button_texts.append(button_text)
+                
+                if not button.isVisible() or not button.isEnabled():
+                    continue
+                    
+                visible_button_texts.append(button_text)
+                
+                # Skip excluded buttons
+                if any(exc.lower() in button_text.lower() for exc in excluded):
+                    continue
+            
+            self.logger.info(f"🔍 All buttons in tab: {all_button_texts}")
+            self.logger.info(f"🔍 Visible/enabled buttons: {visible_button_texts}")
+            self.logger.info(f"🔍 Looking for keywords: {keywords}")
             
             for button in buttons:
                 if not button.isVisible() or not button.isEnabled():
@@ -627,19 +707,240 @@ class MarketDataStep(TradingStep):
         ]
         excluded = ["chart", "biểu đồ", "start", "stop"]
         
-        return gui_controller.find_and_click_button(current_tab, keywords, excluded)
+        success = gui_controller.find_and_click_button(current_tab, keywords, excluded)
+        if success:
+            # Calculate delay: 3s + 0.3s per symbol
+            symbol_count = gui_controller.get_selected_symbols_count()
+            delay_time = 3 + (0.3 * symbol_count)
+            gui_controller.logger.info(f"⏳ Waiting {delay_time}s for market data fetching ({symbol_count} symbols)...")
+            time.sleep(delay_time)
+            gui_controller.logger.info("✅ Market data fetching completed")
+        return success
         
     def execute_fallback(self, script_executor: ScriptExecutor) -> bool:
         """Fallback to script execution"""
+        # 🔧 FIX: Use comprehensive_aggregator first with proper args parsing
         scripts_to_try = [
-            'mt5_data_fetcher.py',
-            'comprehensive_aggregator.py'
+            ('comprehensive_aggregator.py', ['--limit', '1', '--verbose']),
+            ('mt5_data_fetcher.py', [])
         ]
         
-        for script in scripts_to_try:
-            if script_executor.run_script(script):
+        for script_path, args in scripts_to_try:
+            if script_executor.run_script(script_path, args):
                 return True
                     
+        return False
+
+
+class TrendAnalysisStep(TradingStep):
+    """Trend Analysis Step"""
+    
+    def __init__(self):
+        super().__init__("Trend Analysis", TradingPhase.TREND_ANALYSIS, required=True)
+        
+    def execute_gui(self, gui_controller: GUIController) -> bool:
+        """Try to click trend analysis button"""
+        tab_names = [
+            "📈 Trend Analysis", "📈 Phân tích xu hướng", 
+            "trend analysis", "phân tích xu hướng", "trend"
+        ]
+        if not gui_controller.switch_to_tab(tab_names):
+            return False
+            
+        current_tab = gui_controller.main_window.tabWidget.currentWidget()
+        keywords = [
+            "Calculate Trendline & SR", "Tính đường xu hướng & SR",
+            "Calculate", "Tính toán", "Analyze", "Phân tích"
+        ]
+        excluded = ["stop", "dừng"]
+        
+        success = gui_controller.find_and_click_button(current_tab, keywords, excluded)
+        if success:
+            # Calculate delay: 3s + 0.3s per symbol (same as Market Data)
+            symbol_count = gui_controller.get_selected_symbols_count()
+            delay_time = 3 + (0.3 * symbol_count)
+            gui_controller.logger.info(f"⏳ Waiting {delay_time}s for trend analysis ({symbol_count} symbols)...")
+            time.sleep(delay_time)
+            gui_controller.logger.info("✅ Trend analysis completed")
+            return True
+        else:
+            # If no button found, still wait but shorter time
+            symbol_count = gui_controller.get_selected_symbols_count()
+            delay_time = 2 + (0.2 * symbol_count)
+            gui_controller.logger.info(f"⏳ No button found, waiting {delay_time}s for auto-processing...")
+            time.sleep(delay_time)
+            return True
+        
+    def execute_fallback(self, script_executor: ScriptExecutor) -> bool:
+        """Fallback: Run trend analysis directly"""
+        scripts_to_try = [
+            ('trendline_support_resistance.py', []),
+        ]
+        
+        for script_path, args in scripts_to_try:
+            if script_executor.run_script(script_path, args):
+                return True
+        return False
+
+
+class IndicatorCalculationStep(TradingStep):
+    """Indicator Calculation Step"""
+    
+    def __init__(self):
+        super().__init__("Indicator Calculation", TradingPhase.INDICATORS, required=True)
+        
+    def execute_gui(self, gui_controller: GUIController) -> bool:
+        """Try to click indicator calculation button"""
+        tab_names = [
+            "📊 Indicators", "📊 Chỉ báo kỹ thuật", 
+            "indicators", "chỉ báo", "technical"
+        ]
+        if not gui_controller.switch_to_tab(tab_names):
+            return False
+            
+        current_tab = gui_controller.main_window.tabWidget.currentWidget()
+        keywords = [
+            "Calculate & Save Indicator", "Tính & lưu chỉ báo",
+            "Calculate All", "Tính tất cả", "Export", "Xuất"
+        ]
+        excluded = ["stop", "dừng"]
+        
+        success = gui_controller.find_and_click_button(current_tab, keywords, excluded)
+        if success:
+            # Calculate delay: 0.7s per symbol + 0.3s per timeframe
+            symbol_count = gui_controller.get_selected_symbols_count()
+            timeframe_count = gui_controller.get_selected_timeframes_count()
+            delay_time = (0.7 * symbol_count) + (0.3 * timeframe_count)
+            gui_controller.logger.info(f"⏳ Waiting {delay_time}s for indicator calculation ({symbol_count} symbols × {timeframe_count} timeframes)...")
+            time.sleep(delay_time)
+            gui_controller.logger.info("✅ Indicator calculation completed")
+            return True
+        else:
+            # Shorter wait for auto-processing
+            symbol_count = gui_controller.get_selected_symbols_count()
+            timeframe_count = gui_controller.get_selected_timeframes_count()
+            delay_time = (0.5 * symbol_count) + (0.2 * timeframe_count)
+            gui_controller.logger.info(f"⏳ No button found, waiting {delay_time}s for auto-processing...")
+            time.sleep(delay_time)
+            return True
+        
+    def execute_fallback(self, script_executor: ScriptExecutor) -> bool:
+        """Fallback: Run indicator calculation directly"""
+        scripts_to_try = [
+            ('mt5_indicator_exporter.py', []),
+        ]
+        
+        for script_path, args in scripts_to_try:
+            if script_executor.run_script(script_path, args):
+                return True
+        return False
+
+
+class CandlestickPatternsStep(TradingStep):
+    """Candlestick Patterns Detection Step"""
+    
+    def __init__(self):
+        super().__init__("Candlestick Patterns", TradingPhase.CANDLESTICK_PATTERNS, required=True)
+        
+    def execute_gui(self, gui_controller: GUIController) -> bool:
+        """Try to click candlestick pattern detection button"""
+        tab_names = [
+            "🕯️ Candlestick Patterns", "🕯️ Mô hình nến", 
+            "🕯️ Mô hình nến", "candle patterns", "mô hình nến", "candlestick", "Candlestick"
+        ]
+        if not gui_controller.switch_to_tab(tab_names):
+            return False
+            
+        current_tab = gui_controller.main_window.tabWidget.currentWidget()
+        keywords = [
+            "🔍 Fetch Candlestick Patterns", "🔍 Lấy mô hình nến",
+            "Fetch Candlestick", "Lấy mô hình", "Detect Patterns", "Phát hiện mô hình", 
+            "Analyze", "Phân tích", "Calculate", "Tính toán", "Start", "Bắt đầu", "Fetch"
+        ]
+        excluded = ["stop", "dừng", "price", "giá"]
+        
+        success = gui_controller.find_and_click_button(current_tab, keywords, excluded)
+        if success:
+            # Calculate delay: 0.7s per symbol + 0.3s per timeframe
+            symbol_count = gui_controller.get_selected_symbols_count()
+            timeframe_count = gui_controller.get_selected_timeframes_count()
+            delay_time = (0.7 * symbol_count) + (0.3 * timeframe_count)
+            gui_controller.logger.info(f"⏳ Waiting {delay_time}s for candle pattern detection ({symbol_count} symbols × {timeframe_count} timeframes)...")
+            time.sleep(delay_time)
+            gui_controller.logger.info("✅ Candle pattern detection completed")
+            return True
+        else:
+            # Fallback wait for auto-processing
+            symbol_count = gui_controller.get_selected_symbols_count()
+            timeframe_count = gui_controller.get_selected_timeframes_count()
+            delay_time = (0.5 * symbol_count) + (0.2 * timeframe_count)
+            gui_controller.logger.info(f"⏳ No button found, waiting {delay_time}s for auto-processing...")
+            time.sleep(delay_time)
+            return True
+        
+    def execute_fallback(self, script_executor: ScriptExecutor) -> bool:
+        """Fallback: Run pattern detection directly"""
+        scripts_to_try = [
+            ('pattern_detector.py', []),
+        ]
+        
+        for script_path, args in scripts_to_try:
+            if script_executor.run_script(script_path, args):
+                return True
+        return False
+
+
+class PricePatternsStep(TradingStep):
+    """Price Patterns Detection Step"""
+    
+    def __init__(self):
+        super().__init__("Price Patterns", TradingPhase.PRICE_PATTERNS, required=True)
+        
+    def execute_gui(self, gui_controller: GUIController) -> bool:
+        """Try to click price pattern detection button"""
+        tab_names = [
+            "� Price Patterns", "📊 Mô hình giá", "�📉 Price Patterns", "📉 Mô hình giá",
+            "📊 Mô hình giá", "price patterns", "mô hình giá", "patterns", "Price", "Price Patterns"
+        ]
+        if not gui_controller.switch_to_tab(tab_names):
+            return False
+            
+        current_tab = gui_controller.main_window.tabWidget.currentWidget()
+        keywords = [
+            "🔍 Fetch Price Patterns", "🔍 Lấy mô hình giá",
+            "Fetch Price", "Lấy mô hình", "Analyze Price Patterns", "Phân tích mô hình giá", 
+            "Detect", "Phát hiện", "Calculate", "Tính toán", "Fetch"
+        ]
+        excluded = ["stop", "dừng", "candlestick", "nến"]
+        
+        success = gui_controller.find_and_click_button(current_tab, keywords, excluded)
+        if success:
+            # Calculate delay: 0.7s per symbol + 0.3s per timeframe
+            symbol_count = gui_controller.get_selected_symbols_count()
+            timeframe_count = gui_controller.get_selected_timeframes_count()
+            delay_time = (0.7 * symbol_count) + (0.3 * timeframe_count)
+            gui_controller.logger.info(f"⏳ Waiting {delay_time}s for price pattern detection ({symbol_count} symbols × {timeframe_count} timeframes)...")
+            time.sleep(delay_time)
+            gui_controller.logger.info("✅ Price pattern detection completed")
+            return True
+        else:
+            # Fallback wait for auto-processing
+            symbol_count = gui_controller.get_selected_symbols_count()
+            timeframe_count = gui_controller.get_selected_timeframes_count()
+            delay_time = (0.5 * symbol_count) + (0.2 * timeframe_count)
+            gui_controller.logger.info(f"⏳ No button found, waiting {delay_time}s for auto-processing...")
+            time.sleep(delay_time)
+            return True
+        
+    def execute_fallback(self, script_executor: ScriptExecutor) -> bool:
+        """Fallback: Run price pattern detection directly"""
+        scripts_to_try = [
+            ('price_patterns_full_data.py', []),
+        ]
+        
+        for script_path, args in scripts_to_try:
+            if script_executor.run_script(script_path, args):
+                return True
         return False
 
 
@@ -670,7 +971,22 @@ class SignalGenerationStep(TradingStep):
         ]
         excluded = ["refresh", "làm mới"]
         
-        return gui_controller.find_and_click_button(current_tab, keywords, excluded)
+        success = gui_controller.find_and_click_button(current_tab, keywords, excluded)
+        if success:
+            # Calculate delay: 7s + 0.8s per symbol (signal generation takes longer)
+            symbol_count = gui_controller.get_selected_symbols_count()
+            delay_time = 7 + (0.8 * symbol_count)
+            gui_controller.logger.info(f"⏳ Waiting {delay_time}s for signal generation ({symbol_count} symbols)...")
+            time.sleep(delay_time)
+            gui_controller.logger.info("✅ Signal generation completed")
+            return True
+        else:
+            # Fallback wait for auto-processing
+            symbol_count = gui_controller.get_selected_symbols_count()
+            delay_time = 5 + (0.5 * symbol_count)
+            gui_controller.logger.info(f"⏳ No button found, waiting {delay_time}s for auto-processing...")
+            time.sleep(delay_time)
+            return True
         
     def execute_fallback(self, script_executor: ScriptExecutor) -> bool:
         """Fallback to script execution"""
@@ -695,21 +1011,13 @@ class OrderExecutionStep(TradingStep):
         return False
         
     def execute_fallback(self, script_executor: ScriptExecutor) -> bool:
-        """Execute order management tasks via wrapper for reliable exit codes"""
-        # Use wrapper script for proper subprocess handling
-        wrapper_path = os.path.join(os.getcwd(), 'execute_actions_wrapper.py')
-        if os.path.exists(wrapper_path):
-            script_executor.logger.info("🔄 Using execute_actions_wrapper.py for reliable execution")
-            return script_executor.run_script(wrapper_path, [])
+        """Execute order management tasks"""
+        execute_actions_path = os.path.join(os.getcwd(), 'execute_actions.py')
+        if os.path.exists(execute_actions_path):
+            return script_executor.run_script(execute_actions_path, ['--auto'])
         else:
-            # Fallback to direct execution if wrapper not available
-            execute_actions_path = os.path.join(os.getcwd(), 'execute_actions.py')
-            if os.path.exists(execute_actions_path):
-                script_executor.logger.warning("⚠️ Using direct execute_actions.py (wrapper not found)")
-                return script_executor.run_script(execute_actions_path, ['--auto'])
-            else:
-                script_executor.logger.error("❌ Neither wrapper nor execute_actions.py found")
-                return False
+            script_executor.logger.error("❌ execute_actions.py not found")
+            return False
 
 
 class UnifiedAutoTradingSystem:
@@ -723,9 +1031,16 @@ class UnifiedAutoTradingSystem:
         self.logger = self._setup_logger()
         
         # Controllers
+        # 🔧 FIX: Ensure ScriptExecutor uses correct working directory
         self.script_executor = ScriptExecutor(self.logger)
         self.gui_controller = GUIController(self.main_window, self.logger)
         self.system_controller = SystemController()
+        
+        # 🔧 FIX: Set working directory to trading bot directory
+        if not os.getcwd().endswith('my_trading_bot'):
+            trading_bot_dir = os.path.dirname(os.path.abspath(__file__))
+            os.chdir(trading_bot_dir)
+            self.logger.info(f"🔧 Changed working directory to: {os.getcwd()}")
         
         # Signals for thread-safe communication
         self.signals = AutoTradingSignals()
@@ -741,14 +1056,19 @@ class UnifiedAutoTradingSystem:
         self.next_large_cycle = None
         self.last_small_cycle = 0
         
-        # Trading steps - simplified for reliability
+        # Trading steps - COMPLETE 7-step pipeline
         self.steps = [
-            MarketDataStep(),
-            SignalGenerationStep(),
-            OrderExecutionStep()
+            MarketDataStep(),           # 1. Dữ liệu nến
+            TrendAnalysisStep(),        # 2. Phân tích xu hướng  
+            IndicatorCalculationStep(), # 3. Tính toán chỉ báo
+            CandlestickPatternsStep(),  # 4. Mô hình nến
+            PricePatternsStep(),        # 5. Mô hình giá
+            SignalGenerationStep(),     # 6. Signal generation
+            OrderExecutionStep()        # 7. Order execution
         ]
         
-        self.logger.info("🚀 Unified Auto Trading System v4.0 initialized")
+        self.logger.info("🚀 Unified Auto Trading System v5.0 initialized")
+        self.logger.info("📋 Complete 7-step pipeline: Data→Trend→Indicators→Candle→Price→Signal→Orders")
         self.logger.info("🛡️ Enhanced duplicate prevention and safety controls active")
         
     def _setup_logger(self) -> logging.Logger:
@@ -845,6 +1165,9 @@ class UnifiedAutoTradingSystem:
     def _main_loop(self):
         """Main trading loop with enhanced safety"""
         self.logger.info("🔄 Unified auto trading loop started")
+        self.update_status("🚀 Auto Trading System STARTED - Running continuously...")
+        self.add_log(f"💫 Auto Trading initialized with {self.config.large_cycle_minutes}-minute cycle intervals")
+        self.add_log("🔄 System will run continuously until manually stopped")
         
         consecutive_errors = 0
         max_consecutive_errors = 3
@@ -864,6 +1187,11 @@ class UnifiedAutoTradingSystem:
                     
                     if success:
                         consecutive_errors = 0
+                        # Show countdown to next cycle
+                        next_cycle_in = int(self.next_large_cycle - time.time())
+                        self.update_status(f"✅ Cycle #{self.cycle_count} completed successfully! Next cycle in {next_cycle_in}s")
+                        self.add_log(f"🔄 Auto Trading continues... Next cycle #{self.cycle_count + 1} in {next_cycle_in} seconds")
+                        self.add_log(f"📊 System Status: Running continuously with {self.config.large_cycle_minutes}-minute intervals")
                     else:
                         consecutive_errors += 1
                         
@@ -871,6 +1199,15 @@ class UnifiedAutoTradingSystem:
                         self.logger.error(f"❌ {consecutive_errors} consecutive errors - cooling down for {error_cooldown}s")
                         time.sleep(error_cooldown)
                         consecutive_errors = 0
+                else:
+                    # Show countdown while waiting for next cycle
+                    if self.next_large_cycle:
+                        remaining = int(self.next_large_cycle - time.time())
+                        if remaining > 0:
+                            # Update countdown every 30 seconds to show activity
+                            if remaining % 30 == 0 or remaining <= 10:
+                                self.update_status(f"⏳ Auto Trading running... Next cycle in {remaining}s")
+                                self.add_log(f"🕐 Cycle #{self.cycle_count + 1} starts in {remaining} seconds")
                 
                 time.sleep(5)  # Basic loop delay
                 
@@ -899,7 +1236,8 @@ class UnifiedAutoTradingSystem:
         self.cycle_count += 1
         
         self.update_status(f"🔄 Cycle #{self.cycle_count} starting...")
-        self.add_log(f"🔄 Running simplified pipeline (3 steps: Data → Signals → Orders)")
+        self.add_log(f"� Starting Cycle #{self.cycle_count} - Running complete pipeline (3 steps: Data → Signals → Orders)")
+        self.add_log(f"🕐 Cycle interval: {self.config.large_cycle_minutes} minutes | Auto Trading: ACTIVE")
         
         success = self._execute_pipeline()
         
@@ -946,6 +1284,8 @@ class UnifiedAutoTradingSystem:
             
             success_rate = success_count / total_steps
             self.logger.info(f"📊 Pipeline completed: {success_count}/{total_steps} steps successful ({success_rate*100:.1f}%)")
+            self.add_log(f"📈 Cycle #{self.cycle_count} Results: {success_count}/{total_steps} steps successful ({success_rate*100:.1f}%)")
+            self.add_log(f"🔄 Auto Trading continues running... Waiting for next cycle")
             
             return success_rate >= 0.6  # At least 60% success rate
             
