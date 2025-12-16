@@ -1,4 +1,4 @@
-import glob
+﻿import glob
 import MetaTrader5 as mt5
 import logging
 import time
@@ -15,31 +15,34 @@ import time
 import sys
 import logging
 from dca_lock_manager import DCALockManager
+from utils import get_pip_value, overwrite_json_safely, ensure_directory, auto_cleanup_on_start
+from constants import (
+    MAX_SPREAD_MULTIPLIER,
+    MIN_VOLUME_AUTO,
+    MAX_TOTAL_VOLUME,
+    DCA_LOCK_MAX_AGE_SECONDS,
+    DEFAULT_DCA_DISTANCE_PIPS
+)
 
-# Helper function for pip value calculation
-def get_pip_value(symbol: str) -> float:
-    """Calculate pip value for different symbol types - FIXED for XAUUSD"""
-    symbol_upper = symbol.upper().rstrip('.').replace('_M', '').replace('_m', '')  # 🔧 Normalize all variants
-    
-    # ========== PRECIOUS METALS ==========
-    if symbol_upper in ['XAUUSD', 'XAGUSD', 'GOLD', 'SILVER', 'XPTUSD', 'XPDUSD']:
-        return 0.1   # Metals: 1 pip = 0.1 (Gold: 3881.03 -> 3881.73 = 7 pips)
-    
-    # ========== JPY PAIRS ==========
-    elif 'JPY' in symbol_upper:
-        return 0.01  # JPY pairs: 1 pip = 0.01 (USD/JPY: 147.15 -> 147.22 = 7 pips)
-    
-    # ========== HIGH-VALUE CRYPTO (≥ $1000) ==========
-    elif symbol_upper in ['BTCUSD', 'ETHUSD']:
-        return 1.0   # BTC/ETH: 1 pip = 1.0 (BTC: 65000 -> 65070 = 70 pips)
-    
-    # ========== MID-VALUE CRYPTO ($100-$1000) ==========
-    elif symbol_upper in ['SOLUSD', 'LTCUSD', 'BNBUSD', 'AVAXUSD', 'DOTUSD', 'MATICUSD', 'LINKUSD', 'TRXUSD', 'SHIBUSD', 'ARBUSD', 'OPUSD', 'APEUSD', 'SANDUSD', 'CROUSD', 'FTTUSD']:
-        return 0.1   # SOL/LTC/BNB etc: 1 pip = 0.1 (SOL: 224.06 -> 224.76 = 7 pips)
-    
-    # ========== MAJOR FX PAIRS ==========
-    else:
-        return 0.0001  # Major FX pairs: 1 pip = 0.0001 (EUR/USD: 1.0956 -> 1.0963 = 7 pips)
+# Global executor instance for tracking service access
+_global_executor_instance = None
+
+def _get_app_language():
+    """Get current app language from user config"""
+    try:
+        import pickle
+        config_path = os.path.join(os.getcwd(), 'user_config.pkl')
+        if os.path.exists(config_path):
+            with open(config_path, 'rb') as f:
+                config = pickle.load(f)
+                return config.get('language', 'vi')  # Default to Vietnamese
+    except Exception:
+        pass
+    return 'vi'  # Default to Vietnamese
+
+def get_global_executor_instance():
+    """Get the global executor instance for tracking service"""
+    return _global_executor_instance
 
 # NEW: integrate unified connection manager (singleton)
 try:
@@ -49,31 +52,37 @@ except Exception:  # fallback if minimal env
     MT5ConnectionManager = None  # type: ignore
     mt5 = None  # type: ignore
 
-# 🆕 Import risk manager helpers for OFF settings support
-try:
-    from risk_manager import parse_setting_value, is_setting_enabled
-except ImportError:
-    # Fallback functions if risk_manager not available
-    def parse_setting_value(value, default_value=0.0, setting_name="unknown"):
-        """Fallback parser for OFF settings"""
-        if isinstance(value, str) and value.upper() == "OFF":
-            return None
-        if isinstance(value, (int, float)):
+# 🆕 Global fallback functions for OFF settings support (always available)
+def parse_setting_value(value, default_value=0.0, setting_name="unknown"):
+    """Global parser for OFF settings"""
+    if isinstance(value, str) and value.upper() == "OFF":
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
             return float(value)
-        if isinstance(value, str):
-            try:
-                return float(value)
-            except ValueError:
-                return default_value
-        return default_value
-    
-    def is_setting_enabled(value):
-        """Fallback checker for enabled settings"""
-        if value is None:
-            return False
-        if isinstance(value, str) and value.upper() == "OFF":
-            return False
-        return True
+        except ValueError:
+            return default_value
+    return default_value
+
+def is_setting_enabled(value):
+    """Global checker for enabled settings"""
+    if value is None:
+        return False
+    if isinstance(value, str) and value.upper() == "OFF":
+        return False
+    return True
+
+# 🆕 Import risk manager helpers (with fallback to globals above)
+try:
+    from risk_manager import parse_setting_value as _risk_parse, is_setting_enabled as _risk_enabled  # type: ignore
+    # Override with risk_manager functions if available
+    parse_setting_value = _risk_parse
+    is_setting_enabled = _risk_enabled
+except ImportError:
+    # Use global fallback functions defined above
+    pass
 
 # Market detection helper functions
 def is_crypto_symbol(symbol: str) -> bool:
@@ -95,26 +104,6 @@ def is_market_closed_for_symbol(symbol: str) -> bool:
         return True
         
     return False
-
-# Internal utility functions
-def overwrite_json_safely(file_path: str, data: any, backup: bool = True) -> bool:
-    """Save JSON data safely with backup support"""
-    try:
-        os.makedirs(os.path.dirname(file_path), exist_ok=True)
-        with open(file_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        return True
-    except Exception as e:
-        print(f"Error saving file {file_path}: {e}")
-        return False
-
-def ensure_directory(path: str):
-    """Ensure directory exists"""
-    os.makedirs(path, exist_ok=True)
-
-def auto_cleanup_on_start(directories: list, hours: int = 72):
-    """Auto cleanup on start"""
-    pass
 
 # 🔒 GLOBAL ORDER EXECUTION LOCK to prevent race conditions and duplicate orders
 _GLOBAL_ORDER_LOCK = threading.Lock()
@@ -191,11 +180,11 @@ def get_symbol_fill_type(symbol: str) -> int:
             return mt5.ORDER_FILLING_RETURN
             
         # Default fallback
-        print(f"⚠️ No supported fill type found for {symbol}, using FOK")
+        logger.warning(f"No supported fill type found for {symbol}, using FOK")
         return mt5.ORDER_FILLING_FOK
         
     except Exception as e:
-        print(f"⚠️ Error getting fill type for {symbol}: {e}, using FOK")
+        logger.error(f"Error getting fill type for {symbol}: {e}, using FOK")
         return mt5.ORDER_FILLING_FOK
 
 class OrderType(Enum):
@@ -314,6 +303,14 @@ class ComprehensiveRiskValidator:
             risk_score -= 10
         else:
             passed_checks.append(f"✅ TRADING HOURS: {hours_check['reason']}")
+        
+        # 5.5 📰 NEWS AVOIDANCE CHECK
+        news_check = self._check_news_avoidance(symbol)
+        if not news_check['valid']:
+            violations.append(f"❌ NEWS AVOIDANCE: {news_check['reason']}")
+            risk_score -= 15
+        else:
+            passed_checks.append(f"✅ NEWS AVOIDANCE: {news_check['reason']}")
             
         # 6. 🛡️ EMERGENCY STOPS
         emergency_check = self._check_emergency_stops()
@@ -379,11 +376,9 @@ class ComprehensiveRiskValidator:
     def _check_auto_mode(self) -> Dict[str, Any]:
         """Check auto trading mode like human analysis"""
         enable_auto = self.risk_settings.get('enable_auto_mode', False)
-        trading_mode = self.risk_settings.get('trading_mode', 'Manual')
         
-        # CORRECTED: Auto trading can proceed regardless of risk mode
-        # Risk mode only controls risk parameter adjustment
-        return {'valid': True, 'reason': f'Auto trading allowed in any risk mode (current: {trading_mode}, auto_mode: {enable_auto})'}
+        # Auto trading can proceed regardless of other settings
+        return {'valid': True, 'reason': f'Auto trading enabled (auto_mode: {enable_auto})'}
         
     def _check_signal_confidence(self, confidence: float, is_dca: bool) -> Dict[str, Any]:
         """Check signal confidence thresholds"""
@@ -444,8 +439,9 @@ class ComprehensiveRiskValidator:
                         return {'valid': False, 'reason': f'{symbol} max volume exposure {total_symbol_volume:.2f}/{max_symbol_exposure} lots'}
                 
             return {'valid': True, 'reason': f'Position limits OK: {current_total}/{max_positions} total, {symbol_positions}/{max_per_symbol} for {symbol}'}
-        except:
-            return {'valid': False, 'reason': 'Cannot check positions - MT5 connection issue'}
+        except Exception as e:
+            logger.error(f"Error checking position limits: {e}")
+            return {'valid': False, 'reason': f'Cannot check positions - MT5 connection issue: {e}'}
     
     def _check_duplicate_entry(self, symbol: str, order_type: str) -> Dict[str, Any]:
         """Check for duplicate entry orders to prevent spam"""
@@ -604,26 +600,143 @@ class ComprehensiveRiskValidator:
                 return {'valid': True, 'reason': f'Daily P&L OK: {daily_pnl_percent:.2f}% (limit: -{max_daily_loss}%)'}
             else:
                 return {'valid': True, 'reason': 'No trades today - daily loss check passed'}
-        except:
-            return {'valid': True, 'reason': 'Daily loss check skipped - calculation error'}
+        except Exception as e:
+            logger.warning(f"Error checking daily loss: {e}")
+            return {'valid': True, 'reason': f'Daily loss check skipped - calculation error: {e}'}
             
     def _check_trading_hours(self) -> Dict[str, Any]:
-        """Check trading hours like human analysis"""
+        """Check trading hours with minute precision"""
         start_hour = self.risk_settings.get('trading_hours_start', 0)
+        start_minute = self.risk_settings.get('trading_minutes_start', 0)
         end_hour = self.risk_settings.get('trading_hours_end', 23)
+        end_minute = self.risk_settings.get('trading_minutes_end', 59)
         
-        current_hour = datetime.now().hour
+        now = datetime.now()
+        current_hour = now.hour
+        current_minute = now.minute
         
-        if start_hour <= end_hour:
-            # Normal range (e.g., 8-18)
-            in_hours = start_hour <= current_hour <= end_hour
+        # Convert to total minutes for easier comparison
+        current_total = current_hour * 60 + current_minute
+        start_total = start_hour * 60 + start_minute
+        end_total = end_hour * 60 + end_minute
+        
+        if start_total <= end_total:
+            # Normal range (e.g., 8:00-18:30)
+            in_hours = start_total <= current_total <= end_total
         else:
-            # Overnight range (e.g., 22-6)
-            in_hours = current_hour >= start_hour or current_hour <= end_hour
+            # Overnight range (e.g., 22:00-6:30)
+            in_hours = current_total >= start_total or current_total <= end_total
+        
+        time_str = f'{current_hour:02d}:{current_minute:02d}'
+        range_str = f'{start_hour:02d}:{start_minute:02d}-{end_hour:02d}:{end_minute:02d}'
             
         if not in_hours:
-            return {'valid': False, 'reason': f'Outside trading hours {start_hour}:00-{end_hour}:00, now {current_hour}:00'}
-        return {'valid': True, 'reason': f'Trading hours OK: {current_hour}:00 within {start_hour}:00-{end_hour}:00'}
+            return {'valid': False, 'reason': f'Outside trading hours {range_str}, now {time_str}'}
+        return {'valid': True, 'reason': f'Trading hours OK: {time_str} within {range_str}'}
+    
+    def _check_news_avoidance(self, symbol: str = None) -> Dict[str, Any]:
+        """Check if we should avoid trading due to upcoming/recent news events"""
+        import os
+        import json
+        import glob
+        import pytz
+        
+        # Check if news avoidance is disabled
+        if self.risk_settings.get('disable_news_avoidance', False):
+            return {'valid': True, 'reason': 'News avoidance disabled'}
+        
+        avoid_minutes = self.risk_settings.get('avoid_news_minutes', 0)
+        
+        # If avoid_minutes is 0 or "OFF", skip check
+        if avoid_minutes == 0 or avoid_minutes == "OFF" or str(avoid_minutes).upper() == "OFF":
+            return {'valid': True, 'reason': 'News avoidance is OFF'}
+        
+        try:
+            avoid_minutes = int(avoid_minutes)
+        except (ValueError, TypeError):
+            return {'valid': True, 'reason': 'Invalid avoid_news_minutes value'}
+        
+        try:
+            # Find latest news file (try news_forexfactory first, then recent_news)
+            news_files = glob.glob(os.path.join('news_output', 'news_forexfactory_*.json'))
+            if not news_files:
+                news_files = glob.glob(os.path.join('news_output', 'recent_news_with_actual_*.json'))
+            if not news_files:
+                return {'valid': True, 'reason': 'No news data available'}
+            
+            latest_file = max(news_files, key=os.path.getmtime)
+            
+            with open(latest_file, 'r', encoding='utf-8') as f:
+                news_data = json.load(f)
+            
+            if not news_data:
+                return {'valid': True, 'reason': 'No news events found'}
+            
+            # Get current time in Vietnam timezone
+            vn_tz = pytz.timezone('Asia/Ho_Chi_Minh')
+            now = datetime.now(vn_tz)
+            
+            # Extract currency from symbol for filtering
+            symbol_currency = None
+            if symbol:
+                # Extract currency codes from symbol (e.g., XAUUSD -> USD, EURUSD -> EUR,USD)
+                symbol_upper = symbol.upper().replace('.', '').replace('_', '')
+                currencies = ['USD', 'EUR', 'GBP', 'JPY', 'AUD', 'NZD', 'CAD', 'CHF', 'XAU', 'XAG']
+                symbol_currency = [c for c in currencies if c in symbol_upper]
+            
+            # Check each news event
+            for event in news_data:
+                # Use time_vn_24h for VN timezone (app runs in VN)
+                event_time_str = event.get('time_vn_24h', '') or event.get('time', '')
+                event_currency = event.get('currency', '')
+                event_impact = str(event.get('impact', '')).lower()
+                
+                # Skip low impact events if filtering
+                if event_impact not in ['high', 'medium']:
+                    continue
+                
+                # If symbol provided, only check relevant currencies
+                if symbol_currency and event_currency not in symbol_currency:
+                    continue
+                
+                # Parse event time (time_vn_24h is in HH:MM format)
+                import re
+                # Try 24h format first (HH:MM), then 12h format (H:MMam/pm)
+                m24 = re.match(r'^(\d{1,2}):(\d{2})$', event_time_str)
+                m12 = re.match(r'^(\d{1,2}):(\d{2})(am|pm)$', event_time_str.lower()) if not m24 else None
+                
+                if m24:
+                    h = int(m24.group(1))
+                    mn = int(m24.group(2))
+                elif m12:
+                    h, mn, ap = int(m12.group(1)), int(m12.group(2)), m12.group(3)
+                    if ap == 'pm' and h != 12:
+                        h += 12
+                    if ap == 'am' and h == 12:
+                        h = 0
+                else:
+                    continue  # Skip if can't parse time
+                
+                # Create event datetime for today
+                event_dt = now.replace(hour=h, minute=mn, second=0, microsecond=0)
+                
+                # Calculate time difference in minutes
+                diff_minutes = (event_dt - now).total_seconds() / 60
+                
+                # Check if within avoidance window (before or after)
+                if -avoid_minutes <= diff_minutes <= avoid_minutes:
+                    event_name = event.get('event', 'Unknown event')
+                    time_status = "upcoming" if diff_minutes > 0 else "recent"
+                    return {
+                        'valid': False, 
+                        'reason': f'Avoid trading: {time_status} {event_currency} news "{event_name}" at {event_time_str} (±{avoid_minutes}min window)'
+                    }
+            
+            return {'valid': True, 'reason': f'No high-impact news within ±{avoid_minutes}min'}
+            
+        except Exception as e:
+            logger.warning(f"Error checking news avoidance: {e}")
+            return {'valid': True, 'reason': f'News check error: {e}'}
         
     def _check_emergency_stops(self) -> Dict[str, Any]:
         """Check emergency stops with OFF settings support"""
@@ -652,8 +765,9 @@ class ComprehensiveRiskValidator:
                 if drawdown_percent >= emergency_dd:
                     return {'valid': False, 'reason': f'Emergency stop triggered: DD {drawdown_percent:.2f}% >= {emergency_dd}%'}
                 return {'valid': True, 'reason': f'Emergency stop OK: DD {drawdown_percent:.2f}% < {emergency_dd}%'}
-        except:
-            return {'valid': True, 'reason': 'Emergency stop check skipped - calculation error'}
+        except Exception as e:
+            logger.warning(f"Error checking emergency stop: {e}")
+            return {'valid': True, 'reason': f'Emergency stop check skipped - calculation error: {e}'}
             
         return {'valid': True, 'reason': f'Emergency stop armed at {emergency_dd}% DD'}
         
@@ -694,7 +808,7 @@ class ComprehensiveRiskValidator:
             
             # If max_dca_levels is OFF, allow unlimited DCA
             if not is_setting_enabled(max_dca_levels):
-                print("📴 Max DCA levels is OFF - unlimited DCA allowed")
+                logger.debug("Max DCA levels is OFF - unlimited DCA allowed")
             elif current_dca_count >= max_dca_levels:
                 return {'valid': False, 'reason': f'Max DCA levels reached: {current_dca_count}/{max_dca_levels}'}
                 
@@ -730,8 +844,9 @@ class ComprehensiveRiskValidator:
                 return existing_dca_check
                 
             return {'valid': True, 'reason': f'DCA conditions OK: level {current_dca_count+1}/{max_dca_levels}, DD {drawdown_pips:.1f} pips'}
-        except:
-            return {'valid': False, 'reason': 'DCA condition check failed - calculation error'}
+        except Exception as e:
+            logger.error(f"DCA condition check failed for {symbol}: {e}")
+            return {'valid': False, 'reason': f'DCA condition check failed - calculation error: {e}'}
     
     def _calculate_dca_distance_by_mode(self, symbol: str, current_price: float, entry_price: float) -> float:
         """Calculate DCA distance for ATR and Fixed Pips modes (Fibonacci managed by dca_service.py)"""
@@ -774,42 +889,71 @@ class ComprehensiveRiskValidator:
             dca_mode = self.risk_settings.get("dca_mode", "fixed_pips")
             pip_value = get_pip_value(symbol)
             
+            # 🔍 DEBUG: Log DCA mode
+            logging.info(f"🔍 DCA Mode: '{dca_mode}'")
+            
             # Calculate DCA distance for this level
-            if "ATR" in dca_mode or "atr" in dca_mode.lower():
+            if "ATR" in dca_mode or "atr" in dca_mode.lower() or "Bội số" in dca_mode:
                 # ATR-based DCA spacing
-                atr_multiplier = self.risk_settings.get("dca_atr_multiplier", 2.0)
+                atr_multiplier = self.risk_settings.get("dca_atr_multiplier", 1.0)
+                logging.info(f"🔍 DCA ATR Multiplier from settings: {atr_multiplier}")
+                
                 atr_value = self._get_atr_value(symbol)
+                logging.info(f"🔍 ATR Value loaded for {symbol}: {atr_value}")
+                
                 if atr_value > 0:
+                    # ATR from indicator is ALWAYS in price units
+                    # Convert to pips based on symbol's pip_value
+                    # XAUUSD: pip=0.1 → 21.62 / 0.1 = 216.2 pips
+                    # GBPUSD: pip=0.0001 → 0.00113 / 0.0001 = 11.3 pips
+                    # BTCUSD: pip=10 → 1167.36 / 10 = 116.7 pips
+                    
                     atr_pips = atr_value / pip_value
                     base_distance_pips = atr_pips * atr_multiplier
+                    distance_price = base_distance_pips * pip_value
+                    
+                    logging.info(f"📊 DCA: ATR={atr_value:.5f} → {atr_pips:.1f}pips × {atr_multiplier}x = {base_distance_pips:.1f}pips")
                 else:
+                    logging.warning(f"⚠️ ATR value is 0 or invalid for {symbol}, using fallback")
                     base_distance_pips = self.risk_settings.get("dca_distance_pips", 50.0)
+                    distance_price = base_distance_pips * pip_value
+                    logging.info(f"📏 Fallback: {base_distance_pips} pips = ${distance_price:.2f}")
             else:
                 # Fixed pips mode
+                logging.info(f"📏 Using Fixed Pips mode (not ATR)")
                 base_distance_pips = float(self.risk_settings.get("dca_distance_pips", 50.0))
+                distance_price = base_distance_pips * pip_value
+                logging.info(f"📏 Fixed: {base_distance_pips} pips = ${distance_price:.2f} per level")
             
-            # 🔧 CRITICAL FIX: Calculate distance from last DCA, not cumulative from Entry
-            # Each DCA level should be base_distance from the previous level, not entry
-            distance_price = base_distance_pips * pip_value
+            # 🔧 CRITICAL FIX: ALWAYS calculate from main entry using incremental spacing
+            # Do NOT space from last DCA position as it can pick up old DCA from previous trades
+            # Incremental spacing formula:
+            # Level 1: main_entry ± (distance × 1)
+            # Level 2: main_entry ± (distance × 2)
+            # Level 3: main_entry ± (distance × 3)
             
-            # Get the last DCA position price for accurate spacing
-            last_dca_price = self._get_last_dca_price_for_direction(symbol, direction)
+            cumulative_distance = distance_price * dca_level
             
-            # Calculate DCA entry price from last DCA or main entry
-            if last_dca_price:
-                # Calculate from last DCA position (proper progressive spacing)
-                if direction.upper() == "BUY":
-                    dca_entry_price = last_dca_price - distance_price
-                else:  # SELL
-                    dca_entry_price = last_dca_price + distance_price
-                logging.info(f"🧮 ATR/Fixed DCA L{dca_level}: Last DCA={last_dca_price:.5f} → New DCA={dca_entry_price:.5f} (distance={base_distance_pips:.1f}pips)")
-            else:
-                # Calculate from main entry (first DCA level)
-                if direction.upper() == "BUY":
-                    dca_entry_price = main_entry_price - distance_price
-                else:  # SELL
-                    dca_entry_price = main_entry_price + distance_price
-                logging.info(f"🧮 ATR/Fixed DCA L{dca_level}: Entry={main_entry_price:.5f} → First DCA={dca_entry_price:.5f} (distance={base_distance_pips:.1f}pips)")
+            # � DETAILED LOGGING for debugging
+            logging.info(f"=" * 60)
+            logging.info(f"🧮 DCA CALCULATION BREAKDOWN:")
+            logging.info(f"   Symbol: {symbol}")
+            logging.info(f"   Main Entry: ${main_entry_price:.5f}")
+            logging.info(f"   DCA Level: {dca_level}")
+            logging.info(f"   Direction: {direction}")
+            logging.info(f"   Base Distance per level: ${distance_price:.5f}")
+            logging.info(f"   Cumulative Distance (Level {dca_level}): ${cumulative_distance:.5f}")
+            logging.info(f"      Formula: ${distance_price:.5f} × {dca_level} = ${cumulative_distance:.5f}")
+            
+            if direction.upper() == "BUY":
+                dca_entry_price = main_entry_price - cumulative_distance
+                logging.info(f"   Entry Calculation (BUY): ${main_entry_price:.5f} - ${cumulative_distance:.5f}")
+            else:  # SELL
+                dca_entry_price = main_entry_price + cumulative_distance
+                logging.info(f"   Entry Calculation (SELL): ${main_entry_price:.5f} + ${cumulative_distance:.5f}")
+            
+            logging.info(f"✅ DCA LEVEL {dca_level} FINAL PRICE: ${dca_entry_price:.5f}")
+            logging.info(f"=" * 60)
             
             return dca_entry_price
             
@@ -821,46 +965,52 @@ class ComprehensiveRiskValidator:
     # Fibonacci DCA function removed - use dca_service.py instead
     
     def _get_atr_value(self, symbol: str) -> float:
-        """Get ATR value from indicator data"""
+        """Get ATR value from indicator data files"""
         try:
             import json
             import os
             
-            # Try multiple timeframes for ATR data
-            timeframes = ['M5', 'M15', 'M30', 'H1']
+            # Try H1 timeframe first (most stable for DCA)
+            timeframes = ['H1', 'M30', 'M15']
             
             # Clean symbol - remove trailing dot if exists
             clean_symbol = symbol.rstrip('.')
             
             for tf in timeframes:
-                # Try both original and clean symbol names
+                # Try both original and clean symbol names with multiple patterns
                 for sym in [symbol, clean_symbol]:
-                    indicator_file = f"indicator_output/{sym}._{tf}_indicators.json"
-                    logging.debug(f"Checking ATR file: {indicator_file}")
+                    # Try different filename patterns
+                    patterns = [
+                        f"indicator_output/{sym}_{tf}_indicators.json",  # BNBUSD_m_H1_indicators.json
+                        f"indicator_output/{sym}._{tf}_indicators.json",  # XAUUSD._H1_indicators.json
+                    ]
                     
-                    if os.path.exists(indicator_file):
-                        try:
-                            with open(indicator_file, 'r', encoding='utf-8') as f:
-                                data = json.load(f)
-                                
-                            if data and isinstance(data, list) and len(data) > 0:
-                                # Get latest ATR value
-                                latest_data = data[-1]
-                                
-                                for atr_key in ['ATR14', 'atr', 'ATR', 'ATR_14']:
-                                    if atr_key in latest_data and latest_data[atr_key] is not None:
-                                        atr_value = float(latest_data[atr_key])
-                                        logging.info(f"✅ Found ATR {tf}: {atr_key}={atr_value} for {symbol}")
-                                        return atr_value
-                        except Exception as e:
-                            logging.debug(f"Error reading ATR from {tf}: {e}")
-                            continue
+                    for indicator_file in patterns:
+                        if os.path.exists(indicator_file):
+                            try:
+                                with open(indicator_file, 'r', encoding='utf-8') as f:
+                                    data = json.load(f)
+                                    
+                                if data and isinstance(data, list) and len(data) > 0:
+                                    # Get latest ATR value
+                                    latest_data = data[-1]
+                                    
+                                    # Check for ATR keys
+                                    for atr_key in ['ATR14', 'atr', 'ATR', 'ATR_14']:
+                                        if atr_key in latest_data and latest_data[atr_key] is not None:
+                                            atr_value = float(latest_data[atr_key])
+                                            if atr_value > 0:
+                                                logging.info(f"✅ Found ATR from {indicator_file}: {atr_key}={atr_value:.4f}")
+                                                return atr_value
+                            except Exception as e:
+                                logging.debug(f"Error reading ATR from {indicator_file}: {e}")
+                                continue
                             
-            logging.warning(f"No ATR data found for {symbol} in any timeframe")
+            logging.warning(f"⚠️ No ATR data found for {symbol} in indicator_output folder")
             return 0.0
             
         except Exception as e:
-            logging.error(f"Error getting ATR value: {e}")
+            logging.error(f"❌ Error getting ATR value: {e}")
             return 0.0
     
 
@@ -937,7 +1087,12 @@ class ComprehensiveRiskValidator:
     def _check_volume_settings(self) -> Dict[str, Any]:
         """Check volume settings with OFF support"""
         volume_mode = self.risk_settings.get('volume_mode', 'Khối lượng mặc định')
-        fixed_volume = self.risk_settings.get('fixed_volume_lots', 0.1)
+        
+        # 🔧 FIX: Read correct volume field based on mode
+        if 'cố định' in volume_mode.lower() or 'fixed' in volume_mode.lower():
+            fixed_volume = self.risk_settings.get('fixed_volume_lots', 0.1)
+        else:
+            fixed_volume = self.risk_settings.get('default_volume_lots', 0.1)
         
         # Parse volume limits with OFF support
         min_lot_raw = self.risk_settings.get('min_volume_auto', 0.01)
@@ -1394,34 +1549,29 @@ class ComprehensiveRiskValidator:
             # Get pip value for calculations
             pip_value = self._get_pip_value_for_distance(symbol)
             
+            # Check if symbol is crypto
+            is_crypto = any(crypto in symbol.upper() for crypto in ['BTC', 'ETH', 'SOL', 'ADA', 'BNB', 'XRP', 'LTC', 'DOGE', 'DOT', 'LINK'])
+            
             # DCA level progressive multiplier
             dca_multiplier = 1.0 + (dca_level - 1) * 0.3  # Level 1: 1.0, Level 2: 1.3, Level 3: 1.6, etc.
+            
+            # Initialize price distance variables for crypto ATR mode
+            sl_distance_price = 0
+            tp_distance_price = 0
             
             if use_atr_mode and atr_value > 0:
                 # Use ATR-based calculation
                 sl_atr_multiplier = risk_settings.get('default_sl_atr_multiplier', 2.0)
                 tp_atr_multiplier = risk_settings.get('default_tp_atr_multiplier', 1.5)
                 
-                # Convert ATR to pips
+                # ATR from indicator is ALWAYS in price units
+                # Convert to pips: atr_pips = atr_value / pip_value
                 atr_pips = atr_value / pip_value
-                
-                # Base ATR SL/TP with DCA level adjustment
                 effective_sl_pips = (atr_pips * sl_atr_multiplier) * dca_multiplier
                 effective_tp_pips = (atr_pips * tp_atr_multiplier) * dca_multiplier
-                
-                logger.info(f"🔬 ATR Mode: ATR={atr_pips:.1f}pips, SL={sl_atr_multiplier}x ATR, TP={tp_atr_multiplier}x ATR")
-                
-            else:
-                # Use fixed pip calculation (existing logic)
-                # Base minimums for all DCA positions  
-                min_dca_sl_pips = 50  # Base minimum for all symbols
-                if symbol.endswith('JPY') or 'JPY' in symbol:
-                    min_dca_sl_pips = 80  # Higher minimum for JPY pairs
-                
-                # Calculate effective SL with universal protection
-                effective_sl_pips = max(default_sl_pips, min_dca_sl_pips) * dca_multiplier
-                effective_tp_pips = default_tp_pips * dca_multiplier
-                
+                sl_distance_price = effective_sl_pips * pip_value
+                tp_distance_price = effective_tp_pips * pip_value
+                logger.info(f"📊 SL/TP: ATR={atr_value:.5f} → {atr_pips:.1f}pips, SL={sl_atr_multiplier}x={effective_sl_pips:.1f}pips, TP={tp_atr_multiplier}x={effective_tp_pips:.1f}pips, DCA_mult={dca_multiplier:.1f}x")
                 logger.info(f"📏 Fixed Mode: SL={effective_sl_pips:.1f}pips, TP={effective_tp_pips:.1f}pips")
             
             # Ensure minimum broker requirements  
@@ -1433,12 +1583,23 @@ class ComprehensiveRiskValidator:
             final_tp_pips = effective_tp_pips  # TP doesn't need broker minimum protection
             
             # Calculate SL/TP prices
-            if side.upper() == 'BUY':
-                stop_loss = entry_price - (final_sl_pips * pip_value)
-                take_profit = entry_price + (final_tp_pips * pip_value)
-            else:  # SELL
-                stop_loss = entry_price + (final_sl_pips * pip_value)
-                take_profit = entry_price - (final_tp_pips * pip_value)
+            # 🔧 FIX: For crypto in ATR mode, we already have distance in price units
+            if use_atr_mode and atr_value > 0 and is_crypto:
+                # Crypto ATR mode: Use pre-calculated price distances
+                if side.upper() == 'BUY':
+                    stop_loss = entry_price - sl_distance_price
+                    take_profit = entry_price + tp_distance_price
+                else:  # SELL
+                    stop_loss = entry_price + sl_distance_price
+                    take_profit = entry_price - tp_distance_price
+            else:
+                # Forex or Fixed mode: Use pips * pip_value
+                if side.upper() == 'BUY':
+                    stop_loss = entry_price - (final_sl_pips * pip_value)
+                    take_profit = entry_price + (final_tp_pips * pip_value)
+                else:  # SELL
+                    stop_loss = entry_price + (final_sl_pips * pip_value)
+                    take_profit = entry_price - (final_tp_pips * pip_value)
             
             # Round to symbol digits
             stop_loss = round(stop_loss, symbol_info.digits)
@@ -1539,7 +1700,7 @@ class VolumeCalculator:
             "min_volume_auto": 0.01,  # Updated field name
             "max_total_volume": 10.0,  # Updated field name
             "volume_mode": "Theo rủi ro (Tự động)",
-            "fixed_volume_lots": 0.1,
+            "default_volume_lots": 0.1,  # Fixed field name to match JSON
             "symbol_multipliers": {},
             "symbol_exposure": {},
             "max_positions_per_symbol": 2,
@@ -1594,6 +1755,7 @@ class VolumeCalculator:
                                confidence: float = 1.0, is_dca: bool = False) -> float:
         """
         🎯 Tính volume dựa trên risk percentage
+        Risk được chia đều cho số symbols được chọn
         """
         try:
             # Get risk parameters
@@ -1626,7 +1788,17 @@ class VolumeCalculator:
             
             # Get account balance
             balance = self.get_account_balance()
-            risk_amount = balance * (max_risk_percent / 100.0)
+            
+            # 🔧 NEW: Get number of selected symbols to divide risk equally
+            selected_symbols_count = self.risk_settings.get('selected_symbols_count', 1)
+            if selected_symbols_count <= 0:
+                selected_symbols_count = 1
+            
+            # Calculate risk amount per symbol (chia đều cho số symbols)
+            total_risk_amount = balance * (max_risk_percent / 100.0)
+            risk_amount = total_risk_amount / selected_symbols_count
+            
+            logger.info(f"📊 Risk Allocation: Total {max_risk_percent}% = ${total_risk_amount:.2f} / {selected_symbols_count} symbols = ${risk_amount:.2f} per symbol")
             
             # Apply symbol multiplier if exists
             symbol_multipliers = self.risk_settings.get('symbol_multipliers', {})
@@ -1733,10 +1905,16 @@ class VolumeCalculator:
                 return 0.0  # Block ALL trades regardless of volume mode
             
             volume_mode = self.risk_settings.get('volume_mode', 'Khối lượng mặc định')
-            default_volume = self.risk_settings.get('fixed_volume_lots', 0.05)  # Use proper fallback to match settings
+            
+            # 🔧 FIX: Read correct volume field based on mode
+            if 'cố định' in volume_mode.lower() or 'fixed' in volume_mode.lower():
+                base_volume = self.risk_settings.get('fixed_volume_lots', 0.1)
+            else:
+                base_volume = self.risk_settings.get('default_volume_lots', 0.1)
+            
             max_total_volume_setting = self.risk_settings.get('max_total_volume', 10.0)  # Tổng khối lượng cho TẤT CẢ
             
-            logger.info(f"📊 Volume Settings LOADED: mode='{volume_mode}', default={default_volume}, is_dca={is_dca}")
+            logger.info(f"📊 Volume Settings LOADED: mode='{volume_mode}', base_volume={base_volume}, is_dca={is_dca}")
             logger.info(f"🔍 Current Risk Settings: {dict(list(self.risk_settings.items())[:10])}")  # Debug first 10 items
             if is_dca:
                 logger.info(f"🔄 DCA Level: {dca_level}, volume_multiplier={self.risk_settings.get('dca_volume_multiplier', 1.5)}")
@@ -1795,18 +1973,18 @@ class VolumeCalculator:
                 
             elif 'mặc định' in volume_mode or 'default' in volume_mode.lower():
                 # Khối lượng mặc định - Entry dùng volume mặc định, DCA CÓ SCALE tăng dần
-                volume = default_volume
+                volume = base_volume
                 
                 # Áp dụng progressive DCA scaling nếu là DCA
                 if is_dca and self.risk_settings.get('enable_dca', False):
-                    volume = self._calculate_progressive_dca_volume(default_volume, dca_level)
+                    volume = self._calculate_progressive_dca_volume(base_volume, dca_level)
                     logger.info(f"🔢 Default Mode - Progressive DCA volume (Level {dca_level}): {volume:.3f} lots")
                 else:
                     logger.info(f"📌 Default volume: {volume:.3f} lots")
                 
             elif 'cố định' in volume_mode or 'fixed' in volume_mode.lower():
                 # Khối lượng cố định - Luôn sử dụng volume cố định, KHÔNG scale cho DCA
-                volume = default_volume
+                volume = base_volume
                 
                 if is_dca and self.risk_settings.get('enable_dca', False):
                     logger.info(f"🔧 Fixed DCA volume (Level {dca_level}): {volume:.3f} lots - NO SCALING")
@@ -1825,9 +2003,9 @@ class VolumeCalculator:
                 logger.info(f"🧮 Risk-based volume: {volume:.3f} lots")
                 
             else:
-                # Fallback to default volume
-                logger.warning(f"⚠️ Unknown volume mode '{volume_mode}', using default")
-                volume = default_volume
+                # Fallback to base volume
+                logger.warning(f"⚠️ Unknown volume mode '{volume_mode}', using base volume")
+                volume = base_volume
                 
                 # Xử lý DCA theo chế độ volume
                 if is_dca and self.risk_settings.get('enable_dca', False):
@@ -2041,11 +2219,12 @@ class VolumeCalculator:
                 logger.info(f"📈 Fibonacci DCA Level {dca_level}: {base_volume:.3f} × {multiplier} = {volume:.3f}")
                 
             elif dca_mode in ('atr_multiple', 'Bội số ATR', 'Tự động theo tỷ lệ'):
-                # Progressive ATR scaling: Level 1=1.5x, Level 2=2.25x, Level 3=3.375x...
-                atr_mult = float(self.risk_settings.get('dca_atr_multiplier', 1.5))
-                multiplier = atr_mult ** dca_level
+                # 🔧 FIX: Progressive volume scaling should use dca_volume_multiplier, NOT dca_atr_multiplier
+                # dca_atr_multiplier is for DISTANCE calculation, not volume scaling
+                volume_mult = float(self.risk_settings.get('dca_volume_multiplier', 1.5))
+                multiplier = volume_mult ** dca_level
                 volume = base_volume * multiplier
-                logger.info(f"🎯 ATR Progressive DCA Level {dca_level}: {base_volume:.3f} × {atr_mult}^{dca_level} = {volume:.3f}")
+                logger.info(f"🎯 ATR Mode DCA Level {dca_level}: {base_volume:.3f} × {volume_mult}^{dca_level} = {volume:.3f}")
                 
             else:  # 'fixed_pips', 'Bội số cố định', 'Pips cố định'
                 # Progressive fixed multiplier: Level 1=1.5x, Level 2=2.25x, Level 3=3.375x...
@@ -2182,8 +2361,8 @@ class AdvancedOrderExecutor:
         # 🧮 NEW: Volume Calculator - integrates with risk settings
         self.volume_calculator = VolumeCalculator()
         
-        # 🔧 FIX: Load risk settings for DCA distance access
-        self.risk_settings = self._load_risk_settings()
+        # 🔧 FIX: Use SAME risk settings from VolumeCalculator to ensure consistency
+        self.risk_settings = self.volume_calculator.risk_settings
         
         # 🔒 DCA Lock Manager for race condition prevention
         self.dca_lock_manager = DCALockManager()
@@ -2208,9 +2387,9 @@ class AdvancedOrderExecutor:
         self._session_trade_counter = None
 
         # Risk management
-        self.max_spread_multiplier = 3.0
-        self.min_volume_auto = 0.01  # Updated field name
-        self.max_total_volume = 10.0  # Updated field name
+        self.max_spread_multiplier = MAX_SPREAD_MULTIPLIER
+        self.min_volume_auto = MIN_VOLUME_AUTO  # Updated field name
+        self.max_total_volume = MAX_TOTAL_VOLUME  # Updated field name
 
         # Statistics
         self.stats = {
@@ -2222,15 +2401,20 @@ class AdvancedOrderExecutor:
         }
 
         # 🧹 Cleanup stale locks at startup
-        self.dca_lock_manager.cleanup_stale_locks(max_age_seconds=300)
+        self.dca_lock_manager.cleanup_stale_locks(max_age_seconds=DCA_LOCK_MAX_AGE_SECONDS)
         
         # 🔒 Mark as initialized
         self._initialized = True
+        
+        # Set global instance for tracking service
+        global _global_executor_instance
+        _global_executor_instance = self
         
         logger.info(f"✅ AdvancedOrderExecutor initialized (Magic: {self.magic_number})")
         logger.info(f"🧮 VolumeCalculator integrated with risk settings")
         logger.info(f"🔒 DCA Lock Manager initialized with stale lock cleanup")
         logger.info(f"🔒 Singleton pattern active - preventing duplicate executors")
+        logger.info(f"📊 Global instance set for order tracking service")
 
     @classmethod
     def reset_singleton(cls):
@@ -2247,7 +2431,7 @@ class AdvancedOrderExecutor:
                 with open(settings_path, 'r', encoding='utf-8') as f:
                     settings = json.load(f)
                 
-                dca_distance = settings.get('dca_distance_pips', 50)
+                dca_distance = settings.get('dca_distance_pips', DEFAULT_DCA_DISTANCE_PIPS)
                 logger.info(f"✅ Order Executor: Loaded DCA distance {dca_distance} pips from GUI")
                 return settings
         except Exception as e:
@@ -2374,7 +2558,7 @@ class AdvancedOrderExecutor:
 
     def calculate_universal_dca_protection(self, symbol: str, side: str, entry_price: float, dca_level: int = 1) -> tuple:
         """
-        Calculate DCA protection for ATR and Fixed Pips modes (Fibonacci managed by dca_service.py)
+        🔧 FIXED: Calculate DCA protection using ATR multipliers from risk_settings
         
         Parameters:
         - symbol: Symbol name (e.g., 'GBPJPY', 'XAUUSD', 'BTCUSD')
@@ -2386,36 +2570,85 @@ class AdvancedOrderExecutor:
         - tuple: (stop_loss, take_profit, protection_info)
         """
         try:
-            # Get pip value for calculations
+            import MetaTrader5 as mt5
+            
+            # Get symbol info for proper calculations
+            symbol_info = mt5.symbol_info(symbol)
+            if not symbol_info:
+                logger.error(f"❌ Could not get symbol info for {symbol}")
+                return 0.0, 0.0, {"error": "No symbol info"}
+            
+            # Get ATR value from indicator_output
+            atr_value = self._get_atr_value(symbol)
+            
+            # Check if using ATR mode
+            sltp_mode = self.risk_settings.get('sltp_mode', 'Pips cố định')
+            use_atr_mode = 'ATR' in sltp_mode or 'atr' in sltp_mode.lower() or 'Auto' in sltp_mode
+            
+            # Get pip value
             pip_value = self._get_pip_value_for_distance(symbol)
             
+            # Check if crypto
+            is_crypto = any(crypto in symbol.upper() for crypto in ['BTC', 'ETH', 'SOL', 'ADA', 'BNB', 'XRP', 'LTC', 'DOGE', 'DOT', 'LINK'])
+            
             # DCA level progressive multiplier
-            dca_multiplier = 1.0 + (dca_level - 1) * 0.3
+            dca_multiplier = 1.0 + (dca_level - 1) * 0.3  # Level 1: 1.0, Level 2: 1.3, Level 3: 1.6
             
-            # Base protection levels
-            sl_pips = 50 * dca_multiplier
-            tp_pips = 100 * dca_multiplier
+            # Initialize distance variables
+            sl_distance_price = 0
+            tp_distance_price = 0
             
-            # JPY pairs need larger distances
-            if 'JPY' in symbol:
-                sl_pips *= 1.6
-                tp_pips *= 1.6
+            if use_atr_mode and atr_value > 0:
+                # 🔧 FIX: Use ATR-based calculation
+                sl_atr_multiplier = self.risk_settings.get('default_sl_atr_multiplier', 2.5)
+                tp_atr_multiplier = self.risk_settings.get('default_tp_atr_multiplier', 1.5)
+                
+                # ATR from indicator is ALWAYS in price units - universal conversion
+                atr_pips = atr_value / pip_value
+                effective_sl_pips = (atr_pips * sl_atr_multiplier) * dca_multiplier
+                effective_tp_pips = (atr_pips * tp_atr_multiplier) * dca_multiplier
+                sl_distance_price = effective_sl_pips * pip_value
+                tp_distance_price = effective_tp_pips * pip_value
+                logger.info(f"📊 SL/TP: ATR={atr_value:.5f} → {atr_pips:.1f}pips, SL={sl_atr_multiplier}x={effective_sl_pips:.1f}pips, TP={tp_atr_multiplier}x={effective_tp_pips:.1f}pips, DCA_mult={dca_multiplier:.1f}x")
+            else:
+                # Fixed pip mode
+                default_sl_pips = self.risk_settings.get('default_sl_pips', 150)
+                default_tp_pips = self.risk_settings.get('default_tp_pips', 100)
+                
+                min_dca_sl_pips = 50
+                if 'JPY' in symbol:
+                    min_dca_sl_pips = 80
+                
+                effective_sl_pips = max(default_sl_pips, min_dca_sl_pips) * dca_multiplier
+                effective_tp_pips = default_tp_pips * dca_multiplier
+                logger.info(f"📏 Fixed Mode: SL={effective_sl_pips:.1f}pips, TP={effective_tp_pips:.1f}pips")
             
-            # Calculate actual price levels
-            if side == 'BUY':
-                stop_loss = entry_price - (sl_pips * pip_value)
-                take_profit = entry_price + (tp_pips * pip_value)
+            # Calculate SL/TP prices using price distances
+            # All modes now use: effective_sl_pips * pip_value (which equals sl_distance_price)
+            if side.upper() == 'BUY':
+                stop_loss = entry_price - (effective_sl_pips * pip_value)
+                take_profit = entry_price + (effective_tp_pips * pip_value)
             else:  # SELL
-                stop_loss = entry_price + (sl_pips * pip_value)
-                take_profit = entry_price - (tp_pips * pip_value)
+                stop_loss = entry_price + (effective_sl_pips * pip_value)
+                take_profit = entry_price - (effective_tp_pips * pip_value)
+            
+            # Round to symbol digits
+            stop_loss = round(stop_loss, symbol_info.digits)
+            take_profit = round(take_profit, symbol_info.digits)
             
             protection_info = {
-                'mode': 'DCA_Universal',
-                'sl_pips': sl_pips,
-                'tp_pips': tp_pips,
+                'symbol': symbol,
+                'side': side,
                 'dca_level': dca_level,
-                'dca_multiplier': dca_multiplier
+                'use_atr_mode': use_atr_mode,
+                'atr_value': atr_value if use_atr_mode else None,
+                'dca_multiplier': dca_multiplier,
+                'sl_pips': effective_sl_pips if not (use_atr_mode and is_crypto) else sl_distance_price,
+                'tp_pips': effective_tp_pips if not (use_atr_mode and is_crypto) else tp_distance_price,
+                'pip_value': pip_value
             }
+            
+            logger.info(f"🛡️ DCA Protection ({symbol}) L{dca_level}: SL={stop_loss:.5f}, TP={take_profit:.5f}")
             
             return stop_loss, take_profit, protection_info
             
@@ -2594,16 +2827,35 @@ class AdvancedOrderExecutor:
                         "dca_status": dca_status,
                         "pending_levels": pending_levels
                     }
+                else:
+                    # ✅ Proposed SL is safe - won't interfere with DCA levels
+                    return {
+                        "should_protect": False,
+                        "reason": f"Proposed SL {proposed_sl:.5f} is safe, beyond DCA level at {worst_dca_price:.5f}",
+                        "dca_status": dca_status,
+                        "pending_levels": pending_levels
+                    }
                 
             except Exception as e:
                 logger.error(f"⚠️ Error calculating DCA protection: {e}")
         
-        return {
-            "should_protect": True,
-            "reason": f"DCA enabled with {pending_levels} pending levels",
-            "dca_status": dca_status,
-            "pending_levels": pending_levels
-        }
+        # 🔧 FIX: Only protect if no proposed_sl was provided (can't validate)
+        # If proposed_sl was provided and we got here, validation passed
+        if proposed_sl is None:
+            return {
+                "should_protect": True,
+                "reason": f"DCA enabled with {pending_levels} pending levels - no SL to validate",
+                "dca_status": dca_status,
+                "pending_levels": pending_levels
+            }
+        else:
+            # proposed_sl provided but exception occurred - allow with warning
+            return {
+                "should_protect": False,
+                "reason": f"DCA protection check failed, allowing SL modification",
+                "dca_status": dca_status,
+                "pending_levels": pending_levels
+            }
 
     def get_dca_protection_summary(self, symbols: List[str] = None) -> Dict[str, Any]:
         """Get summary of DCA protection status for reporting"""
@@ -2975,22 +3227,54 @@ class AdvancedOrderExecutor:
             "type_filling": get_symbol_fill_type(signal.symbol)
         }
         
+        # 🔧 CRITICAL FIX: Recalculate SL/TP for DCA orders using current price
+        final_sl = signal.stop_loss
+        final_tp = signal.take_profit
+        
+        # Check if this is a DCA signal - recalculate SL/TP based on current price
+        if hasattr(signal, 'is_dca') and signal.is_dca:
+            try:
+                dca_level = getattr(signal, 'dca_level', 1)
+                direction = signal.action.upper()
+                
+                logger.info(f"🔧 DCA RECALC: Recalculating SL/TP for {signal.symbol} DCA Level {dca_level}")
+                logger.info(f"   Original SL: {signal.stop_loss:.5f}, TP: {signal.take_profit:.5f}")
+                logger.info(f"   Current Price: {price:.5f}")
+                
+                # Use universal DCA protection with current price
+                new_sl, new_tp, protection_info = self.calculate_universal_dca_protection(
+                    symbol=signal.symbol,
+                    side=direction,
+                    entry_price=price,  # Use current price instead of old entry price
+                    dca_level=dca_level
+                )
+                
+                if new_sl > 0 and new_tp > 0:
+                    final_sl = new_sl
+                    final_tp = new_tp
+                    logger.info(f"   ✅ Recalculated SL: {final_sl:.5f}, TP: {final_tp:.5f}")
+                else:
+                    logger.warning(f"   ⚠️ Recalculation failed, using original values")
+                    
+            except Exception as e:
+                logger.warning(f"⚠️ DCA SL/TP recalculation error: {e}, using original values")
+        
         # Re-enable SL/TP with proper validation
-        if signal.stop_loss > 0.0:
+        if final_sl > 0.0:
             # Validate SL against broker requirements
-            validated_sl = self._validate_stop_level(signal.symbol, price, signal.stop_loss, is_stop_loss=True, is_buy=(action_type == mt5.ORDER_TYPE_BUY))
+            validated_sl = self._validate_stop_level(signal.symbol, price, final_sl, is_stop_loss=True, is_buy=(action_type == mt5.ORDER_TYPE_BUY))
             if validated_sl > 0:
                 request["sl"] = validated_sl
             else:
-                logger.warning(f"⚠️ Invalid SL {signal.stop_loss:.5f} for {signal.symbol}, skipping SL")
+                logger.warning(f"⚠️ Invalid SL {final_sl:.5f} for {signal.symbol}, skipping SL")
                 
-        if signal.take_profit > 0.0:
+        if final_tp > 0.0:
             # Validate TP against broker requirements  
-            validated_tp = self._validate_stop_level(signal.symbol, price, signal.take_profit, is_stop_loss=False, is_buy=(action_type == mt5.ORDER_TYPE_BUY))
+            validated_tp = self._validate_stop_level(signal.symbol, price, final_tp, is_stop_loss=False, is_buy=(action_type == mt5.ORDER_TYPE_BUY))
             if validated_tp > 0:
                 request["tp"] = validated_tp
             else:
-                logger.warning(f"⚠️ Invalid TP {signal.take_profit:.5f} for {signal.symbol}, skipping TP")
+                logger.warning(f"⚠️ Invalid TP {final_tp:.5f} for {signal.symbol}, skipping TP")
         
         # Debug log for troubleshooting
         logger.info(f"🔧 Order request created: {request}")
@@ -3273,11 +3557,24 @@ class AdvancedOrderExecutor:
                     logger.info(f"   💬 Comment: {result.comment}")
                     
                     # Store in executed orders
-                    self.executed_orders.append({
+                    executed_order_data = {
                         "signal": signal,
                         "result": result,
-                        "timestamp": datetime.now()
-                    })
+                        "timestamp": datetime.now(),
+                        "ticket": result.order,
+                        "symbol": signal.symbol,
+                        "direction": signal.action,
+                        "volume": result.volume,
+                        "entry_price": result.price,
+                        "is_tracked": True  # Mark for tracking
+                    }
+                    self.executed_orders.append(executed_order_data)
+                    
+                    # 🚀 AUTO NOTIFICATION: Send immediate notification for executed order
+                    try:
+                        self._send_execution_notification(executed_order_data)
+                    except Exception as notif_error:
+                        logger.warning(f"⚠️ Auto notification failed: {notif_error}")
                     
                     return order_result
                 
@@ -3904,7 +4201,7 @@ class AdvancedOrderExecutor:
         try:
             import json as _json
             import os as _os
-            from datetime import datetime as _dt, time as _time
+            from datetime import datetime as _dt, time as _time, timezone as _tz
 
             # �️ PERMANENT DUPLICATE PROTECTION: Enhanced validation before execution
             logger.info("�️ Apply actions with enhanced duplicate protection")
@@ -3934,8 +4231,18 @@ class AdvancedOrderExecutor:
             # Load actions
             try:
                 with open(actions_path, 'r', encoding='utf-8') as f:
-                    actions = (_json.load(f) or {}).get('actions') or []
-                    logger.info(f"📋 Loaded {len(actions)} actions from {actions_path}")
+                    data = _json.load(f)
+                    
+                    # Handle both formats: {"actions": [...]} and [...]
+                    if isinstance(data, list):
+                        actions = data
+                        logger.info(f"📋 Loaded {len(actions)} actions from {actions_path} (array format)")
+                    elif isinstance(data, dict):
+                        actions = data.get('actions', [])
+                        logger.info(f"📋 Loaded {len(actions)} actions from {actions_path} (object format)")
+                    else:
+                        actions = []
+                        logger.warning(f"⚠️ Unexpected JSON format in {actions_path}")
                     
                     # Log action types for debugging
                     for i, action in enumerate(actions):
@@ -3979,7 +4286,7 @@ class AdvancedOrderExecutor:
             trail_sl_pips = parse_setting_value(risk_cfg.get('trail_sl_pips'), 0.0, 'trail_sl_pips')
             require_sl_for_new = bool(risk_cfg.get('require_sl_for_new_trades', False))
             block_if_unprotected = bool(risk_cfg.get('block_new_trades_if_unprotected_positions', False))
-            min_rr = parse_setting_value(risk_cfg.get('min_risk_reward_ratio'), 0.0, 'min_risk_reward_ratio')
+            min_rr = parse_setting_value(risk_cfg.get('min_risk_reward_ratio'), None, 'min_risk_reward_ratio')
             daily_loss_limit_pct = parse_setting_value(risk_cfg.get('daily_loss_limit_percent'), 0.0, 'daily_loss_limit_percent')
             max_daily_new_positions = int(risk_cfg.get('max_daily_new_positions', 0))
             cool_down_minutes = int(risk_cfg.get('cool_down_minutes_after_big_loss', 0))
@@ -3988,7 +4295,7 @@ class AdvancedOrderExecutor:
             allowed_days = set(risk_cfg.get('allowed_days', []))
             block_on_weekend = bool(risk_cfg.get('block_on_weekend', True))
 
-            now = _dt.utcnow()
+            now = _dt.now(_tz.utc)
             weekday_code = ["MON","TUE","WED","THU","FRI","SAT","SUN"][now.weekday()]
 
             # --- Helper functions for advanced risk constraints ---
@@ -4014,9 +4321,24 @@ class AdvancedOrderExecutor:
                 return False
 
             def _is_crypto_symbol(symbol: str) -> bool:
-                """Check if symbol is cryptocurrency (trades 24/7)"""
-                crypto_symbols = ['BTCUSD', 'ETHUSD', 'SOLUSD', 'ADAUSD', 'DOTUSD', 'LINKUSD', 'UNIUSD', 'LTCUSD']
-                return symbol.upper() in crypto_symbols or 'BTC' in symbol.upper() or 'ETH' in symbol.upper()
+                """Check if symbol is cryptocurrency using MT5 symbol info"""
+                try:
+                    symbol_info = mt5.symbol_info(symbol)
+                    if symbol_info and symbol_info.path:
+                        # Check if path contains crypto indicators
+                        path_lower = symbol_info.path.lower()
+                        return 'crypto' in path_lower or 'btc' in path_lower or 'eth' in path_lower
+                    
+                    # Fallback to hardcoded list if MT5 info not available
+                    crypto_symbols = ['BTCUSD', 'ETHUSD', 'BNBUSD', 'SOLUSD', 'ADAUSD', 'DOTUSD', 'LINKUSD', 'UNIUSD', 'LTCUSD']
+                    # Strip suffix (_m, _h, etc.) for crypto detection
+                    symbol_base = symbol.upper().replace('_M', '').replace('_H', '').replace('_MICRO', '')
+                    return symbol_base in crypto_symbols or 'BTC' in symbol.upper() or 'ETH' in symbol.upper() or 'BNB' in symbol.upper() or 'SOL' in symbol.upper() or 'LTC' in symbol.upper()
+                except Exception as e:
+                    # If MT5 call fails, use fallback logic
+                    crypto_symbols = ['BTCUSD', 'ETHUSD', 'BNBUSD', 'SOLUSD', 'ADAUSD', 'DOTUSD', 'LINKUSD', 'UNIUSD', 'LTCUSD']
+                    symbol_base = symbol.upper().replace('_M', '').replace('_H', '').replace('_MICRO', '')
+                    return symbol_base in crypto_symbols or 'BTC' in symbol.upper() or 'ETH' in symbol.upper() or 'BNB' in symbol.upper() or 'SOL' in symbol.upper() or 'LTC' in symbol.upper()
 
             def _is_market_closed_for_symbol(symbol: str) -> bool:
                 """Check if market is closed for specific symbol"""
@@ -4261,7 +4583,7 @@ class AdvancedOrderExecutor:
                 symbol = a.get('symbol')
                 # 🔧 FIX: Support multiple action field names 
                 action = a.get('action') or a.get('action_type') or a.get('primary_action')
-                logger.debug(f"🔍 Processing action: symbol={symbol}, action={action}, action_data={a}")
+                logger.info(f"🔍 Processing action: symbol={symbol}, action={action}")
                 
                 if not symbol or not action:
                     summary["errors"].append({"error": "Missing symbol or action", "data": a})
@@ -4270,7 +4592,7 @@ class AdvancedOrderExecutor:
 
                 # Validate action parameters first
                 is_valid, validation_msg = _validate_action_parameters(action, a)
-                logger.debug(f"🔍 Validation result for {symbol} {action}: valid={is_valid}, msg={validation_msg}")
+                logger.info(f"🔍 Validation result for {symbol} {action}: valid={is_valid}, msg={validation_msg}")
                 
                 if not is_valid:
                     summary["skipped"].append({
@@ -4296,8 +4618,10 @@ class AdvancedOrderExecutor:
                 # Caps should be enforced when opening new trades elsewhere.
 
                 # Handle opening actions before iterating existing positions
+                logger.info(f"🎯 Checking if action '{action}' == 'primary_entry'")
                 if action == 'primary_entry':
                     # Handle new position opening from signal
+                    logger.info(f"🎯 ENTERED primary_entry logic for {symbol}")
                     direction = (a.get('direction') or '').upper()
                     if direction not in ['BUY', 'SELL']:
                         summary['skipped'].append({
@@ -4321,7 +4645,9 @@ class AdvancedOrderExecutor:
                         continue
                     
                     # Smart market hours check - skip forex when market closed but allow crypto 24/7
+                    logger.info(f"🕐 Market hours check for {symbol}: is_closed={_is_market_closed_for_symbol(symbol)}")
                     if _is_market_closed_for_symbol(symbol):
+                        logger.warning(f"🚫 SKIPPED {symbol} primary_entry: market_closed")
                         summary['skipped'].append({
                             "symbol": symbol, 
                             "action": action, 
@@ -4331,22 +4657,40 @@ class AdvancedOrderExecutor:
                         continue
                     
                     # Risk gating for new open - Skip weekend block for crypto symbols
-                    if _weekend_block() and not _is_crypto_symbol(symbol):
+                    is_weekend_block = _weekend_block() and not _is_crypto_symbol(symbol)
+                    is_within_window = _within_time_window()
+                    can_open = _can_open_new(symbol)
+                    cooldown = _cooldown_active()
+                    
+                    logger.info(f"🛡️ Risk gating checks for {symbol}:")
+                    logger.info(f"   - weekend_block: {is_weekend_block}")
+                    logger.info(f"   - within_time_window: {is_within_window}")
+                    logger.info(f"   - daily_loss_block: {daily_loss_block}")
+                    logger.info(f"   - cooldown_active: {cooldown}")
+                    logger.info(f"   - can_open_new: {can_open}")
+                    
+                    if is_weekend_block:
+                        logger.warning(f"🚫 SKIPPED {symbol} primary_entry: weekend block")
                         summary['skipped'].append({"symbol": symbol, "action": action, "reason": "time_block_weekend_or_day"})
                         continue
-                    elif not _within_time_window():
+                    elif not is_within_window:
+                        logger.warning(f"🚫 SKIPPED {symbol} primary_entry: outside time window")
                         summary['skipped'].append({"symbol": symbol, "action": action, "reason": "outside_time_window"})
                         continue
                     elif daily_loss_block:
+                        logger.warning(f"🚫 SKIPPED {symbol} primary_entry: daily loss limit")
                         summary['skipped'].append({"symbol": symbol, "action": action, "reason": "daily_loss_limit"})
                         continue
                     elif _cooldown_active():
+                        logger.warning(f"🚫 SKIPPED {symbol} primary_entry: cooldown active")
                         summary['skipped'].append({"symbol": symbol, "action": action, "reason": "cooldown_active"})
                         continue
                     elif max_daily_new_positions is not None and max_daily_new_positions > 0 and session_data.get('new_positions_opened',0) >= max_daily_new_positions:
+                        logger.warning(f"🚫 SKIPPED {symbol} primary_entry: daily new positions cap")
                         summary['skipped'].append({"symbol": symbol, "action": action, "reason": "daily_new_positions_cap"})
                         continue
                     elif not _can_open_new(symbol):
+                        logger.warning(f"🚫 SKIPPED {symbol} primary_entry: position cap")
                         summary['skipped'].append({"symbol": symbol, "action": action, "reason": "position_cap"})
                         continue
                     
@@ -4354,9 +4698,60 @@ class AdvancedOrderExecutor:
                     entry_price = a.get('entry_price') or a.get('entry')
                     duplicate_found = False
                     
+                    # � FRESH POSITION CHECK: Get live positions to prevent stale data issues
+                    try:
+                        fresh_positions = self.get_open_positions()
+                        fresh_sym_positions = [p for p in fresh_positions if p['symbol'] == symbol]
+                        logger.info(f"🔄 FRESH CHECK {symbol}: Found {len(fresh_sym_positions)} live positions")
+                        
+                        # Log all positions for debugging
+                        if fresh_sym_positions:
+                            for pos in fresh_sym_positions:
+                                logger.info(f"   Position: Ticket={pos.get('ticket')} Type={pos.get('type')} Direction={'BUY' if pos.get('type') == 0 else 'SELL'} Vol={pos.get('volume')}")
+                        
+                        # 🚫 STRICT CHECK: Only block if positions are SAME direction as new signal
+                        if action in ['primary_entry', 'entry', 'new_entry']:
+                            # Filter for same direction positions
+                            same_direction_positions = [
+                                p for p in fresh_sym_positions 
+                                if (p.get('type') == 0 and direction == 'BUY') or (p.get('type') == 1 and direction == 'SELL')
+                            ]
+                            
+                            if same_direction_positions:
+                                # BLOCK: Same direction exists
+                                ticket_list = [str(p.get('ticket', 'Unknown')) for p in same_direction_positions]
+                                logger.warning(f"🚫 DIRECTION BLOCK: {symbol} {direction} entry denied - found {len(same_direction_positions)} existing {direction} position(s) (tickets: {', '.join(ticket_list)})")
+                                summary['skipped'].append({
+                                    "symbol": symbol, 
+                                    "action": action, 
+                                    "reason": "same_direction_position_exists",
+                                    "details": f"Found {len(same_direction_positions)} existing {direction} positions"
+                                })
+                                continue
+                            elif fresh_sym_positions:
+                                # ALLOW: Has positions but opposite direction
+                                logger.info(f"✅ {symbol} {direction} entry ALLOWED - {len(fresh_sym_positions)} existing position(s) are opposite direction")
+                            else:
+                                # ALLOW: No positions at all
+                                logger.info(f"✅ {symbol} {direction} entry ALLOWED - no existing positions")
+                        
+                    except Exception as e:
+                        logger.warning(f"⚠️ Failed fresh position check for {symbol}: {e}")
+                        fresh_sym_positions = sym_positions  # Fallback to cached data
+                    
+                    # �🛡️ LAYER 0: Removed duplicate check (already handled above in FRESH CHECK)
+                    
+                    # 🛡️ LEGACY PRICE-BASED PROTECTION - Only for rapid duplicates
                     if entry_price and sym_positions:
                         for pos in sym_positions:
-                            time_diff = _dt.now().timestamp() - pos.get('time', 0)
+                            # Handle both datetime objects and timestamps
+                            pos_time = pos.get('time', 0)
+                            if hasattr(pos_time, 'timestamp'):  # datetime object
+                                pos_timestamp = pos_time.timestamp()
+                            else:  # assume it's already a timestamp
+                                pos_timestamp = float(pos_time) if pos_time else 0
+                            
+                            time_diff = _dt.now().timestamp() - pos_timestamp
                             price_diff = abs(pos.get('price_open', 0) - float(entry_price))
                             same_direction = (pos.get('type') == 0 and direction == 'BUY') or (pos.get('type') == 1 and direction == 'SELL')
                             
@@ -4475,15 +4870,33 @@ class AdvancedOrderExecutor:
                         summary['skipped'].append({"symbol": symbol, "action": action, "reason": "sl_required"})
                         continue
                     
-                    # Calculate volume
-                    vol = a.get('volume') or a.get('lot')
-                    if vol is None:
-                        if sl > 0:
-                            vol = self.calculate_volume_by_risk(symbol, entry, sl)
-                        else:
-                            vol = self.risk_settings.get('fixed_volume_lots', 0.01)
-                    else:
-                        vol = float(vol)
+                    # Calculate volume - ALWAYS use risk settings instead of JSON volume
+                    try:
+                        # Create temporary signal for volume calculation
+                        temp_signal = TradeSignal(
+                            symbol=symbol,
+                            action=direction,
+                            entry_price=float(entry),
+                            stop_loss=float(sl) if sl > 0 else 0.0,
+                            take_profit=float(tp) if tp > 0 else 0.0,
+                            volume=0.01,  # Temporary volume
+                            confidence=float(confidence),
+                            strategy="PRIMARY_ENTRY",
+                            comment="Entry",
+                            is_dca=False,
+                            dca_level=1
+                        )
+                        
+                        # Use VolumeCalculator to get proper volume from risk settings
+                        volume_calc = VolumeCalculator()
+                        vol = volume_calc.get_volume_for_signal(temp_signal, is_dca=False)
+                        logger.info(f"💰 Primary Entry Volume calculated: {vol:.3f} lots (from risk settings)")
+                        
+                    except Exception as e:
+                        logger.warning(f"⚠️ Primary entry volume calculation failed: {e}")
+                        # Fallback to risk settings default volume
+                        vol = self.risk_settings.get('default_volume_lots', 0.15)
+                        logger.info(f"💰 Primary Entry Volume fallback: {vol:.3f} lots")
                     
                     # Clamp volume to limits (None-safe)
                     vol = max(min_lot or 0.01, min(max_lot or 1.0, vol))
@@ -4783,7 +5196,6 @@ class AdvancedOrderExecutor:
                     # 🔄 DCA ENTRY ACTION: Execute DCA entry order
                     direction = (a.get('direction') or a.get('signal_direction') or '').upper()
                     entry_price = a.get('entry_price') or a.get('price')
-                    volume = a.get('volume') or a.get('lot', 0.01)
                     stop_loss = a.get('stop_loss') or a.get('sl', 0)
                     take_profit = a.get('take_profit') or a.get('tp', 0)
                     confidence = a.get('confidence', 50.0)
@@ -4791,8 +5203,6 @@ class AdvancedOrderExecutor:
                     # Extract DCA level from conditions or direct field
                     conditions = a.get('conditions', {})
                     dca_level = conditions.get('dca_level') or a.get('dca_level', 1)
-                    
-                    logger.info(f"🔄 DCA action debug: symbol={symbol}, direction={direction}, level={dca_level}, volume={volume}")
                     
                     if direction not in ['BUY', 'SELL']:
                         summary['skipped'].append({
@@ -4804,17 +5214,46 @@ class AdvancedOrderExecutor:
                         logger.warning(f"⚠️ DCA entry skipped for {symbol}: Invalid direction '{direction}'")
                         continue
                     
+                    # Create temporary DCA signal for volume calculation
+                    temp_dca_signal = TradeSignal(
+                        symbol=symbol,
+                        action=direction,
+                        entry_price=float(entry_price) if entry_price else 0.0,
+                        stop_loss=float(stop_loss) if stop_loss else 0.0,
+                        take_profit=float(take_profit) if take_profit else 0.0,
+                        volume=0.01,  # Temporary volume for calculation
+                        confidence=float(confidence),
+                        strategy="DCA_ATR",
+                        comment=f"DCA-L{dca_level}",
+                        is_dca=True,
+                        dca_level=dca_level
+                    )
+                    
+                    # Calculate progressive DCA volume using VolumeCalculator
+                    try:
+                        volume_calc = VolumeCalculator()
+                        calculated_volume = volume_calc.get_volume_for_signal(temp_dca_signal, is_dca=True, dca_level=dca_level)
+                        logger.info(f"🧮 DCA Volume calculated: Level-{dca_level} = {calculated_volume:.3f} lots")
+                    except Exception as e:
+                        logger.warning(f"⚠️ DCA volume calculation failed: {e}")
+                        # Fallback to JSON volume with basic progression
+                        json_volume = a.get('volume') or a.get('lot', 0.01)
+                        calculated_volume = float(json_volume) * (1.5 ** (dca_level - 1))
+                        logger.info(f"🔄 DCA Volume fallback: Level-{dca_level} = {calculated_volume:.3f} lots (from {json_volume})")
+                    
                     # Round volume to step alignment
                     try:
                         symbol_info = mt5.symbol_info(symbol)
                         if symbol_info and symbol_info.volume_step > 0:
-                            volume = round(float(volume) / symbol_info.volume_step) * symbol_info.volume_step
+                            volume = round(float(calculated_volume) / symbol_info.volume_step) * symbol_info.volume_step
                         else:
-                            volume = round(float(volume), 2)  # Fallback to 2 decimal places
+                            volume = round(float(calculated_volume), 2)  # Fallback to 2 decimal places
                     except Exception:
-                        volume = round(float(volume), 2)
+                        volume = round(float(calculated_volume), 2)
                     
-                    # Create DCA signal
+                    logger.info(f"🔄 DCA action debug: symbol={symbol}, direction={direction}, level={dca_level}, calculated_volume={volume}")
+                    
+                    # Create final DCA signal with calculated volume
                     dca_signal = TradeSignal(
                         symbol=symbol,
                         action=direction,
@@ -4876,8 +5315,31 @@ class AdvancedOrderExecutor:
                     
                     continue  # Move to next action
 
-                # Apply on each open position of the symbol
-                for pos in sym_positions:
+                # 🎯 TRAILING STOP: Apply only to specific profitable position
+                if action in ('set_trailing_sl', 'enable_trailing_sl'):
+                    # For trailing stop, only apply to the specific position if ticket is specified in action
+                    target_ticket = a.get('ticket')
+                    if target_ticket:
+                        # Find specific position by ticket
+                        target_pos = next((pos for pos in sym_positions if pos['ticket'] == target_ticket), None)
+                        if not target_pos:
+                            summary["skipped"].append({"symbol": symbol, "ticket": target_ticket, "action": action, "reason": "position_not_found"})
+                            logger.warning(f"⚠️ Trailing stop: Position #{target_ticket} not found for {symbol}")
+                            continue
+                        target_positions = [target_pos]
+                    else:
+                        # If no specific ticket, only apply to profitable positions
+                        target_positions = [pos for pos in sym_positions if pos.get('profit', 0) > 0]
+                        if not target_positions:
+                            summary["skipped"].append({"symbol": symbol, "ticket": "all", "action": action, "reason": "no_profitable_positions"})
+                            logger.warning(f"⚠️ Trailing stop: No profitable positions found for {symbol}")
+                            continue
+                else:
+                    # For other actions, apply to all positions as before
+                    target_positions = sym_positions
+
+                # Apply action on target positions
+                for pos in target_positions:
                     ticket = pos['ticket']
                     vol = float(pos['volume'])
                     if (max_lot is not None and vol > max_lot) or (min_lot is not None and vol < min_lot):
@@ -4926,7 +5388,17 @@ class AdvancedOrderExecutor:
                         summary["applied"] += 1 if res.success else 0
                         _log_action_result(action, symbol, ticket, res.success, res.comment or res.error_message)
 
-                    elif action == 'close':
+                    elif action in ('close', 'close_position'):
+                        # Close position (full or opposite signal close)
+                        action_type = a.get('type', '')
+                        action_reason = a.get('reason', 'Position close')
+                        
+                        # Log additional context for opposite signal closes
+                        if 'opposite' in action_type.lower():
+                            profit_pips = a.get('current_profit_pips', 0)
+                            profit_usd = a.get('current_profit_usd', 0)
+                            logger.info(f"🔄 Closing {symbol} #{ticket} due to opposite signal: +{profit_pips:.1f} pips / ${profit_usd:.2f}")
+                        
                         _log_action_start(action, symbol, ticket, f"vol={vol:.3f}")
                         res = self.close_position(ticket=ticket)
                         _inc(action, res.success)
@@ -5120,44 +5592,76 @@ class AdvancedOrderExecutor:
                             summary['skipped'].append({"symbol": symbol, "ticket": ticket, "action": action, "reason": "no_proposed_tp"})
 
                     elif action in ('set_trailing_sl', 'enable_trailing_sl'):
-                        # Set up trailing stop loss based on trailing_config
+                        # 🎯 TWO-STEP TRAILING STOP: Lock profit first, then enable trailing
+                        current_profit = pos.get('profit', 0)
+                        
+                        # 🛡️ SAFETY CHECK: Only apply trailing stop to profitable positions
+                        if current_profit <= 0:
+                            summary['skipped'].append({
+                                "symbol": symbol, 
+                                "ticket": ticket, 
+                                "action": action, 
+                                "reason": "position_not_profitable",
+                                "details": f"Profit: {current_profit:.2f} USD"
+                            })
+                            logger.warning(f"🛡️ Trailing stop skipped for {symbol} #{ticket}: Not profitable (${current_profit:.2f})")
+                            continue
+                        
+                        # STEP 1: Lock profit by moving S/L to move_sl_price (if provided)
+                        move_sl_price = a.get('move_sl_price')
+                        locked_profit_success = False
+                        
+                        if move_sl_price:
+                            logger.info(f"🔒 STEP 1: Lock profit for {symbol} #{ticket} - Moving S/L to {move_sl_price:.5f}")
+                            res = self.modify_order(ticket=ticket, sl=move_sl_price)
+                            _inc(action, res.success)
+                            _log_action_result(action, symbol, ticket, res.success, f"STEP 1: Locked profit S/L: {move_sl_price:.5f} (profit: ${current_profit:.2f})")
+                            locked_profit_success = res.success
+                        else:
+                            logger.warning(f"⚠️ No move_sl_price provided for trailing stop on {symbol} #{ticket}")
+                        
+                        # STEP 2: Register trailing stop with order_daemon
                         trailing_config = a.get('trailing_config') or {}
                         trail_distance_pips = trailing_config.get('trail_distance_pips')
-                        trail_distance = trailing_config.get('trail_distance')
                         
-                        if trail_distance_pips or trail_distance:
-                            # Use pip distance if available, otherwise use price distance
-                            if trail_distance_pips:
-                                sym_info = mt5.symbol_info(symbol)
-                                if sym_info:
-                                    point = sym_info.point or 0.0001
-                                    distance = float(trail_distance_pips) * point
-                                else:
-                                    distance = float(trail_distance) if trail_distance else 0.0001
-                            else:
-                                distance = float(trail_distance)
+                        if trail_distance_pips:
+                            logger.info(f"🎯 STEP 2: Register trailing stop for {symbol} #{ticket} - Distance: {trail_distance_pips} pips")
                             
-                            # Calculate initial trailing SL
-                            current_price = pos['price_current']
-                            if pos['type'] == 'BUY':
-                                initial_sl = current_price - distance
-                                # Only set if better than current SL
-                                if pos.get('sl', 0) == 0 or initial_sl > pos['sl']:
-                                    res = self.modify_order(ticket=ticket, sl=initial_sl)
-                                    _inc(action, res.success)
-                                    _log_action_result(action, symbol, ticket, res.success, f"Trailing SL set: {initial_sl:.5f} (distance: {trail_distance_pips or trail_distance})")
+                            # Add to daemon's trailing config (order_daemon will pick it up)
+                            try:
+                                config_file = 'trailing_stop_config.json'
+                                
+                                # Load existing configs
+                                if os.path.exists(config_file):
+                                    with open(config_file, 'r') as f:
+                                        trailing_configs = json.load(f)
                                 else:
-                                    summary['skipped'].append({"symbol": symbol, "ticket": ticket, "action": action, "reason": "trailing_sl_not_better_than_current"})
-                            else:  # SELL
-                                initial_sl = current_price + distance
-                                # Only set if better than current SL
-                                if pos.get('sl', 0) == 0 or initial_sl < pos['sl']:
-                                    res = self.modify_order(ticket=ticket, sl=initial_sl)
-                                    _inc(action, res.success)
-                                    _log_action_result(action, symbol, ticket, res.success, f"Trailing SL set: {initial_sl:.5f} (distance: {trail_distance_pips or trail_distance})")
+                                    trailing_configs = {}
+                                
+                                # Add new trailing stop config
+                                trailing_configs[str(ticket)] = {
+                                    'symbol': symbol,
+                                    'trail_distance_pips': trail_distance_pips,
+                                    'added_at': datetime.now().isoformat()
+                                }
+                                
+                                # Save configs
+                                with open(config_file, 'w') as f:
+                                    json.dump(trailing_configs, f, indent=2)
+                                
+                                logger.info(f"✅ Trailing stop registered: #{ticket} {symbol} @ {trail_distance_pips} pips")
+                                logger.info(f"💡 order_daemon.py will auto-update S/L every second")
+                                
+                                if locked_profit_success:
+                                    _log_action_result(action, symbol, ticket, True, f"STEP 2: Trailing {trail_distance_pips}p registered (daemon active)")
                                 else:
-                                    summary['skipped'].append({"symbol": symbol, "ticket": ticket, "action": action, "reason": "trailing_sl_not_better_than_current"})
+                                    logger.warning(f"⚠️ Trailing registered but profit lock failed #{ticket}")
+                                    
+                            except Exception as e:
+                                logger.error(f"❌ Failed to register trailing: {e}")
+                                summary['skipped'].append({"symbol": symbol, "ticket": ticket, "action": action, "reason": f"trailing_reg_error: {e}"})
                         else:
+                            logger.warning(f"⚠️ No trail_distance_pips in config for #{ticket}")
                             summary['skipped'].append({"symbol": symbol, "ticket": ticket, "action": action, "reason": "no_trailing_config"})
 
                     elif action in ('trail_sl','trailing_sl'):
@@ -5636,6 +6140,17 @@ class AdvancedOrderExecutor:
             total_errors = len(summary.get('errors', []))
             total_conflicts = len(direction_conflicts)
             
+            # Log skipped actions to file only
+            if summary.get('skipped'):
+                logger.info("="*80)
+                logger.info("🔍 SKIPPED ACTIONS DEBUG:")
+                logger.info("="*80)
+                for skipped_item in summary.get('skipped', []):
+                    logger.info(f"   ❌ {skipped_item.get('symbol', 'Unknown')} - {skipped_item.get('action', 'Unknown')}: {skipped_item.get('reason', 'No reason')}")
+                    if skipped_item.get('details'):
+                        logger.info(f"      Details: {skipped_item.get('details')}")
+                logger.info("="*80)
+            
             logger.info(f"📊 ACTIONS SUMMARY: Total: {total_actions}, Executed: {total_executed}, Skipped: {total_skipped}, Errors: {total_errors}, Conflicts: {total_conflicts}")
 
             return summary
@@ -5769,14 +6284,12 @@ class AdvancedOrderExecutor:
             if not self._validate_connection():
                 return {"success": False, "error": "Connection validation failed"}
             
-            # Signal processing can proceed regardless of risk mode
-            # Risk mode only controls risk parameter adjustment, not signal processing
+            # Signal processing can proceed normally
             risk_settings = self.volume_calculator.risk_settings
             enable_auto_mode = risk_settings.get('enable_auto_mode', False)
-            trading_mode = risk_settings.get('trading_mode', 'Manual')
             
-            logger.info(f"� Risk mode detected: {trading_mode}, auto_mode: {enable_auto_mode}")
-            logger.info("✅ Signal processing will proceed normally regardless of risk mode")
+            logger.info(f"📊 Auto mode: {enable_auto_mode}")
+            logger.info("✅ Signal processing will proceed normally")
             
             # Default signals directory
             if signals_dir is None:
@@ -6919,7 +7432,7 @@ class AdvancedOrderExecutor:
         
         # Fixed Volume (if applicable)
         if 'cố định' in volume_mode or 'Fixed' in volume_mode:
-            print(f"🔧 Fixed Volume: {risk_settings.get('fixed_volume_lots', 0.1)} lots")
+            print(f"🔧 Default Volume: {risk_settings.get('default_volume_lots', 0.1)} lots")
         
         # Position Limits
         print(f"📊 Max Positions: {risk_settings.get('max_positions', 5)}")
@@ -7244,6 +7757,1064 @@ class AdvancedOrderExecutor:
         # ========== FOREX PAIRS ==========
         else:
             return 0.0001  # Major FX pairs: 1 pip = 0.0001 (EUR/USD: 1.0850 -> 1.0857 = 7 pips)
+
+    # 🚀 AUTO NOTIFICATION METHODS
+    def _send_execution_notification(self, executed_order_data: Dict):
+        """Send immediate notification when order is executed"""
+        try:
+            # Debug: Log notification attempt
+            logger.info(f"🔔 Attempting to send execution notification for Ticket #{executed_order_data.get('ticket')}")
+            
+            # Check if auto notification is enabled
+            is_enabled = self._is_auto_notification_enabled()
+            logger.info(f"🔔 Auto notification enabled check: {is_enabled}")
+            
+            if not is_enabled:
+                logger.warning(f"⚠️ Auto notification disabled - Ticket #{executed_order_data.get('ticket')} notification skipped")
+                return
+                
+            from unified_notification_system import UnifiedNotificationSystem
+            notification_service = UnifiedNotificationSystem()
+            
+            # Check notification format setting
+            format_type = self._get_notification_format()
+            logger.info(f"🔔 Notification format: {format_type}")
+            
+            # Format execution message (already includes analysis based on format)
+            message = self._format_execution_message(executed_order_data)
+            
+            logger.info(f"🔔 Message length: {len(message)} characters")
+            logger.info(f"🔔 Full message:\n{message}")
+            logger.info(f"🔔 Message preview: {message[:100]}...")
+            
+            # Send notification
+            success = notification_service.send_real_trade_notification(message)
+            if success:
+                logger.info(f"✅ Execution notification sent successfully: Ticket #{executed_order_data.get('ticket')}")
+                
+                # Start tracking this order for updates
+                self._start_order_tracking(executed_order_data)
+            else:
+                logger.warning(f"❌ Execution notification failed: Ticket #{executed_order_data.get('ticket')} - check notification config")
+                
+        except Exception as e:
+            logger.error(f"❌ Execution notification error: {e}")
+            import traceback
+            logger.error(f"❌ Notification error traceback: {traceback.format_exc()}")
+    
+    def _is_auto_notification_enabled(self) -> bool:
+        """Check if auto notification is enabled"""
+        try:
+            import json
+            import os
+            
+            config_path = os.path.join(os.getcwd(), 'notification_config.json')
+            logger.info(f"🔔 Checking notification config at: {config_path}")
+            
+            if os.path.exists(config_path):
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                
+                # Check if execution results notifications are enabled
+                execution_enabled = config.get('settings', {}).get('send_execution_results', False)
+                logger.info(f"🔔 send_execution_results setting: {execution_enabled}")
+                
+                # Also check if at least one platform is enabled and configured
+                telegram_enabled = config.get('telegram', {}).get('enabled', False)
+                telegram_configured = (config.get('telegram', {}).get('bot_token', '').strip() != '' and 
+                                     config.get('telegram', {}).get('chat_id', '').strip() != '')
+                logger.info(f"🔔 Telegram: enabled={telegram_enabled}, configured={telegram_configured}")
+                
+                # Check other platforms
+                platforms_ready = []
+                if telegram_enabled and telegram_configured:
+                    platforms_ready.append('telegram')
+                
+                # Add other platform checks if needed
+                discord_enabled = config.get('discord', {}).get('enabled', False)
+                if discord_enabled and config.get('discord', {}).get('webhook_url', '').strip():
+                    platforms_ready.append('discord')
+                    
+                slack_enabled = config.get('slack', {}).get('enabled', False)
+                if slack_enabled and config.get('slack', {}).get('webhook_url', '').strip():
+                    platforms_ready.append('slack')
+                
+                result = execution_enabled and len(platforms_ready) > 0
+                logger.info(f"🔔 Auto notification final result: {result} (execution_enabled={execution_enabled}, platforms_ready={platforms_ready})")
+                
+                return result
+            else:
+                logger.warning(f"⚠️ Notification config file not found: {config_path}")
+                return False
+        except Exception as e:
+            logger.debug(f"Error checking auto notification config: {e}")
+            return False
+    
+    def _format_execution_message(self, executed_order_data: Dict) -> str:
+        """Format execution message - Single unified format"""
+        try:
+            signal = executed_order_data.get('signal')
+            result = executed_order_data.get('result')
+            
+            symbol = executed_order_data.get('symbol', 'Unknown')
+            direction = executed_order_data.get('direction', 'Unknown').upper()
+            entry_price = executed_order_data.get('entry_price', 0)
+            ticket = executed_order_data.get('ticket', 0)
+            timestamp = executed_order_data.get('timestamp', 'Unknown')
+            
+            # Get symbol digits for precise formatting like MT5
+            try:
+                import MetaTrader5 as mt5
+                symbol_info = mt5.symbol_info(symbol)
+                digits = symbol_info.digits if symbol_info else 5
+            except:
+                digits = 5  # Default for most currency pairs
+            
+            # Fallback for entry price if it's 0 or missing
+            if entry_price == 0 or entry_price is None:
+                if signal and hasattr(signal, 'entry_price') and signal.entry_price:
+                    entry_price = signal.entry_price
+                elif signal and hasattr(signal, 'price') and signal.price:
+                    entry_price = signal.price
+                elif result and hasattr(result, 'request') and hasattr(result.request, 'price'):
+                    entry_price = result.request.price
+            
+            # Check notification format preference 
+            notification_format = self._get_notification_format_setting()
+            
+            # Determine if this is Entry or DCA
+            comment = executed_order_data.get('comment', '')
+            signal_comment = ''
+            
+            # Check result comment
+            if result and hasattr(result, 'comment'):
+                signal_comment = result.comment
+            
+            # Check if it's DCA from multiple sources
+            is_dca = (
+                'DCA' in comment.upper() or
+                'DCA' in signal_comment.upper() or 
+                (signal and hasattr(signal, 'comment') and 'DCA' in signal.comment.upper()) or
+                (signal and hasattr(signal, 'order_type') and 'DCA' in str(signal.order_type).upper()) or
+                'DCA' in str(ticket)
+            )
+            
+            # Determine DCA level
+            dca_level = self._extract_dca_level(comment, signal_comment, signal)
+            
+            # Format timestamp - simple time format
+            time_str = timestamp.strftime('%H:%M:%S') if hasattr(timestamp, 'strftime') else str(timestamp).split()[-1] if ' ' in str(timestamp) else str(timestamp)
+            
+            # Always use English for execution notifications as requested
+            title_line = "🚨 SIGNAL EXECUTED"
+            
+            # Get volume from various sources
+            volume = executed_order_data.get('volume', 0)
+            if volume == 0 or volume is None:
+                if signal and hasattr(signal, 'volume') and signal.volume:
+                    volume = signal.volume
+                elif result and hasattr(result, 'request') and hasattr(result.request, 'volume'):
+                    volume = result.request.volume
+                else:
+                    volume = 0.1  # Default fallback
+            
+            # Determine order type display - always English
+            if is_dca:
+                order_type_display = f"DCA{dca_level}"
+            else:
+                order_type_display = "Entry Signal"
+
+            # Get confidence from signal
+            confidence = 0
+            if signal and hasattr(signal, 'confidence') and signal.confidence:
+                confidence = signal.confidence
+            elif executed_order_data.get('confidence'):
+                confidence = executed_order_data.get('confidence')
+
+            # Build execution notification - always English format with specified order
+            message_lines = [
+                title_line,
+                f"📊 Symbol: {symbol}",
+                f"📈 Direction: {direction}",
+                f"💰 Entry Price: {entry_price:.{digits}f}"
+            ]
+            
+            # Get SL/TP values
+            stop_loss = None
+            take_profit = None
+            
+            if hasattr(signal, 'stop_loss') and signal.stop_loss:
+                stop_loss = signal.stop_loss
+            elif result and hasattr(result, 'request') and hasattr(result.request, 'sl') and result.request.sl > 0:
+                stop_loss = result.request.sl
+                
+            if hasattr(signal, 'take_profit') and signal.take_profit:
+                take_profit = signal.take_profit
+            elif result and hasattr(result, 'request') and hasattr(result.request, 'tp') and result.request.tp > 0:
+                take_profit = result.request.tp
+            
+            # Add SL/TP in English - in the specified order
+            if stop_loss:
+                message_lines.append(f"🛡️ Stop Loss: {stop_loss:.{digits}f}")
+            if take_profit:
+                message_lines.append(f"🎯 Take Profit: {take_profit:.{digits}f}")
+            
+            # Add volume, order type, confidence, ticket, time in specified order
+            message_lines.extend([
+                f"📦 Volume: {volume:.2f} lots",
+                f"🏷️ Order Type: {order_type_display}"
+            ])
+            
+            # Add confidence if available
+            if confidence > 0:
+                message_lines.append(f"🎯 Confidence: {confidence:.0f}%")
+            
+            # Add ticket and time at the end
+            message_lines.extend([
+                f"🎟️ Ticket: #{ticket}",
+                f"⏰ Time: {time_str}",
+                ""
+            ])
+            
+            # Add technical analysis if full format is selected
+            if notification_format == "full":
+                # Get actual checkbox settings from config
+                analysis_settings = self._get_include_analysis_setting()
+                detailed_analysis = self._get_technical_analysis(symbol, timestamp, analysis_settings)
+                
+                if detailed_analysis:
+                    message_lines.extend(["", detailed_analysis])
+            
+            # Add custom message if enabled
+            custom_message = self._get_custom_message()
+            if custom_message:
+                message_lines.extend(["", custom_message])
+            
+            # Add footer if enabled
+            footer = self._get_branded_footer()
+            if footer:
+                message_lines.extend(["", footer])
+            
+            return "\n".join(message_lines)
+            
+        except Exception as e:
+            logger.error(f"Error formatting execution message: {e}")
+            return f"🚀 Order executed: Ticket #{executed_order_data.get('ticket', 'Unknown')}"
+    
+    def _get_notification_format_setting(self) -> str:
+        """Get notification format setting from config"""
+        try:
+            import json
+            import os
+            
+            config_path = os.path.join(os.getcwd(), 'notification_config.json')
+            if os.path.exists(config_path):
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                
+                return config.get('settings', {}).get('notification_format', 'summary')
+            return 'summary'
+        except Exception as e:
+            logger.debug(f"Error getting notification format setting: {e}")
+            return 'summary'
+    
+    def _get_include_analysis_setting(self) -> dict:
+        """Get detailed checkbox settings from config for report content filtering"""
+        try:
+            import json
+            import os
+            
+            config_path = os.path.join(os.getcwd(), 'notification_config.json')
+            if os.path.exists(config_path):
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                
+                settings = config.get('settings', {})
+                return {
+                    'include_technical': settings.get('include_technical', True),
+                    'include_indicators': settings.get('include_indicators', True),
+                    'include_summary': settings.get('include_summary', True),
+                    'include_candlestick': settings.get('include_candlestick', True),
+                    'include_price_patterns': settings.get('include_price_patterns', True),
+                    'any_enabled': any([
+                        settings.get('include_technical', True),
+                        settings.get('include_indicators', True),
+                        settings.get('include_summary', True),
+                        settings.get('include_candlestick', True),
+                        settings.get('include_price_patterns', True)
+                    ])
+                }
+            return {
+                'include_technical': True,
+                'include_indicators': True, 
+                'include_summary': True,
+                'include_candlestick': True,
+                'include_price_patterns': True,
+                'any_enabled': True
+            }
+        except Exception as e:
+            logger.debug(f"Error getting include analysis settings: {e}")
+            return {
+                'include_technical': True,
+                'include_indicators': True,
+                'include_summary': True, 
+                'include_candlestick': True,
+                'include_price_patterns': True,
+                'any_enabled': True
+            }
+    
+    def _extract_dca_level(self, comment: str, signal_comment: str, signal) -> str:
+        """Extract DCA level from comment or signal"""
+        try:
+            # Check comment for DCA level patterns
+            import re
+            
+            # Pattern: DCA1, DCA_L1, DCA_Level_1, etc.
+            patterns = [
+                r'DCA(\d+)',
+                r'DCA_L(\d+)', 
+                r'DCA_Level_(\d+)',
+                r'DCA.*?(\d+)'
+            ]
+            
+            for pattern in patterns:
+                # Check main comment
+                if comment:
+                    match = re.search(pattern, comment.upper())
+                    if match:
+                        return match.group(1)
+                
+                # Check signal comment
+                if signal_comment:
+                    match = re.search(pattern, signal_comment.upper())
+                    if match:
+                        return match.group(1)
+                        
+                # Check signal attributes
+                if signal and hasattr(signal, 'comment'):
+                    match = re.search(pattern, str(signal.comment).upper())
+                    if match:
+                        return match.group(1)
+            
+            # Default to 1 if DCA but no level found
+            return "1"
+            
+        except Exception as e:
+            logger.debug(f"Error extracting DCA level: {e}")
+            return "1"
+    
+    def _get_technical_analysis(self, symbol: str, timestamp, analysis_settings: dict = None) -> str:
+        """Get technical analysis from report files - simplified version"""
+        try:
+            import os
+            import glob
+            
+            # Look for recent analysis files
+            analysis_dir = os.path.join(os.getcwd(), 'analysis_results')
+            if not os.path.exists(analysis_dir):
+                return ""
+            
+            # Check config for Vietnamese setting
+            is_vietnamese = True  # Default to Vietnamese
+            try:
+                import json
+                config_path = os.path.join(os.getcwd(), 'notification_config.json')
+                if os.path.exists(config_path):
+                    with open(config_path, 'r', encoding='utf-8') as f:
+                        config = json.load(f)
+                    is_vietnamese = config.get('settings', {}).get('format_vietnamese', True)
+            except:
+                pass
+            
+            # Format symbol for file search - handle different formats
+            symbol_patterns = [
+                symbol,  # Original symbol
+                symbol.replace('_m', ''),  # Without _m suffix
+                symbol.replace('.', '_')   # Replace dots with underscores
+            ]
+            
+            report_files = []
+            
+            # Search for report files
+            for sym_pattern in symbol_patterns:
+                if is_vietnamese:
+                    pattern = f"{analysis_dir}/{sym_pattern}*_report_vi_*.txt"
+                else:
+                    pattern = f"{analysis_dir}/{sym_pattern}*_report_en_*.txt"
+                
+                files = glob.glob(pattern)
+                if files:
+                    report_files.extend(files)
+                    break  # Found files for this pattern
+            
+            if not report_files:
+                logger.debug(f"No report files found for symbol: {symbol}")
+                return ""
+            
+            # Get the most recent file
+            latest_file = max(report_files, key=os.path.getmtime)
+            logger.debug(f"Using report file: {os.path.basename(latest_file)}")
+            
+            # Read content
+            with open(latest_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            # Return filtered analysis based on checkbox settings  
+            if analysis_settings and analysis_settings.get('any_enabled', True):
+                return self._filter_analysis_content(content, analysis_settings, is_vietnamese)
+            else:
+                return self._extract_simple_analysis(content, is_vietnamese)
+            
+        except Exception as e:
+            logger.debug(f"Error getting technical analysis: {e}")
+            return ""
+    
+    def _extract_simple_analysis(self, content: str, is_vietnamese: bool) -> str:
+        """Extract simplified technical analysis from report content"""
+        try:
+            lines = content.split('\n')
+            analysis_lines = []
+            
+            if is_vietnamese:
+                analysis_lines.append("📊 PHÂN TÍCH KỸ THUẬT:")
+                
+                # Look for key indicators in Vietnamese
+                for line in lines:
+                    line = line.strip()
+                    # Clean up line - remove leading dashes and extra spaces
+                    if line.startswith('- '):
+                        line = line[2:].strip()
+                    elif line.startswith('• '):
+                        line = line[2:].strip()
+                    
+                    if any(keyword in line.lower() for keyword in ['rsi', 'macd', 'moving average', 'đường trung bình', 'bollinger']):
+                        if line and not line.startswith('---') and len(line) < 200:
+                            analysis_lines.append(f"• {line}")
+                    elif any(keyword in line.lower() for keyword in ['support', 'resistance', 'hỗ trợ', 'kháng cự']):
+                        if line and not line.startswith('---') and len(line) < 200:
+                            analysis_lines.append(f"• {line}")
+                    elif any(keyword in line.lower() for keyword in ['xu hướng', 'trend', 'tăng', 'giảm']):
+                        if line and not line.startswith('---') and len(line) < 200:
+                            analysis_lines.append(f"• {line}")
+                
+                # Add generic analysis if no specific indicators found
+                if len(analysis_lines) == 1:  # Only header
+                    analysis_lines.extend([
+                        "• Chỉ báo kỹ thuật được phân tích",
+                        "• Mức hỗ trợ/kháng cự đã xác định", 
+                        "• Xu hướng thị trường được đánh giá"
+                    ])
+            else:
+                analysis_lines.append("📊 TECHNICAL ANALYSIS:")
+                
+                # Look for key indicators in English
+                for line in lines:
+                    line = line.strip()
+                    if any(keyword in line.lower() for keyword in ['rsi', 'macd', 'moving average', 'bollinger', 'stochastic']):
+                        if line and not line.startswith('---') and len(line) < 200:
+                            analysis_lines.append(f"• {line}")
+                    elif any(keyword in line.lower() for keyword in ['support', 'resistance', 'trend', 'breakout']):
+                        if line and not line.startswith('---') and len(line) < 200:
+                            analysis_lines.append(f"• {line}")
+                
+                # Add generic analysis if no specific indicators found
+                if len(analysis_lines) == 1:  # Only header
+                    analysis_lines.extend([
+                        "• Technical indicators analyzed",
+                        "• Support/resistance levels identified",
+                        "• Market trend evaluated"
+                    ])
+            
+            # Limit to 6 lines total (header + 5 analysis points)
+            if len(analysis_lines) > 6:
+                analysis_lines = analysis_lines[:6]
+            
+            return '\n'.join(analysis_lines)
+            
+        except Exception as e:
+            logger.debug(f"Error extracting simple analysis: {e}")
+            if is_vietnamese:
+                return "📊 PHÂN TÍCH KỸ THUẬT:\n• Phân tích kỹ thuật đã được thực hiện"
+            else:
+                return "📊 TECHNICAL ANALYSIS:\n• Technical analysis completed"
+    
+    def _filter_analysis_content(self, content: str, analysis_settings: dict, is_vietnamese: bool = True) -> str:
+        """Filter analysis content based on checkbox selections - FULL VERSION from app.py"""
+        try:
+            # Check what user wants to include - DEFAULT FALSE to respect user choice
+            include_technical = analysis_settings.get('include_technical', False)
+            include_indicators = analysis_settings.get('include_indicators', False) 
+            include_summary = analysis_settings.get('include_summary', False)
+            include_candlestick = analysis_settings.get('include_candlestick', False)
+            include_price_patterns = analysis_settings.get('include_price_patterns', False)
+            
+            if not any([include_technical, include_indicators, include_summary, include_candlestick, include_price_patterns]):
+                return ""  # Nothing selected
+            
+            sections = []
+            lines = content.split('\n')
+            
+            # Signal info section removed - execution details already shown in header
+            
+            # 🔍 TECHNICAL ANALYSIS - "Phân tích kỹ thuật:" (EXCLUDING indicators)
+            if include_technical:
+                tech_section = []
+                in_tech_section = False
+                
+                for line in lines:
+                    line_lower = line.lower().strip()
+                    
+                    if 'phân tích kỹ thuật:' in line_lower:
+                        in_tech_section = True
+                        tech_section.append('🔍 PHÂN TÍCH KỸ THUẬT:')
+                        continue
+                    elif in_tech_section:
+                        if 'tóm tắt:' in line_lower:
+                            break  # End of section
+                        
+                        # ALWAYS skip indicators sub-section (it will be handled separately)
+                        if 'chỉ báo kỹ thuật:' in line_lower:
+                            # Skip entire indicators sub-section
+                            break  # Stop processing technical analysis here
+                        
+                        # Only include non-indicator lines (trend, support, resistance, etc.)
+                        if line.strip() and not line.strip().startswith('•'):
+                            tech_section.append(line)
+                        elif line.strip() == '':
+                            tech_section.append('')  # Keep empty lines for formatting
+                
+                if tech_section and len(tech_section) > 1:
+                    sections.extend(tech_section + [''])
+            
+            # 📈 TECHNICAL INDICATORS - Extract ONLY bullet points from indicators sub-section
+            if include_indicators:
+                indicator_section = ['📈 CHỈ BÁO KỸ THUẬT:']
+                in_tech_section = False
+                in_indicator_subsection = False
+                
+                for line in lines:
+                    line_lower = line.lower().strip()
+                    
+                    if 'phân tích kỹ thuật:' in line_lower:
+                        in_tech_section = True
+                        continue
+                    elif in_tech_section:
+                        if 'tóm tắt:' in line_lower:
+                            break  # End of technical section
+                        
+                        # Found indicators sub-section
+                        if 'chỉ báo kỹ thuật:' in line_lower:
+                            in_indicator_subsection = True
+                            continue
+                        
+                        # Collect ONLY bullet points and their continuations
+                        if in_indicator_subsection:
+                            if line.strip().startswith('•'):
+                                indicator_section.append(line)
+                            elif line.strip().startswith('→') or line.strip().startswith('–') or (
+                                line.strip() and 
+                                any(keyword in line.lower() for keyword in ['ema', 'dốc', 'xếp chồng', 'ngắn hạn', 'dài hạn', 'trung hạn'])
+                            ):
+                                # Multi-line indicator descriptions
+                                indicator_section.append(line)
+                
+                if len(indicator_section) > 1:  # More than just the header
+                    sections.extend(indicator_section + [''])
+            
+            # 📋 SUMMARY - "Tóm tắt:"
+            if include_summary:
+                summary_section = []
+                in_summary_section = False
+                for line in lines:
+                    line_lower = line.lower().strip()
+                    if line_lower.startswith('tóm tắt:'):
+                        in_summary_section = True
+                        summary_section.append('📋 TÓM TẮT:')
+                        continue
+                    elif in_summary_section:
+                        if line_lower.startswith('- mô hình'):
+                            break  # Next section started
+                        elif line.strip() and line.strip().startswith('-'):  # Summary bullet points
+                            summary_section.append(line)
+                
+                if summary_section and len(summary_section) > 1:
+                    sections.extend(summary_section + [''])
+            
+            # � PRICE PATTERNS - "- Mô hình giá:"
+            if include_price_patterns:
+                price_section = []
+                in_price_section = False
+                for line in lines:
+                    line_lower = line.lower().strip()
+                    if '- mô hình giá:' in line_lower:
+                        in_price_section = True
+                        price_section.append('💹 MÔ HÌNH GIÁ:')
+                        continue
+                    elif in_price_section:
+                        if '- mô hình nến:' in line_lower:
+                            break  # Next section started
+                        elif line.strip() and line.strip().startswith('•'):  # Price pattern bullet points
+                            price_section.append(line)
+                
+                if price_section and len(price_section) > 1:
+                    sections.extend(price_section + [''])
+            
+            # 🕯️ CANDLESTICK PATTERNS - "- Mô hình nến:"
+            if include_candlestick:
+                candle_section = []
+                in_candle_section = False
+                for line in lines:
+                    line_lower = line.lower().strip()
+                    if '- mô hình nến:' in line_lower:
+                        in_candle_section = True
+                        candle_section.append('🕯️ MÔ HÌNH NẾN:')
+                        continue
+                    elif in_candle_section:
+                        if line.strip() and not line.strip().startswith('•'):
+                            break  # End of section
+                        elif line.strip().startswith('•'):  # Candlestick pattern bullet points
+                            candle_section.append(line)
+                
+                if candle_section and len(candle_section) > 1:
+                    sections.extend(candle_section + [''])
+            
+            # Return full analysis without length limit
+            result = '\n'.join(sections)
+            return result
+            
+        except Exception as e:
+            logger.debug(f"Error filtering analysis content: {e}")
+            return ""
+
+
+
+    def _start_order_tracking(self, executed_order_data: Dict):
+        """Start tracking order for updates (SL/TP changes, close, etc.)"""
+        try:
+            # Check if tracking is enabled
+            if not self._is_order_tracking_enabled():
+                return
+                
+            ticket = executed_order_data.get('ticket')
+            if not ticket:
+                return
+                
+            # Store tracking info
+            tracking_info = {
+                'ticket': ticket,
+                'symbol': executed_order_data.get('symbol'),
+                'direction': executed_order_data.get('direction'),
+                'entry_price': executed_order_data.get('entry_price'),
+                'volume': executed_order_data.get('volume'),
+                'start_tracking_time': datetime.now(),
+                'last_update_time': datetime.now(),
+                'last_sl': None,
+                'last_tp': None,
+                'status': 'open'
+            }
+            
+            # Add to tracking list (stored in instance)
+            if not hasattr(self, 'tracked_orders'):
+                self.tracked_orders = {}
+            
+            self.tracked_orders[ticket] = tracking_info
+            logger.info(f"🎯 Started tracking order #{ticket} for updates")
+            
+        except Exception as e:
+            logger.error(f"Error starting order tracking: {e}")
+    
+    def _is_order_tracking_enabled(self) -> bool:
+        """Check if order tracking is enabled"""
+        try:
+            import json
+            import os
+            
+            config_path = os.path.join(os.getcwd(), 'notification_config.json')
+            if os.path.exists(config_path):
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                
+                return config.get('settings', {}).get('track_order_updates', False)
+            return False
+        except Exception as e:
+            logger.debug(f"Error checking order tracking config: {e}")
+            return False
+    
+    def check_tracked_orders_updates(self):
+        """Check for updates on tracked orders (SL/TP changes, close, etc.)"""
+        try:
+            if not hasattr(self, 'tracked_orders') or not self.tracked_orders:
+                return
+            
+            # Import MT5 for position checking
+            import MetaTrader5 as mt5
+            
+            # Check each tracked order
+            for ticket, tracking_info in list(self.tracked_orders.items()):
+                try:
+                    # Get current position info
+                    position = None
+                    positions = mt5.positions_get(ticket=ticket)
+                    if positions and len(positions) > 0:
+                        position = positions[0]
+                    
+                    if position:
+                        # Order is still open - check for SL/TP changes
+                        current_sl = position.sl
+                        current_tp = position.tp
+                        
+                        # Check for SL changes
+                        if tracking_info['last_sl'] != current_sl:
+                            self._send_sl_change_notification(ticket, tracking_info, current_sl)
+                            tracking_info['last_sl'] = current_sl
+                        
+                        # Check for TP changes
+                        if tracking_info['last_tp'] != current_tp:
+                            self._send_tp_change_notification(ticket, tracking_info, current_tp)
+                            tracking_info['last_tp'] = current_tp
+                        
+                        tracking_info['last_update_time'] = datetime.now()
+                        
+                    else:
+                        # Order is closed - send close notification
+                        self._send_order_close_notification(ticket, tracking_info)
+                        
+                        # Remove from tracking
+                        del self.tracked_orders[ticket]
+                        logger.info(f"🏁 Stopped tracking closed order #{ticket}")
+                
+                except Exception as order_error:
+                    logger.debug(f"Error checking order #{ticket}: {order_error}")
+                    continue
+                    
+        except Exception as e:
+            logger.error(f"Error checking tracked orders updates: {e}")
+    
+    def _send_sl_change_notification(self, ticket: int, tracking_info: Dict, new_sl: float):
+        """Send notification when SL changes"""
+        try:
+            if not self._is_sl_tp_notification_enabled():
+                return
+                
+            from unified_notification_system import UnifiedNotificationSystem
+            notification_service = UnifiedNotificationSystem()
+            
+            symbol = tracking_info.get('symbol', 'Unknown')
+            direction = tracking_info.get('direction', 'Unknown')
+            old_sl = tracking_info.get('last_sl', 'None')
+            
+            message = f"🛡️ STOP LOSS CẬP NHẬT!\n\n"
+            message += f"🎫 Ticket: #{ticket}\n"
+            message += f"📊 Symbol: {symbol} ({direction})\n"
+            message += f"🔄 SL: {old_sl} → {new_sl:.5f}\n"
+            message += f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            
+            # Add custom message if enabled
+            custom_message = self._get_custom_message()
+            if custom_message:
+                message += f"\n\n{custom_message}"
+            
+            # Add footer if enabled
+            footer = self._get_branded_footer()
+            if footer:
+                message += f"\n\n{footer}"
+            
+            notification_service.send_real_trade_notification(message)
+            logger.info(f"🔔 SL change notification sent: #{ticket}")
+            
+        except Exception as e:
+            logger.error(f"Error sending SL change notification: {e}")
+    
+    def _send_tp_change_notification(self, ticket: int, tracking_info: Dict, new_tp: float):
+        """Send notification when TP changes"""
+        try:
+            if not self._is_sl_tp_notification_enabled():
+                return
+                
+            from unified_notification_system import UnifiedNotificationSystem
+            notification_service = UnifiedNotificationSystem()
+            
+            symbol = tracking_info.get('symbol', 'Unknown')
+            direction = tracking_info.get('direction', 'Unknown')
+            old_tp = tracking_info.get('last_tp', 'None')
+            
+            message = f"🎯 TAKE PROFIT CẬP NHẬT!\n\n"
+            message += f"🎫 Ticket: #{ticket}\n"
+            message += f"📊 Symbol: {symbol} ({direction})\n"
+            message += f"🔄 TP: {old_tp} → {new_tp:.5f}\n"
+            message += f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            
+            # Add custom message if enabled
+            custom_message = self._get_custom_message()
+            if custom_message:
+                message += f"\n\n{custom_message}"
+            
+            # Add footer if enabled
+            footer = self._get_branded_footer()
+            if footer:
+                message += f"\n\n{footer}"
+            
+            notification_service.send_real_trade_notification(message)
+            logger.info(f"🔔 TP change notification sent: #{ticket}")
+            
+        except Exception as e:
+            logger.error(f"Error sending TP change notification: {e}")
+    
+    def _send_order_close_notification(self, ticket: int, tracking_info: Dict):
+        """Send notification when order is closed"""
+        try:
+            if not self._is_order_close_notification_enabled():
+                return
+                
+            from unified_notification_system import UnifiedNotificationSystem
+            notification_service = UnifiedNotificationSystem()
+            
+            symbol = tracking_info.get('symbol', 'Unknown')
+            direction = tracking_info.get('direction', 'Unknown')
+            entry_price = tracking_info.get('entry_price', 0)
+            volume = tracking_info.get('volume', 0)
+            
+            # Try to get close details from MT5 history
+            close_info = self._get_close_details(ticket)
+            
+            message = f"🏁 LỆNH ĐÃ ĐÓNG!\n\n"
+            message += f"🎫 Ticket: #{ticket}\n"
+            message += f"📊 Symbol: {symbol} ({direction})\n"
+            message += f"💰 Entry: {entry_price:.5f}\n"
+            message += f"📦 Volume: {volume:.2f} lots\n"
+            
+            if close_info:
+                message += f"🔚 Close Price: {close_info.get('close_price', 'Unknown')}\n"
+                message += f"💵 P&L: {close_info.get('profit', 'Unknown')}\n"
+                
+            message += f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            
+            # Add custom message if enabled
+            custom_message = self._get_custom_message()
+            if custom_message:
+                message += f"\n\n{custom_message}"
+            
+            # Add footer if enabled
+            footer = self._get_branded_footer()
+            if footer:
+                message += f"\n\n{footer}"
+            
+            notification_service.send_real_trade_notification(message)
+            logger.info(f"🔔 Order close notification sent: #{ticket}")
+            
+        except Exception as e:
+            logger.error(f"Error sending order close notification: {e}")
+    
+    def _get_close_details(self, ticket: int) -> Dict:
+        """Get close details from MT5 history"""
+        try:
+            import MetaTrader5 as mt5
+            from datetime import datetime, timedelta
+            
+            # Get recent history
+            end_time = datetime.now()
+            start_time = end_time - timedelta(hours=1)  # Last hour
+            
+            deals = mt5.history_deals_get(start_time, end_time, position=ticket)
+            if deals and len(deals) > 0:
+                # Find the close deal (OUT)
+                for deal in deals:
+                    if deal.entry == mt5.DEAL_ENTRY_OUT:
+                        return {
+                            'close_price': deal.price,
+                            'profit': deal.profit,
+                            'close_time': deal.time
+                        }
+            
+            return {}
+        except Exception as e:
+            logger.debug(f"Error getting close details for #{ticket}: {e}")
+            return {}
+    
+    def _is_sl_tp_notification_enabled(self) -> bool:
+        """Check if SL/TP change notifications are enabled"""
+        try:
+            import json
+            import os
+            
+            config_path = os.path.join(os.getcwd(), 'notification_config.json')
+            if os.path.exists(config_path):
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                
+                return config.get('settings', {}).get('notify_sl_tp_changes', False)
+            return False
+        except Exception as e:
+            logger.debug(f"Error checking SL/TP notification config: {e}")
+            return False
+    
+    def _is_order_close_notification_enabled(self) -> bool:
+        """Check if order close notifications are enabled"""
+        try:
+            import json
+            import os
+            
+            config_path = os.path.join(os.getcwd(), 'notification_config.json')
+            if os.path.exists(config_path):
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                
+                return config.get('settings', {}).get('notify_order_close', False)
+            return False
+        except Exception as e:
+            logger.debug(f"Error checking order close notification config: {e}")
+            return False
+    
+    def _get_notification_format(self) -> str:
+        """Get notification format from config (summary/full)"""
+        try:
+            import json
+            import os
+            
+            config_path = os.path.join(os.getcwd(), 'notification_config.json')
+            if os.path.exists(config_path):
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                
+                return config.get('settings', {}).get('notification_format', 'summary')
+            return 'summary'
+        except Exception as e:
+            logger.error(f"Error getting notification format: {e}")
+            return 'summary'
+    
+    def _get_custom_message(self) -> str:
+        """Get custom message from config if enabled"""
+        try:
+            import json
+            import os
+            
+            config_path = os.path.join(os.getcwd(), 'notification_config.json')
+            if os.path.exists(config_path):
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                
+                settings = config.get('settings', {})
+                
+                # Check if custom message is enabled and has content
+                if (settings.get('send_custom_message', False) and 
+                    settings.get('custom_message', '').strip()):
+                    
+                    custom_text = settings.get('custom_message', '').strip()
+                    
+                    # Return only the content without header
+                    return custom_text
+            
+            return ""
+        except Exception as e:
+            logger.debug(f"Error getting custom message: {e}")
+            return ""
+    
+    def _get_branded_footer(self) -> str:
+        """Get branded footer from config if enabled"""
+        try:
+            import json
+            import os
+            
+            config_path = os.path.join(os.getcwd(), 'notification_config.json')
+            if os.path.exists(config_path):
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                
+                branding = config.get('branding', {})
+                settings = config.get('settings', {})
+                
+                # Check if footer is enabled
+                if not branding.get('enable_custom_footer', True):
+                    return ""
+                
+                # Determine language
+                is_vietnamese = settings.get('format_vietnamese', True)
+                
+                # Get values from config
+                if is_vietnamese:
+                    system_name = branding.get('system_name_vi', 'Hệ thống AI VU HIEN CFDs')
+                else:
+                    system_name = branding.get('system_name_en', 'VU HIEN CFDs AI System')
+                
+                phone = branding.get('phone', '+84 39 65 60 888')
+                email = branding.get('email', '')
+                
+                # Build footer
+                footer_parts = [f"🤖 {system_name}"]
+                if phone:
+                    footer_parts.append(f"📱 {phone}")
+                if email:
+                    footer_parts.append(f"📧 {email}")
+                
+                return '\n'.join(footer_parts)
+            
+            return ""
+        except Exception as e:
+            logger.debug(f"Error getting branded footer: {e}")
+            return ""
+    
+    def _get_symbol_analysis(self, symbol: str) -> str:
+        """Get latest technical analysis for symbol"""
+        try:
+            import os
+            import glob
+            from datetime import datetime
+            
+            # Look for latest analysis report
+            analysis_dir = os.path.join(os.getcwd(), 'analysis_results')
+            if not os.path.exists(analysis_dir):
+                return None
+                
+            # Find latest Vietnamese report for the symbol
+            pattern = os.path.join(analysis_dir, f"{symbol}_report_vi_*.txt")
+            files = glob.glob(pattern)
+            
+            if not files:
+                return None
+                
+            # Get the latest file
+            latest_file = max(files, key=os.path.getctime)
+            
+            with open(latest_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+                
+            # Extract key sections - get main signal info and brief analysis
+            lines = content.split('\n')
+            
+            # Find the core signal information
+            signal_info = []
+            in_analysis_section = False
+            
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                    
+                # Get signal basics
+                if any(keyword in line for keyword in ['Tín hiệu:', 'Độ tin cậy:', 'Entry:', 'Stoploss:', 'Takeprofit:']):
+                    signal_info.append(line)
+                
+                # Get key analysis points
+                elif 'Phân tích kỹ thuật:' in line:
+                    in_analysis_section = True
+                    signal_info.append('\n📊 Phân tích:')
+                elif in_analysis_section and line.startswith('- '):
+                    # Add key analysis points (trends, support/resistance)
+                    if any(keyword in line.lower() for keyword in ['xu hướng', 'trendline', 'hỗ trợ', 'kháng cự']):
+                        signal_info.append(line[:80] + ('...' if len(line) > 80 else ''))
+                elif in_analysis_section and line.startswith('Tóm tắt:'):
+                    break  # Stop at summary section
+            
+            # Limit total length for Telegram
+            result = '\n'.join(signal_info[:15])
+            if len(result) > 800:  # Safe limit for Telegram
+                result = result[:800] + '...'
+                
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error getting symbol analysis: {e}")
+            return None
 
 # Legacy compatibility
 class OrderHandler(AdvancedOrderExecutor):

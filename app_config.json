@@ -1,0 +1,8 @@
+{
+  "language": "en",
+  "theme": "light",
+  "trading_mode": "manual",
+  "auto_trading_enabled": false,
+  "notifications_enabled": true,
+  "log_level": "INFO"
+}

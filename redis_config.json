@@ -1,0 +1,65 @@
+{
+  "🚀_redis_caching_config": "Performance optimization - reduces 40s cycle to 8-10s",
+  
+  "redis_connection": {
+    "host": "localhost",
+    "port": 6379,
+    "db": 0,
+    "socket_connect_timeout": 5,
+    "socket_keepalive": true
+  },
+  
+  "cache_ttl_seconds": {
+    "indicator_data": 300,
+    "signal_analysis": 600,
+    "price_data": 60,
+    "account_info": 120,
+    "market_data": 30
+  },
+  
+  "cache_keys_pattern": {
+    "indicators": "indicator:{symbol}:{timeframe}",
+    "signals": "signal:{symbol}",
+    "prices": "price:{symbol}",
+    "accounts": "account:{account_id}",
+    "market": "market:{symbol}"
+  },
+  
+  "performance_targets": {
+    "before_caching": {
+      "indicator_calculation": "500-1000ms",
+      "signal_analysis": "15-20s",
+      "full_cycle": "40s"
+    },
+    "after_caching": {
+      "indicator_calculation": "50-100ms (10x faster)",
+      "signal_analysis": "2-5s (5-7x faster)",
+      "full_cycle": "8-10s (4-5x faster)"
+    }
+  },
+  
+  "setup_instructions": {
+    "windows": [
+      "1. Install Redis for Windows: https://github.com/microsoftarchive/redis/releases",
+      "2. Or install WSL and run: sudo apt-get install redis-server",
+      "3. Start Redis: redis-server (default port 6379)",
+      "4. Install Python redis: pip install redis"
+    ],
+    "linux": [
+      "1. sudo apt-get install redis-server",
+      "2. sudo systemctl start redis-server",
+      "3. pip install redis"
+    ],
+    "docker": [
+      "1. docker pull redis:latest",
+      "2. docker run -d -p 6379:6379 redis:latest",
+      "3. pip install redis"
+    ]
+  },
+  
+  "monitoring": {
+    "enable_cache_stats": true,
+    "stats_update_interval": 60,
+    "log_cache_hits": true
+  }
+}

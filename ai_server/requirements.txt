@@ -1,0 +1,25 @@
+# AI Server Requirements
+# Install: pip install -r ai_server/requirements.txt
+
+# FastAPI Server
+fastapi>=0.104.0
+uvicorn>=0.24.0
+pydantic>=2.0.0
+
+# HTTP Client
+requests>=2.31.0
+
+# PyTorch (CUDA 11.8 for Windows)
+# Uncomment the appropriate line for your CUDA version:
+# torch>=2.1.0+cu118  # CUDA 11.8
+# torch>=2.1.0+cu121  # CUDA 12.1
+# Or install manually: pip install torch --index-url https://download.pytorch.org/whl/cu118
+
+# Transformers & Quantization
+transformers>=4.36.0
+accelerate>=0.25.0
+bitsandbytes>=0.41.0
+
+# Optional: For better performance
+# sentencepiece>=0.1.99
+# protobuf>=4.25.0

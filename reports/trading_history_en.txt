@@ -1,0 +1,135 @@
+===========================================================================
+📊 TRADING HISTORY REPORT
+📅 Generated: 2025-12-17 01:52:38
+===========================================================================
+
+💰 ACCOUNT INFORMATION
+-------------------------------------------------------
+  Account:           #89106420
+  Server:            LiteFinance-MT5-Live
+  Balance:           $   42,271.78
+  Equity:            $   41,977.25
+  Floating P/L:      $     -294.53
+-------------------------------------------------------
+  Total Deposit:     $   25,000.00
+  Total Withdrawal:  $        0.00
+  Net Deposit:       $   25,000.00
+-------------------------------------------------------
+  Realized Profit:   $   17,271.78
+  Profit %:          +       69.09%
+
+📅 TODAY
+Period: 2025-12-17
+-------------------------------------------------------
+  Total Trades:               7
+  Win/Loss:              7 / 0
+  Win Rate:              100.0%
+  Net P/L:           +$     846.90
+  Total Pips:        +     1888.9 pips
+  Profit Factor:           999.99
+  Avg Win:           $     120.99  (+269.8 pips)
+  Avg Loss:          $       0.00  (+0.0 pips)
+  Best Trade:        $     364.20  (+1827.0 pips)
+  Worst Trade:       $       5.10  (+0.0 pips)
+
+  📈 Top Symbols:
+    BNBUSD_m     |    2 trades | +$   472.35 | +    0.0 pips
+    XAUUSD.      |    2 trades | +$   279.15 | + 1827.0 pips
+    SOLUSD_m     |    1 trades | +$    33.50 | +    0.0 pips
+    EURUSD.      |    1 trades | +$    32.40 | +   32.4 pips
+    GBPUSD.      |    1 trades | +$    29.50 | +   29.5 pips
+
+  📋 Recent Closed Positions:
+    2025-12-17 01:22 | XAUUSD.    BUY  0.15  | +$   5.10 | +   0.0p
+    2025-12-17 01:22 | XAUUSD.    BUY  0.15  | +$ 274.05 | +1827.0p
+    2025-12-17 00:59 | GBPUSD.    BUY  0.10  | +$  29.50 | +  29.5p
+    2025-12-17 00:59 | EURUSD.    BUY  0.10  | +$  32.40 | +  32.4p
+    2025-12-17 00:59 | SOLUSD_m   SELL 0.10  | +$  33.50 | +   0.0p
+    2025-12-17 00:59 | BNBUSD_m   SELL 0.22  | +$ 364.20 | +   0.0p
+    2025-12-17 00:59 | BNBUSD_m   SELL 0.15  | +$ 108.15 | +   0.0p
+
+📆 THIS WEEK
+Period: 2025-12-15 to 2025-12-17
+-------------------------------------------------------
+  Total Trades:              24
+  Win/Loss:             14 / 10
+  Win Rate:               58.3%
+  Net P/L:           +$   1,906.58
+  Total Pips:        +    15734.6 pips
+  Profit Factor:             2.84
+  Avg Win:           $     210.16  (+1132.5 pips)
+  Avg Loss:          $     103.57  (+12.0 pips)
+  Best Trade:        $     813.00  (+5420.0 pips)
+  Worst Trade:       $    -171.88  (-120.0 pips)
+
+  📈 Top Symbols:
+    XAUUSD.      |    6 trades | +$ 1,449.75 | +10124.0 pips
+    BNBUSD_m     |   10 trades | +$   409.58 | + 5280.5 pips
+    GBPUSD.      |    3 trades | +$    81.85 | +   82.7 pips
+    EURUSD.      |    2 trades | $     8.60 | +   32.4 pips
+    LTCUSD_m     |    1 trades | $    12.00 |  -120.0 pips
+
+📆 THIS MONTH
+Period: 2025-12
+-------------------------------------------------------
+  Total Trades:             157
+  Win/Loss:             95 / 62
+  Win Rate:               60.5%
+  Net P/L:           +$   4,915.79
+  Total Pips:        +     6906.7 pips
+  Profit Factor:             1.50
+  Avg Win:           $     154.50  (+825.7 pips)
+  Avg Loss:          $     157.45  (+1153.7 pips)
+  Best Trade:        $   1,462.80  (+5420.0 pips)
+  Worst Trade:       $  -1,128.82  (-8100.0 pips)
+
+  📈 Top Symbols:
+    XAUUSD.      |   55 trades | +$ 2,266.71 | +10822.0 pips
+    BNBUSD_m     |   36 trades | +$ 1,953.06 |  -441.2 pips
+    GBPUSD.      |   14 trades | +$   276.31 | +  158.1 pips
+    SOLUSD_m     |   22 trades | +$   242.89 | +   94.0 pips
+    LTCUSD_m     |   13 trades | +$    95.10 |   -11.0 pips
+
+📆 THIS YEAR
+Period: 2025
+-------------------------------------------------------
+  Total Trades:             787
+  Win/Loss:            395 / 386
+  Win Rate:               50.6%
+  Net P/L:           +$  17,271.78
+  Total Pips:        +    41282.7 pips
+  Profit Factor:             1.64
+  Avg Win:           $     113.01  (+732.8 pips)
+  Avg Loss:          $      70.64  (+642.9 pips)
+  Best Trade:        $   1,462.80  (+22953.0 pips)
+  Worst Trade:       $  -1,128.82  (-14019.0 pips)
+
+  📈 Top Symbols:
+    XAUUSD.      |  214 trades | +$12,145.00 | +50820.0 pips
+    BNBUSD_m     |  159 trades | +$ 4,278.41 |  -703.6 pips
+    GBPUSD.      |   56 trades | +$   835.05 | +  449.2 pips
+    SOLUSD_m     |   86 trades | +$   550.83 | -1392.0 pips
+    LTCUSD_m     |   82 trades | +$   306.08 | + 1060.0 pips
+
+📆 ALL TIME
+Period: Last 365 days
+-------------------------------------------------------
+  Total Trades:             787
+  Win/Loss:            395 / 386
+  Win Rate:               50.6%
+  Net P/L:           +$  17,271.78
+  Total Pips:        +    41282.7 pips
+  Profit Factor:             1.64
+  Avg Win:           $     113.01  (+732.8 pips)
+  Avg Loss:          $      70.64  (+642.9 pips)
+  Best Trade:        $   1,462.80  (+22953.0 pips)
+  Worst Trade:       $  -1,128.82  (-14019.0 pips)
+
+  📈 Top Symbols:
+    XAUUSD.      |  214 trades | +$12,145.00 | +50820.0 pips
+    BNBUSD_m     |  159 trades | +$ 4,278.41 |  -703.6 pips
+    GBPUSD.      |   56 trades | +$   835.05 | +  449.2 pips
+    SOLUSD_m     |   86 trades | +$   550.83 | -1392.0 pips
+    LTCUSD_m     |   82 trades | +$   306.08 | + 1060.0 pips
+
+===========================================================================

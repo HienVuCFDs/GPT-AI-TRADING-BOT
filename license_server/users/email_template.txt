@@ -1,0 +1,163 @@
+﻿def send_activation_code_email(user, activation_code, language='vi'):
+    """Gui email chua ma kich hoat cho user - Ho tro song ngu"""
+    from django.core.mail import send_mail
+    from django.conf import settings
+    import threading
+
+    if language == 'en':
+        subject = 'Activation Code - Trading Bot'
+        message = f'''
+Hello {user.first_name or user.username},
+
+Thank you for registering Trading Bot!
+
+Here is your activation code:
+
+    ACTIVATION CODE: {activation_code.code}
+
+This code is valid for {activation_code.trial_days} days trial.
+
+Activation instructions:
+1. Open Trading Bot application
+2. Enter the activation code in the input field
+3. Click "Activate" button
+
+Note: This code can only be used {activation_code.max_uses} time(s).
+
+If you need support, please contact Admin.
+
+Best regards,
+Trading Bot Team
+        '''
+
+        html_message = f'''
+        <html>
+        <head><meta charset="UTF-8"></head>
+        <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+            <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
+                <h2 style="color: #4CAF50;">Activation Code - Trading Bot</h2>
+
+                <p>Hello <strong>{user.first_name or user.username}</strong>,</p>
+
+                <p>Thank you for registering Trading Bot!</p>
+
+                <div style="background: linear-gradient(135deg, #4CAF50, #2E7D32); padding: 25px; border-radius: 10px; text-align: center; margin: 20px 0;">
+                    <p style="color: white; margin: 0 0 10px 0; font-size: 14px;">YOUR ACTIVATION CODE</p>
+                    <p style="color: white; font-size: 32px; font-weight: bold; letter-spacing: 8px; margin: 0; font-family: monospace;">
+                        {activation_code.code}
+                    </p>
+                </div>
+
+                <div style="background: #E8F5E9; padding: 15px; border-radius: 8px; margin: 20px 0;">
+                    <p style="margin: 0;"><strong>Code Information:</strong></p>
+                    <ul style="margin: 10px 0;">
+                        <li>Trial Period: <strong>{activation_code.trial_days} days</strong></li>
+                        <li>Usage Limit: <strong>{activation_code.max_uses} time(s)</strong></li>
+                    </ul>
+                </div>
+
+                <h3 style="color: #1976D2;">Activation Instructions:</h3>
+                <ol>
+                    <li>Open Trading Bot application</li>
+                    <li>Enter the activation code in the input field</li>
+                    <li>Click "Activate" button</li>
+                </ol>
+
+                <p style="color: #666; font-size: 12px; margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd;">
+                    If you need support, please contact Admin.<br>
+                    Best regards,<br>
+                    <strong>Trading Bot Team</strong>
+                </p>
+            </div>
+        </body>
+        </html>
+        '''
+    else:
+        subject = 'Ma Kich Hoat Tai Khoan Trading Bot'
+        message = f'''
+Xin chao {user.first_name or user.username},
+
+Cam on ban da dang ky Trading Bot!
+
+Day la ma kich hoat tai khoan cua ban:
+
+    MA KICH HOAT: {activation_code.code}
+
+Ma nay co hieu luc cho {activation_code.trial_days} ngay dung thu.
+
+Huong dan kich hoat:
+1. Mo ung dung Trading Bot
+2. Nhap ma kich hoat vao o nhap lieu
+3. Nhan nut "Kich hoat"
+
+Luu y: Ma nay chi co the su dung {activation_code.max_uses} lan.
+
+Neu ban can ho tro, vui long lien he Admin.
+
+Tran trong,
+Trading Bot Team
+        '''
+
+        html_message = f'''
+        <html>
+        <head><meta charset="UTF-8"></head>
+        <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+            <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
+                <h2 style="color: #4CAF50;">Ma Kich Hoat Tai Khoan Trading Bot</h2>
+
+                <p>Xin chao <strong>{user.first_name or user.username}</strong>,</p>
+
+                <p>Cam on ban da dang ky Trading Bot!</p>
+
+                <div style="background: linear-gradient(135deg, #4CAF50, #2E7D32); padding: 25px; border-radius: 10px; text-align: center; margin: 20px 0;">
+                    <p style="color: white; margin: 0 0 10px 0; font-size: 14px;">MA KICH HOAT CUA BAN</p>
+                    <p style="color: white; font-size: 32px; font-weight: bold; letter-spacing: 8px; margin: 0; font-family: monospace;">
+                        {activation_code.code}
+                    </p>
+                </div>
+
+                <div style="background: #E8F5E9; padding: 15px; border-radius: 8px; margin: 20px 0;">
+                    <p style="margin: 0;"><strong>Thong tin ma:</strong></p>
+                    <ul style="margin: 10px 0;">
+                        <li>Thoi han Trial: <strong>{activation_code.trial_days} ngay</strong></li>
+                        <li>So lan su dung: <strong>{activation_code.max_uses} lan</strong></li>
+                    </ul>
+                </div>
+
+                <h3 style="color: #1976D2;">Huong dan kich hoat:</h3>
+                <ol>
+                    <li>Mo ung dung Trading Bot</li>
+                    <li>Nhap ma kich hoat vao o nhap lieu</li>
+                    <li>Nhan nut "Kich hoat"</li>
+                </ol>
+
+                <p style="color: #666; font-size: 12px; margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd;">
+                    Neu ban can ho tro, vui long lien he Admin.<br>
+                    Tran trong,<br>
+                    <strong>Trading Bot Team</strong>
+                </p>
+            </div>
+        </body>
+        </html>
+        '''
+
+    def send_async():
+        try:
+            print(f"Sending email to {user.email} (lang: {language})...")
+            result = send_mail(
+                subject=subject,
+                message=message,
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[user.email],
+                html_message=html_message,
+                fail_silently=False
+            )
+            print(f"Email sent to {user.email} with code {activation_code.code} - Result: {result}")
+        except Exception as e:
+            print(f"Failed to send email to {user.email}: {type(e).__name__}: {e}")
+
+    thread = threading.Thread(target=send_async)
+    thread.daemon = True
+    thread.start()
+    print(f"Email thread started for {user.email}")
+

@@ -1,0 +1,15 @@
+{
+  "admin": {
+    "password_hash": "50377c67411bfa87de5cc8c50e57b96f6893b79bd0117e68edd1ac83ef5d7f1c",
+    "salt": "d64984e4817b09c84c8b8d81060ad1b921ac4d2f751f166985c76944845a1dc7",
+    "role": "admin",
+    "license_type": "premium",
+    "created_at": "2025-12-09T22:00:15.880516",
+    "expiry_date": "2026-12-09T22:00:15.880551",
+    "is_active": true,
+    "hardware_ids": [
+      "E1FA6ABB01EFBD58F83C7A0A10BB0C76"
+    ],
+    "last_login": "2025-12-09T22:03:01.170830"
+  }
+}

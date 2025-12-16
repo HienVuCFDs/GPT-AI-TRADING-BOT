@@ -1,0 +1,10 @@
+{
+    "server_url": "http://localhost:8000/api",
+    "heartbeat_interval": 60,
+    "offline_grace_hours": 72,
+    "verify_ssl": true,
+    "notes": {
+        "development": "Use http://localhost:8000/api for local testing",
+        "production": "Change to https://license.yourdomain.com/api for production"
+    }
+}

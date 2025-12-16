@@ -1,0 +1,589 @@
+{
+  "generated_at": "2025-12-17T01:52:38.903330",
+  "account": {
+    "balance": 42271.78,
+    "equity": 41977.25,
+    "margin": 353.18,
+    "free_margin": 41624.07,
+    "floating_pl": -294.53,
+    "total_deposit": 25000.0,
+    "total_withdrawal": 0,
+    "net_deposit": 25000.0,
+    "realized_profit": 17271.78,
+    "profit_pct": 69.09,
+    "currency": "USD",
+    "server": "LiteFinance-MT5-Live",
+    "login": 89106420
+  },
+  "today": {
+    "period": "2025-12-17",
+    "count": 7,
+    "stats": {
+      "total_trades": 7,
+      "total_profit": 846.9,
+      "total_swap": 0.0,
+      "total_commission": 0.0,
+      "net_profit": 846.9,
+      "profit_pct": 3.39,
+      "total_pips": 1888.9,
+      "win_pips": 1888.9,
+      "loss_pips": 0,
+      "avg_pips": 269.8,
+      "avg_win_pips": 269.8,
+      "avg_loss_pips": 0,
+      "best_pips": 1827.0,
+      "worst_pips": 0,
+      "buy_count": 4,
+      "sell_count": 3,
+      "win_count": 7,
+      "loss_count": 0,
+      "breakeven_count": 0,
+      "win_rate": 100.0,
+      "profit_factor": 999.99,
+      "avg_win": 120.99,
+      "avg_loss": 0,
+      "avg_profit": 120.99,
+      "best_trade": 364.2,
+      "worst_trade": 5.1,
+      "by_symbol": {
+        "BNBUSD_m": {
+          "count": 2,
+          "profit": 472.35,
+          "pips": 0,
+          "wins": 2,
+          "losses": 0
+        },
+        "XAUUSD.": {
+          "count": 2,
+          "profit": 279.15000000000003,
+          "pips": 1827.0,
+          "wins": 2,
+          "losses": 0
+        },
+        "SOLUSD_m": {
+          "count": 1,
+          "profit": 33.5,
+          "pips": 0,
+          "wins": 1,
+          "losses": 0
+        },
+        "EURUSD.": {
+          "count": 1,
+          "profit": 32.4,
+          "pips": 32.4,
+          "wins": 1,
+          "losses": 0
+        },
+        "GBPUSD.": {
+          "count": 1,
+          "profit": 29.5,
+          "pips": 29.5,
+          "wins": 1,
+          "losses": 0
+        }
+      }
+    },
+    "positions": [
+      {
+        "ticket": 50248075507,
+        "deal_id": 50243559961,
+        "symbol": "BNBUSD_m",
+        "type": "SELL",
+        "volume": 0.15,
+        "entry_price": 0,
+        "close_price": 876.054,
+        "close_time": "2025-12-17T00:59:24",
+        "close_date": "2025-12-17",
+        "profit": 108.15,
+        "pips": 0,
+        "swap": 0.0,
+        "commission": 0.0,
+        "comment": "",
+        "reason": 0,
+        "magic": 0
+      },
+      {
+        "ticket": 50248438957,
+        "deal_id": 50243559969,
+        "symbol": "BNBUSD_m",
+        "type": "SELL",
+        "volume": 0.22,
+        "entry_price": 0,
+        "close_price": 876.054,
+        "close_time": "2025-12-17T00:59:25",
+        "close_date": "2025-12-17",
+        "profit": 364.2,
+        "pips": 0,
+        "swap": 0.0,
+        "commission": 0.0,
+        "comment": "",
+        "reason": 0,
+        "magic": 0
+      },
+      {
+        "ticket": 50248196856,
+        "deal_id": 50243559975,
+        "symbol": "SOLUSD_m",
+        "type": "SELL",
+        "volume": 0.1,
+        "entry_price": 0,
+        "close_price": 129.67,
+        "close_time": "2025-12-17T00:59:27",
+        "close_date": "2025-12-17",
+        "profit": 33.5,
+        "pips": 0,
+        "swap": 0.0,
+        "commission": 0.0,
+        "comment": "",
+        "reason": 0,
+        "magic": 0
+      },
+      {
+        "ticket": 50248603036,
+        "deal_id": 50243559978,
+        "symbol": "EURUSD.",
+        "type": "BUY",
+        "volume": 0.1,
+        "entry_price": 1.18029,
+        "close_price": 1.17705,
+        "close_time": "2025-12-17T00:59:28",
+        "close_date": "2025-12-17",
+        "profit": 32.4,
+        "pips": 32.4,
+        "swap": 0.0,
+        "commission": 0.0,
+        "comment": "",
+        "reason": 0,
+        "magic": 0
+      },
+      {
+        "ticket": 50248602982,
+        "deal_id": 50243559992,
+        "symbol": "GBPUSD.",
+        "type": "BUY",
+        "volume": 0.1,
+        "entry_price": 1.34447,
+        "close_price": 1.34152,
+        "close_time": "2025-12-17T00:59:29",
+        "close_date": "2025-12-17",
+        "profit": 29.5,
+        "pips": 29.5,
+        "swap": 0.0,
+        "commission": 0.0,
+        "comment": "",
+        "reason": 0,
+        "magic": 0
+      },
+      {
+        "ticket": 50248603041,
+        "deal_id": 50243572972,
+        "symbol": "XAUUSD.",
+        "type": "BUY",
+        "volume": 0.15,
+        "entry_price": 4325.2,
+        "close_price": 4306.93,
+        "close_time": "2025-12-17T01:22:19",
+        "close_date": "2025-12-17",
+        "profit": 274.05,
+        "pips": 1827.0,
+        "swap": 0.0,
+        "commission": 0.0,
+        "comment": "",
+        "reason": 0,
+        "magic": 0
+      },
+      {
+        "ticket": 50248535836,
+        "deal_id": 50243572989,
+        "symbol": "XAUUSD.",
+        "type": "BUY",
+        "volume": 0.15,
+        "entry_price": 0,
+        "close_price": 4306.94,
+        "close_time": "2025-12-17T01:22:20",
+        "close_date": "2025-12-17",
+        "profit": 5.1,
+        "pips": 0,
+        "swap": 0.0,
+        "commission": 0.0,
+        "comment": "",
+        "reason": 0,
+        "magic": 0
+      }
+    ]
+  },
+  "this_week": {
+    "period": "2025-12-15 to 2025-12-17",
+    "count": 24,
+    "stats": {
+      "total_trades": 24,
+      "total_profit": 1906.58,
+      "total_swap": 0.0,
+      "total_commission": 0.0,
+      "net_profit": 1906.58,
+      "profit_pct": 7.63,
+      "total_pips": 15734.6,
+      "win_pips": 15854.6,
+      "loss_pips": 120.0,
+      "avg_pips": 655.6,
+      "avg_win_pips": 1132.5,
+      "avg_loss_pips": 12.0,
+      "best_pips": 5420.0,
+      "worst_pips": -120.0,
+      "buy_count": 8,
+      "sell_count": 16,
+      "win_count": 14,
+      "loss_count": 10,
+      "breakeven_count": 0,
+      "win_rate": 58.33,
+      "profit_factor": 2.84,
+      "avg_win": 210.16,
+      "avg_loss": 103.57,
+      "avg_profit": 79.44,
+      "best_trade": 813.0,
+      "worst_trade": -171.88,
+      "by_symbol": {
+        "XAUUSD.": {
+          "count": 6,
+          "profit": 1449.7499999999998,
+          "pips": 10124.0,
+          "wins": 6,
+          "losses": 0
+        },
+        "BNBUSD_m": {
+          "count": 10,
+          "profit": 409.58000000000015,
+          "pips": 5280.5,
+          "wins": 4,
+          "losses": 6
+        },
+        "GBPUSD.": {
+          "count": 3,
+          "profit": 81.85,
+          "pips": 82.7,
+          "wins": 2,
+          "losses": 1
+        },
+        "EURUSD.": {
+          "count": 2,
+          "profit": -8.600000000000001,
+          "pips": 32.4,
+          "wins": 1,
+          "losses": 1
+        },
+        "LTCUSD_m": {
+          "count": 1,
+          "profit": -12.0,
+          "pips": -120.0,
+          "wins": 0,
+          "losses": 1
+        },
+        "SOLUSD_m": {
+          "count": 2,
+          "profit": -14.0,
+          "pips": 335.0,
+          "wins": 1,
+          "losses": 1
+        }
+      }
+    }
+  },
+  "this_month": {
+    "period": "2025-12",
+    "count": 157,
+    "stats": {
+      "total_trades": 157,
+      "total_profit": 4915.79,
+      "total_swap": 0.0,
+      "total_commission": 0.0,
+      "net_profit": 4915.79,
+      "profit_pct": 19.66,
+      "total_pips": 6906.7,
+      "win_pips": 78438.7,
+      "loss_pips": 71532.0,
+      "avg_pips": 44.0,
+      "avg_win_pips": 825.7,
+      "avg_loss_pips": 1153.7,
+      "best_pips": 5420.0,
+      "worst_pips": -8100.0,
+      "buy_count": 89,
+      "sell_count": 68,
+      "win_count": 95,
+      "loss_count": 62,
+      "breakeven_count": 0,
+      "win_rate": 60.51,
+      "profit_factor": 1.5,
+      "avg_win": 154.5,
+      "avg_loss": 157.45,
+      "avg_profit": 31.31,
+      "best_trade": 1462.8,
+      "worst_trade": -1128.82,
+      "by_symbol": {
+        "XAUUSD.": {
+          "count": 55,
+          "profit": 2266.7099999999996,
+          "pips": 10822.0,
+          "wins": 35,
+          "losses": 20
+        },
+        "BNBUSD_m": {
+          "count": 36,
+          "profit": 1953.0600000000002,
+          "pips": -441.19999999999936,
+          "wins": 17,
+          "losses": 19
+        },
+        "GBPUSD.": {
+          "count": 14,
+          "profit": 276.31,
+          "pips": 158.1,
+          "wins": 12,
+          "losses": 2
+        },
+        "SOLUSD_m": {
+          "count": 22,
+          "profit": 242.89,
+          "pips": 94.0,
+          "wins": 12,
+          "losses": 10
+        },
+        "LTCUSD_m": {
+          "count": 13,
+          "profit": 95.10000000000001,
+          "pips": -11.0,
+          "wins": 10,
+          "losses": 3
+        },
+        "EURUSD.": {
+          "count": 8,
+          "profit": 87.5,
+          "pips": 87.5,
+          "wins": 5,
+          "losses": 3
+        },
+        "ETHUSD_m": {
+          "count": 3,
+          "profit": 19.43,
+          "pips": -3519.0,
+          "wins": 2,
+          "losses": 1
+        },
+        "BTCUSD_m": {
+          "count": 6,
+          "profit": -25.209999999999994,
+          "pips": -283.70000000000005,
+          "wins": 2,
+          "losses": 4
+        }
+      }
+    }
+  },
+  "this_year": {
+    "period": "2025",
+    "count": 787,
+    "stats": {
+      "total_trades": 787,
+      "total_profit": 17373.77,
+      "total_swap": -101.99,
+      "total_commission": 0.0,
+      "net_profit": 17271.78,
+      "profit_pct": 69.5,
+      "total_pips": 41282.7,
+      "win_pips": 289446.1,
+      "loss_pips": 248163.4,
+      "avg_pips": 52.5,
+      "avg_win_pips": 732.8,
+      "avg_loss_pips": 642.9,
+      "best_pips": 22953.0,
+      "worst_pips": -14019.0,
+      "buy_count": 294,
+      "sell_count": 493,
+      "win_count": 395,
+      "loss_count": 386,
+      "breakeven_count": 6,
+      "win_rate": 50.58,
+      "profit_factor": 1.64,
+      "avg_win": 113.01,
+      "avg_loss": 70.64,
+      "avg_profit": 22.08,
+      "best_trade": 1462.8,
+      "worst_trade": -1128.82,
+      "by_symbol": {
+        "XAUUSD.": {
+          "count": 214,
+          "profit": 12144.999999999996,
+          "pips": 50820.0,
+          "wins": 123,
+          "losses": 88
+        },
+        "BNBUSD_m": {
+          "count": 159,
+          "profit": 4278.41,
+          "pips": -703.5999999999917,
+          "wins": 65,
+          "losses": 94
+        },
+        "GBPUSD.": {
+          "count": 56,
+          "profit": 835.0500000000001,
+          "pips": 449.1999999999999,
+          "wins": 43,
+          "losses": 12
+        },
+        "SOLUSD_m": {
+          "count": 86,
+          "profit": 550.83,
+          "pips": -1392.0,
+          "wins": 47,
+          "losses": 37
+        },
+        "LTCUSD_m": {
+          "count": 82,
+          "profit": 306.07999999999987,
+          "pips": 1060.0,
+          "wins": 51,
+          "losses": 31
+        },
+        "EURUSD.": {
+          "count": 8,
+          "profit": 87.5,
+          "pips": 87.5,
+          "wins": 5,
+          "losses": 3
+        },
+        "ETHUSD_m": {
+          "count": 25,
+          "profit": -6.449999999999997,
+          "pips": -2970.0,
+          "wins": 11,
+          "losses": 14
+        },
+        "XRPUSD_m": {
+          "count": 18,
+          "profit": -113.82,
+          "pips": -1183.1,
+          "wins": 9,
+          "losses": 9
+        },
+        "ADAUSD_m": {
+          "count": 16,
+          "profit": -159.55,
+          "pips": -900.1,
+          "wins": 5,
+          "losses": 11
+        },
+        "BTCUSD_m": {
+          "count": 123,
+          "profit": -549.2800000000001,
+          "pips": -3985.2000000000003,
+          "wins": 36,
+          "losses": 87
+        }
+      }
+    }
+  },
+  "all_time": {
+    "period": "Last 365 days",
+    "count": 787,
+    "stats": {
+      "total_trades": 787,
+      "total_profit": 17373.77,
+      "total_swap": -101.99,
+      "total_commission": 0.0,
+      "net_profit": 17271.78,
+      "profit_pct": 69.5,
+      "total_pips": 41282.7,
+      "win_pips": 289446.1,
+      "loss_pips": 248163.4,
+      "avg_pips": 52.5,
+      "avg_win_pips": 732.8,
+      "avg_loss_pips": 642.9,
+      "best_pips": 22953.0,
+      "worst_pips": -14019.0,
+      "buy_count": 294,
+      "sell_count": 493,
+      "win_count": 395,
+      "loss_count": 386,
+      "breakeven_count": 6,
+      "win_rate": 50.58,
+      "profit_factor": 1.64,
+      "avg_win": 113.01,
+      "avg_loss": 70.64,
+      "avg_profit": 22.08,
+      "best_trade": 1462.8,
+      "worst_trade": -1128.82,
+      "by_symbol": {
+        "XAUUSD.": {
+          "count": 214,
+          "profit": 12144.999999999996,
+          "pips": 50820.0,
+          "wins": 123,
+          "losses": 88
+        },
+        "BNBUSD_m": {
+          "count": 159,
+          "profit": 4278.41,
+          "pips": -703.5999999999917,
+          "wins": 65,
+          "losses": 94
+        },
+        "GBPUSD.": {
+          "count": 56,
+          "profit": 835.0500000000001,
+          "pips": 449.1999999999999,
+          "wins": 43,
+          "losses": 12
+        },
+        "SOLUSD_m": {
+          "count": 86,
+          "profit": 550.83,
+          "pips": -1392.0,
+          "wins": 47,
+          "losses": 37
+        },
+        "LTCUSD_m": {
+          "count": 82,
+          "profit": 306.07999999999987,
+          "pips": 1060.0,
+          "wins": 51,
+          "losses": 31
+        },
+        "EURUSD.": {
+          "count": 8,
+          "profit": 87.5,
+          "pips": 87.5,
+          "wins": 5,
+          "losses": 3
+        },
+        "ETHUSD_m": {
+          "count": 25,
+          "profit": -6.449999999999997,
+          "pips": -2970.0,
+          "wins": 11,
+          "losses": 14
+        },
+        "XRPUSD_m": {
+          "count": 18,
+          "profit": -113.82,
+          "pips": -1183.1,
+          "wins": 9,
+          "losses": 9
+        },
+        "ADAUSD_m": {
+          "count": 16,
+          "profit": -159.55,
+          "pips": -900.1,
+          "wins": 5,
+          "losses": 11
+        },
+        "BTCUSD_m": {
+          "count": 123,
+          "profit": -549.2800000000001,
+          "pips": -3985.2000000000003,
+          "wins": 36,
+          "losses": 87
+        }
+      }
+    }
+  }
+}

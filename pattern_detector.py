@@ -6,30 +6,7 @@ import glob
 import re
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Set
-
-# Internal utility functions
-def overwrite_json_safely(file_path: str, data: any, backup: bool = True) -> bool:
-    """Save JSON data safely with backup support"""
-    try:
-        os.makedirs(os.path.dirname(file_path), exist_ok=True)
-        with open(file_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        return True
-    except Exception as e:
-        print(f"Error saving file {file_path}: {e}")
-        return False
-
-def ensure_directory(path: str):
-    """Ensure directory exists"""
-    os.makedirs(path, exist_ok=True)
-import logging
-import os
-import json
-
-# Internal utility functions
-def auto_cleanup_on_start(directories: list, hours: int = 72):
-    """Auto cleanup on start"""
-    pass
+from utils import overwrite_json_safely, ensure_directory, auto_cleanup_on_start
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -1521,7 +1498,7 @@ def indicator_value_to_signal(name, value, close=None):
 
 def advanced_indicator_analysis(indicator_row, pattern_type):
     """Advanced indicator analysis với weighted scoring system"""
-    if indicator_row is None or indicator_row.empty:
+    if indicator_row is None or len(indicator_row) == 0:
         return {"score": 0, "signals": [], "strength": "Neutral", "confidence": 0}
     
     bullish_signals = 0
@@ -1709,6 +1686,39 @@ def analyze_patterns(symbol, timeframe, indicator_list=None, count=None):
     """Enhanced pattern analysis với comprehensive indicator and trend integration"""
     try:
         logger.info(f"🔍 Starting enhanced pattern analysis for {symbol} {timeframe}")
+        
+        # 🧹 CLEANUP OLD PATTERNS - Run once per session (check if already done)
+        if not hasattr(analyze_patterns, '_cleanup_done'):
+            logger.info("🧹 Running pattern cleanup (first run in this session)...")
+            try:
+                # Get selected timeframes from data folder
+                selected_timeframes = set()
+                selected_symbols = set()
+                if os.path.exists(DATA_FOLDER):
+                    for filename in os.listdir(DATA_FOLDER):
+                        if filename.endswith('.json'):
+                            parts = filename.replace('.json', '').split('_')
+                            if len(parts) >= 2:
+                                symbol_part = parts[0]
+                                # Check for patterns like XAUUSD._ or XAUUSD_m_
+                                if '.' in symbol_part:
+                                    symbol_part = symbol_part.split('.')[0]
+                                selected_symbols.add(symbol_part)
+                                
+                                # Extract timeframe
+                                tf_part = parts[-1]  # Last part is usually timeframe
+                                tf_clean = tf_part.replace('m_', '').strip()
+                                if tf_clean in ['M1', 'M5', 'M15', 'M30', 'H1', 'H4', 'D1', 'W1', 'MN1']:
+                                    selected_timeframes.add(tf_clean)
+                
+                if selected_timeframes:
+                    logger.info(f"🔍 Detected selected timeframes: {', '.join(sorted(selected_timeframes))}")
+                    deleted_count, space_freed = cleanup_unselected_timeframes(list(selected_symbols), list(selected_timeframes))
+                    logger.info(f"🗑️ Cleanup completed: {deleted_count} files deleted, {space_freed:.2f} MB freed")
+                
+                analyze_patterns._cleanup_done = True  # Mark cleanup as done
+            except Exception as cleanup_err:
+                logger.warning(f"⚠️ Cleanup failed (non-critical): {cleanup_err}")
         
         # Load candle data - try different naming conventions
         data_path = os.path.join(DATA_FOLDER, f"{symbol}_{timeframe}.json")
@@ -2067,8 +2077,43 @@ def get_pattern_type(pattern_name):
         return "bearish"
     return "neutral"
 
-def cleanup_pattern_data():
-    """🧹 Simple cleanup - Delete all old files in pattern_signals"""
+def cleanup_all_pattern_data():
+    """🗑️ Xóa TẤT CẢ dữ liệu pattern cũ trước khi chạy phân tích mới
+    
+    Returns:
+        tuple: (số file đã xóa, dung lượng giải phóng MB)
+    """
+    directory = "pattern_signals"
+    total_deleted = 0
+    total_space_freed = 0.0
+    
+    if not os.path.exists(directory):
+        return total_deleted, total_space_freed
+    
+    try:
+        logger.info(f"🗑️ Xóa TẤT CẢ dữ liệu pattern cũ trong {directory}/")
+        
+        for filename in os.listdir(directory):
+            file_path = os.path.join(directory, filename)
+            if os.path.isfile(file_path):
+                try:
+                    file_size = os.path.getsize(file_path) / (1024 * 1024)  # MB
+                    os.remove(file_path)
+                    total_deleted += 1
+                    total_space_freed += file_size
+                    logger.debug(f"Deleted: {filename}")
+                except Exception as e:
+                    logger.error(f"Failed to delete {filename}: {e}")
+        
+        logger.info(f"✅ Đã xóa {total_deleted} file, giải phóng {total_space_freed:.2f} MB")
+        
+    except Exception as e:
+        logger.error(f"Error cleaning all pattern data: {e}")
+    
+    return total_deleted, total_space_freed
+
+def cleanup_pattern_data(max_age_hours: int = 72, keep_latest: int = 10):
+    """🧹 Smart cleanup - Delete only old files in pattern_signals, keep recent ones"""
     
     directory = "pattern_signals"
     total_deleted = 0
@@ -2078,14 +2123,38 @@ def cleanup_pattern_data():
         return total_deleted, total_space_freed
     
     try:
+        import time
+        current_time = time.time()
+        max_age_seconds = max_age_hours * 3600
+        
+        # Get all files with their modification times
+        files_with_time = []
         for filename in os.listdir(directory):
             file_path = os.path.join(directory, filename)
             if os.path.isfile(file_path):
+                try:
+                    mtime = os.path.getmtime(file_path)
+                    files_with_time.append((file_path, mtime, filename))
+                except Exception as e:
+                    logger.error(f"Error getting mtime for {filename}: {e}")
+        
+        # Sort by modification time (newest first)
+        files_with_time.sort(key=lambda x: x[1], reverse=True)
+        
+        # Keep latest files and delete old ones
+        for i, (file_path, mtime, filename) in enumerate(files_with_time):
+            file_age_seconds = current_time - mtime
+            
+            # Delete if older than max_age_hours OR beyond keep_latest count
+            should_delete = (file_age_seconds > max_age_seconds) or (i >= keep_latest)
+            
+            if should_delete:
                 try:
                     file_size = os.path.getsize(file_path) / (1024 * 1024)  # MB
                     os.remove(file_path)
                     total_deleted += 1
                     total_space_freed += file_size
+                    logger.debug(f"Deleted old pattern file: {filename} (age: {file_age_seconds/3600:.1f}h)")
                 except Exception as e:
                     logger.error(f"Failed to delete {filename}: {e}")
                     
@@ -2093,9 +2162,76 @@ def cleanup_pattern_data():
         logger.error(f"Error cleaning pattern_signals: {e}")
     
     if total_deleted > 0:
-        logger.info(f"🧹 Cleaned pattern_signals: {total_deleted} files deleted, {total_space_freed:.2f} MB freed")
+        logger.info(f"🧹 Smart cleanup pattern_signals: {total_deleted} files deleted, {total_space_freed:.2f} MB freed (kept {len(files_with_time) - total_deleted} recent files)")
+    else:
+        logger.info(f"🧹 Pattern cleanup: All files are recent, kept {len(files_with_time) if 'files_with_time' in locals() else 0} files")
     
     return total_deleted, total_space_freed
+
+
+def cleanup_unselected_timeframes(selected_symbols: List[str], selected_timeframes: List[str]) -> tuple:
+    """🧹 Delete pattern files for unselected timeframes to avoid stale data in reports
+    
+    Args:
+        selected_symbols: List of selected symbols (e.g., ['XAUUSD', 'EURUSD'])
+        selected_timeframes: List of selected timeframes (e.g., ['M15', 'M30', 'H1'])
+    
+    Returns:
+        tuple: (deleted_count, space_freed_mb)
+    """
+    directory = "pattern_signals"
+    total_deleted = 0
+    total_space_freed = 0.0
+    
+    if not os.path.exists(directory):
+        logger.info(f"📁 Directory {directory} does not exist")
+        return total_deleted, total_space_freed
+    
+    # All possible timeframes
+    all_timeframes = ['M1', 'M5', 'M15', 'M30', 'H1', 'H4', 'D1', 'W1', 'MN1']
+    unselected_timeframes = [tf for tf in all_timeframes if tf not in selected_timeframes]
+    
+    if not unselected_timeframes:
+        logger.info("📊 All timeframes selected, no cleanup needed")
+        return total_deleted, total_space_freed
+    
+    logger.info(f"🧹 Cleaning pattern files for unselected timeframes: {', '.join(unselected_timeframes)}")
+    
+    try:
+        for filename in os.listdir(directory):
+            if not filename.endswith('.json'):
+                continue
+            
+            # Check if file matches unselected timeframe pattern
+            # Pattern: SYMBOL_TF_*.json or SYMBOL._TF_*.json
+            should_delete = False
+            for tf in unselected_timeframes:
+                # Match patterns like: XAUUSD_H4_priority_patterns.json, XAUUSD._H4_patterns.json
+                if f"_{tf}_" in filename or f"._{tf}_" in filename or f"_{tf}." in filename:
+                    should_delete = True
+                    break
+            
+            if should_delete:
+                file_path = os.path.join(directory, filename)
+                try:
+                    file_size = os.path.getsize(file_path) / (1024 * 1024)  # MB
+                    os.remove(file_path)
+                    total_deleted += 1
+                    total_space_freed += file_size
+                    logger.info(f"   🗑️ Deleted unselected timeframe file: {filename}")
+                except Exception as e:
+                    logger.error(f"   ❌ Failed to delete {filename}: {e}")
+    
+    except Exception as e:
+        logger.error(f"❌ Error cleaning unselected timeframes: {e}")
+    
+    if total_deleted > 0:
+        logger.info(f"✅ Cleanup complete: {total_deleted} files deleted, {total_space_freed:.2f} MB freed")
+    else:
+        logger.info(f"✅ No files to clean for unselected timeframes")
+    
+    return total_deleted, total_space_freed
+
 
 # Clean start for simplified version
 
@@ -2517,18 +2653,64 @@ def cleanup_pattern_files_on_demand(
     
     return cleanup_stats
 
-def main():
-    """Main function for testing pattern detector with automatic cleanup"""
+def main(clean_all=False):
+    """Main function for testing pattern detector with automatic cleanup
+    
+    Args:
+        clean_all: Nếu True, xóa TẤT CẢ dữ liệu cũ trước khi chạy
+    """
     print("🔍 Pattern Detector - Auto cleanup enabled")
     print("=" * 50)
     
-    # 🧹 AUTO CLEANUP - Simple and automatic
-    print("🧹 Auto cleaning pattern_signals...")
-    deleted, space_freed = cleanup_pattern_data()
+    # 🗑️ XÓA TẤT CẢ dữ liệu cũ nếu được yêu cầu
+    if clean_all:
+        print("🗑️ Xóa TẤT CẢ dữ liệu pattern cũ...")
+        deleted_all, space_freed_all = cleanup_all_pattern_data()
+        if deleted_all > 0:
+            print(f"✅ Đã xóa: {deleted_all} files, {space_freed_all:.2f} MB")
+        else:
+            print("✅ Không có dữ liệu cũ để xóa")
+        print()
+    
+    # 🧹 AUTO CLEANUP - Clean unselected timeframes FIRST (before age-based cleanup)
+    # Read selected timeframes from data files
+    selected_timeframes = set()
+    selected_symbols = set()
+    if os.path.exists(DATA_FOLDER):
+        for filename in os.listdir(DATA_FOLDER):
+            if filename.endswith('.json'):
+                # Extract timeframe from filename (e.g., XAUUSD_M15.json, XAUUSD_m_H1.json)
+                parts = filename.replace('.json', '').split('_')
+                if len(parts) >= 2:
+                    symbol = parts[0]
+                    # Check if it has 'm' prefix
+                    if parts[1] == 'm' and len(parts) > 2:
+                        timeframe = parts[2]
+                    else:
+                        timeframe = parts[1]
+                    
+                    # Extract just the timeframe part (remove _indicators, etc.)
+                    tf_clean = timeframe.split('_')[0].upper()
+                    if tf_clean in ['M1', 'M5', 'M15', 'M30', 'H1', 'H4', 'D1', 'W1', 'MN1']:
+                        selected_timeframes.add(tf_clean)
+                        selected_symbols.add(symbol)
+    
+    if selected_timeframes:
+        print(f"🔍 Detected selected timeframes: {', '.join(sorted(selected_timeframes))}")
+        print(f"🧹 Cleaning pattern files for unselected timeframes...")
+        deleted_tf, space_freed_tf = cleanup_unselected_timeframes(list(selected_symbols), list(selected_timeframes))
+        if deleted_tf > 0:
+            print(f"✅ Cleaned unselected TF files: {deleted_tf} files, {space_freed_tf:.2f} MB freed")
+        else:
+            print("✅ No unselected timeframe files to clean")
+    
+    # 🧹 AUTO CLEANUP - Smart cleanup keeping recent files
+    print("🧹 Smart cleaning old pattern_signals...")
+    deleted, space_freed = cleanup_pattern_data(max_age_hours=72, keep_latest=20)
     if deleted > 0:
-        print(f"✅ Cleaned: {deleted} files, {space_freed:.2f} MB freed")
+        print(f"✅ Cleaned: {deleted} old files, {space_freed:.2f} MB freed")
     else:
-        print("✅ No old files to clean")
+        print("✅ All pattern files are recent")
     
     # Show availability status
     print("\n📊 Module Status:")
@@ -2548,9 +2730,9 @@ def main():
             print(f"🧪 Testing with all {len(data_files)} files...")
             
             # Auto cleanup before analysis
-            logger.info("� Pattern Detector: Auto cleanup before analysis...")
-            cleanup_pattern_data()
-            logger.info(f"✅ Pattern cleanup: {deleted} files deleted, {space_freed:.2f} MB freed")
+            logger.info("🧹 Pattern Detector: Auto cleanup before analysis...")
+            deleted_pre, space_freed_pre = cleanup_pattern_data(max_age_hours=48, keep_latest=15)
+            logger.info(f"✅ Pattern cleanup: {deleted_pre} files deleted, {space_freed_pre:.2f} MB freed")
             
             # Process each file
             total_patterns = 0
@@ -2605,7 +2787,15 @@ def main():
     print("\n✅ Pattern detector test completed")
 
 if __name__ == "__main__":
-    main()
+    import sys
+    
+    # Kiểm tra argument để xóa tất cả dữ liệu cũ
+    clean_all = "--clean-all" in sys.argv or "-c" in sys.argv
+    
+    if clean_all:
+        print("🗑️ MODE: Xóa TẤT CẢ dữ liệu pattern cũ trước khi chạy")
+    
+    main(clean_all=clean_all)
 
 # =============================================================================
 # GUI HELPER FUNCTIONS FOR PATTERN LOADING AND PROCESSING

@@ -1,0 +1,72 @@
+{
+  "50242641606": {
+    "symbol": "XAUUSD.",
+    "trail_distance_pips": 70.0,
+    "added_at": "2025-11-28T21:11:11.930007"
+  },
+  "50242712496": {
+    "symbol": "XAUUSD.",
+    "trail_distance_pips": 70.0,
+    "added_at": "2025-11-28T22:25:12.175373"
+  },
+  "50242820412": {
+    "symbol": "BTCUSD_m",
+    "trail_distance_pips": 70.0,
+    "added_at": "2025-11-29T20:56:48.108370"
+  },
+  "50242822406": {
+    "symbol": "BTCUSD_m",
+    "trail_distance_pips": 70.0,
+    "added_at": "2025-11-29T22:23:30.812295"
+  },
+  "50242841609": {
+    "symbol": "BTCUSD_m",
+    "trail_distance_pips": 70.0,
+    "added_at": "2025-11-30T21:46:41.478243"
+  },
+  "50242844724": {
+    "symbol": "BTCUSD_m",
+    "trail_distance_pips": 70.0,
+    "added_at": "2025-12-01T00:14:57.534387"
+  },
+  "50242843009": {
+    "symbol": "BTCUSD_m",
+    "trail_distance_pips": 70.0,
+    "added_at": "2025-12-01T00:14:57.279560"
+  },
+  "50242845126": {
+    "symbol": "BTCUSD_m",
+    "trail_distance_pips": 70.0,
+    "added_at": "2025-12-01T01:10:54.126627"
+  },
+  "50242841607": {
+    "symbol": "ETHUSD_m",
+    "trail_distance_pips": 70.0,
+    "added_at": "2025-12-01T17:11:13.162435"
+  },
+  "50244041101": {
+    "symbol": "XAUUSD.",
+    "trail_distance_pips": 70.0,
+    "added_at": "2025-12-03T15:31:31.824906"
+  },
+  "50244404463": {
+    "symbol": "XAUUSD.",
+    "trail_distance_pips": 70.0,
+    "added_at": "2025-12-04T22:51:34.911005"
+  },
+  "50244556369": {
+    "symbol": "XAUUSD.",
+    "trail_distance_pips": 70.0,
+    "added_at": "2025-12-04T22:51:35.138271"
+  },
+  "50244076186": {
+    "symbol": "BNBUSD_m",
+    "trail_distance_pips": 70.0,
+    "added_at": "2025-12-05T02:26:02.055315"
+  },
+  "50244421744": {
+    "symbol": "BNBUSD_m",
+    "trail_distance_pips": 70.0,
+    "added_at": "2025-12-05T02:26:02.295220"
+  }
+}

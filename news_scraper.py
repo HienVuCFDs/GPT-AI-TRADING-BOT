@@ -13,28 +13,9 @@ import json
 import logging
 import re
 import configparser
+from utils import overwrite_json_safely, ensure_directory, auto_cleanup_on_start
 
  # API feed disabled per requirement
-
-# Internal utility functions
-def overwrite_json_safely(file_path: str, data: any, backup: bool = True) -> bool:
-    """Save JSON data safely with backup support"""
-    try:
-        os.makedirs(os.path.dirname(file_path), exist_ok=True)
-        with open(file_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        return True
-    except Exception as e:
-        print(f"Error saving file {file_path}: {e}")
-        return False
-
-def ensure_directory(path: str):
-    """Ensure directory exists"""
-    os.makedirs(path, exist_ok=True)
-
-def auto_cleanup_on_start(directories: list, hours: int = 72):
-    """Auto cleanup on start"""
-    pass
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -533,6 +514,34 @@ class NewsScraperSelenium:
             # Save files
             try:
                 os.makedirs('news_output', exist_ok=True)
+                
+                # 🧹 Clean old news files (keep only today's)
+                try:
+                    import glob
+                    
+                    # Clean old news_forexfactory files
+                    old_news_files = glob.glob('news_output/news_forexfactory_*.json')
+                    for old_file in old_news_files:
+                        if today_str not in old_file:
+                            try:
+                                os.remove(old_file)
+                                print(f"🧹 Deleted old news file: {os.path.basename(old_file)}")
+                            except Exception as del_err:
+                                print(f"⚠️ Could not delete {old_file}: {del_err}")
+                    
+                    # Clean old recent_news_with_actual files
+                    old_recent_files = glob.glob('news_output/recent_news_with_actual_*.json')
+                    for old_file in old_recent_files:
+                        if today_str not in old_file:
+                            try:
+                                os.remove(old_file)
+                                print(f"🧹 Deleted old recent news file: {os.path.basename(old_file)}")
+                            except Exception as del_err:
+                                print(f"⚠️ Could not delete {old_file}: {del_err}")
+                                
+                except Exception as clean_err:
+                    print(f"⚠️ Cleanup error: {clean_err}")
+                
                 output_path = f'news_output/news_forexfactory_{today_str}.json'
                 with open(output_path, 'w', encoding='utf-8') as f:
                     json.dump(filtered_events, f, ensure_ascii=False, indent=2)
@@ -1156,9 +1165,25 @@ def save_recent_news_to_json(events, filename=None):
     """Lưu chỉ các tin có số liệu thực tế vừa được công bố trong 60 phút trở lại"""
     from datetime import datetime, timedelta
     import pytz
+    import glob
     
     # Lưu vào thư mục news_output thay vì news
     os.makedirs('news_output', exist_ok=True)
+    
+    # 🧹 Clean old recent_news_with_actual files first
+    try:
+        today_str = datetime.now().strftime('%Y%m%d')
+        old_recent_files = glob.glob('news_output/recent_news_with_actual_*.json')
+        for old_file in old_recent_files:
+            if today_str not in old_file:
+                try:
+                    os.remove(old_file)
+                    print(f"🧹 Deleted old recent news file: {os.path.basename(old_file)}")
+                except Exception as del_err:
+                    print(f"⚠️ Could not delete {old_file}: {del_err}")
+    except Exception as clean_err:
+        print(f"⚠️ Cleanup error: {clean_err}")
+    
     try:
         # Tạo instance để sử dụng timezone
         vn_tz = pytz.timezone('Asia/Ho_Chi_Minh')

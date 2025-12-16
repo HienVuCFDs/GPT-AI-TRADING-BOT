@@ -1,0 +1,676 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🤖 Trading AI Server Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        :root {
+            --primary: #2196F3;
+            --success: #4CAF50;
+            --warning: #FF9800;
+            --danger: #f44336;
+            --dark: #1a1a2e;
+            --darker: #16213e;
+            --card-bg: #1f2940;
+            --text-primary: #ffffff;
+            --text-secondary: #a0aec0;
+        }
+        
+        body {
+            background: linear-gradient(135deg, var(--dark) 0%, var(--darker) 100%);
+            color: var(--text-primary);
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            min-height: 100vh;
+        }
+        
+        .navbar {
+            background: rgba(31, 41, 64, 0.95) !important;
+            backdrop-filter: blur(10px);
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+        
+        .card {
+            background: var(--card-bg);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        
+        .card-header {
+            background: rgba(255,255,255,0.05);
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+        
+        .stat-card {
+            background: linear-gradient(135deg, var(--card-bg) 0%, rgba(31,41,64,0.8) 100%);
+            border-radius: 16px;
+            padding: 1.5rem;
+            text-align: center;
+            transition: transform 0.3s, box-shadow 0.3s;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        
+        .stat-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 8px 25px rgba(0,0,0,0.4);
+        }
+        
+        .stat-value {
+            font-size: 2.5rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--primary) 0%, #64B5F6 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        
+        .stat-label {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+            margin-top: 0.5rem;
+        }
+        
+        .model-card {
+            background: var(--card-bg);
+            border-radius: 12px;
+            padding: 1.25rem;
+            margin-bottom: 1rem;
+            border-left: 4px solid var(--primary);
+            transition: all 0.3s;
+        }
+        
+        .model-card.online { border-left-color: var(--success); }
+        .model-card.offline { border-left-color: var(--danger); opacity: 0.7; }
+        .model-card:hover { background: rgba(31,41,64,0.9); }
+        
+        .status-badge {
+            padding: 0.35rem 0.75rem;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: 600;
+        }
+        
+        .status-online { background: rgba(76, 175, 80, 0.2); color: var(--success); }
+        .status-offline { background: rgba(244, 67, 54, 0.2); color: var(--danger); }
+        
+        .table-dark {
+            --bs-table-bg: transparent;
+            --bs-table-hover-bg: rgba(255,255,255,0.05);
+        }
+        
+        .table-dark th {
+            background: rgba(255,255,255,0.05);
+            border-color: rgba(255,255,255,0.1);
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            font-size: 0.75rem;
+        }
+        
+        .table-dark td {
+            border-color: rgba(255,255,255,0.05);
+            vertical-align: middle;
+        }
+        
+        .user-avatar {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--primary) 0%, #64B5F6 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 600;
+            font-size: 1rem;
+        }
+        
+        .signal-badge {
+            padding: 0.4rem 0.8rem;
+            border-radius: 6px;
+            font-weight: 600;
+            font-size: 0.85rem;
+        }
+        
+        .signal-buy { background: rgba(76, 175, 80, 0.2); color: var(--success); }
+        .signal-sell { background: rgba(244, 67, 54, 0.2); color: var(--danger); }
+        .signal-hold { background: rgba(255, 152, 0, 0.2); color: var(--warning); }
+        
+        .live-indicator {
+            width: 10px;
+            height: 10px;
+            background: var(--success);
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 8px;
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.5; transform: scale(1.2); }
+        }
+        
+        .requests-container {
+            max-height: 500px;
+            overflow-y: auto;
+        }
+        
+        .requests-container::-webkit-scrollbar { width: 6px; }
+        .requests-container::-webkit-scrollbar-track { background: rgba(255,255,255,0.05); }
+        .requests-container::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 3px; }
+        
+        .nav-tabs .nav-link {
+            color: var(--text-secondary);
+            border: none;
+            padding: 1rem 1.5rem;
+        }
+        
+        .nav-tabs .nav-link.active {
+            background: var(--card-bg);
+            color: var(--text-primary);
+            border-radius: 8px 8px 0 0;
+        }
+        
+        .form-control, .form-select {
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.1);
+            color: var(--text-primary);
+        }
+        
+        .form-control:focus, .form-select:focus {
+            background: rgba(255,255,255,0.08);
+            border-color: var(--primary);
+            box-shadow: 0 0 0 0.2rem rgba(33, 150, 243, 0.25);
+            color: var(--text-primary);
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, var(--primary) 0%, #1976D2 100%);
+            border: none;
+        }
+        
+        .btn-primary:hover {
+            background: linear-gradient(135deg, #1976D2 0%, #1565C0 100%);
+            transform: translateY(-2px);
+        }
+        
+        .progress {
+            background: rgba(255,255,255,0.1);
+            height: 8px;
+            border-radius: 4px;
+        }
+        
+        .activity-item {
+            padding: 1rem;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+            transition: background 0.2s;
+        }
+        
+        .activity-item:hover { background: rgba(255,255,255,0.03); }
+        .activity-item:last-child { border-bottom: none; }
+        
+        .time-ago { color: var(--text-secondary); font-size: 0.8rem; }
+        
+        .model-icon {
+            width: 48px;
+            height: 48px;
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5rem;
+        }
+        
+        .model-xgboost { background: linear-gradient(135deg, #4CAF50 0%, #2E7D32 100%); }
+        .model-cnn_lstm { background: linear-gradient(135deg, #2196F3 0%, #1565C0 100%); }
+        .model-transformer { background: linear-gradient(135deg, #9C27B0 0%, #6A1B9A 100%); }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark sticky-top">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="#">
+                <i class="bi bi-robot me-2"></i>Trading AI Server
+            </a>
+            <div class="d-flex align-items-center">
+                <span class="live-indicator"></span>
+                <span class="text-success me-3">Live</span>
+                <span class="text-secondary" id="current-time"></span>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container-fluid py-4">
+        <div class="row mb-4">
+            <div class="col-md-3">
+                <div class="stat-card">
+                    <div class="stat-value" id="stat-total">0</div>
+                    <div class="stat-label"><i class="bi bi-graph-up me-1"></i> Total Requests</div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="stat-card">
+                    <div class="stat-value" id="stat-today">0</div>
+                    <div class="stat-label"><i class="bi bi-calendar-check me-1"></i> Requests Today</div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="stat-card">
+                    <div class="stat-value" id="stat-users">0</div>
+                    <div class="stat-label"><i class="bi bi-people me-1"></i> Active Users</div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="stat-card">
+                    <div class="stat-value" id="stat-models">3</div>
+                    <div class="stat-label"><i class="bi bi-cpu me-1"></i> AI Models</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="row">
+            <div class="col-lg-4">
+                <div class="card mb-4">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0"><i class="bi bi-cpu me-2"></i>Model Status</h5>
+                        <button class="btn btn-sm btn-outline-light" onclick="refreshStatus()">
+                            <i class="bi bi-arrow-clockwise"></i>
+                        </button>
+                    </div>
+                    <div class="card-body" id="models-container"></div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0"><i class="bi bi-people me-2"></i>Active Users</h5>
+                    </div>
+                    <div class="card-body p-0" id="users-container" style="max-height: 400px; overflow-y: auto;"></div>
+                </div>
+            </div>
+
+            <div class="col-lg-8">
+                <ul class="nav nav-tabs" role="tablist">
+                    <li class="nav-item">
+                        <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#requests-tab">
+                            <i class="bi bi-list-ul me-1"></i> Request Log
+                        </button>
+                    </li>
+                    <li class="nav-item">
+                        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#test-tab">
+                            <i class="bi bi-play-circle me-1"></i> Test Prediction
+                        </button>
+                    </li>
+                    <li class="nav-item">
+                        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#stats-tab">
+                            <i class="bi bi-bar-chart me-1"></i> Statistics
+                        </button>
+                    </li>
+                </ul>
+
+                <div class="tab-content">
+                    <div class="tab-pane fade show active" id="requests-tab">
+                        <div class="card border-top-0" style="border-radius: 0 0 12px 12px;">
+                            <div class="card-body p-0">
+                                <div class="requests-container">
+                                    <table class="table table-dark table-hover mb-0">
+                                        <thead>
+                                            <tr>
+                                                <th>Time</th>
+                                                <th>User</th>
+                                                <th>Symbol</th>
+                                                <th>Model</th>
+                                                <th>Signal</th>
+                                                <th>Confidence</th>
+                                                <th>Speed</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="requests-table"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="tab-pane fade" id="test-tab">
+                        <div class="card border-top-0" style="border-radius: 0 0 12px 12px;">
+                            <div class="card-body">
+                                <div class="row">
+                                    <div class="col-md-6">
+                                        <h6 class="mb-3">Test User Info</h6>
+                                        <div class="mb-3">
+                                            <label class="form-label">Email</label>
+                                            <input type="email" class="form-control" id="test-email" value="test@example.com">
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label">Name</label>
+                                            <input type="text" class="form-control" id="test-name" value="Test User">
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label">Phone</label>
+                                            <input type="text" class="form-control" id="test-phone" value="+84123456789">
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label">Symbol</label>
+                                            <input type="text" class="form-control" id="test-symbol" value="XAUUSD">
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <h6 class="mb-3">Indicators (Sample)</h6>
+                                        <div class="row">
+                                            <div class="col-6 mb-2">
+                                                <label class="form-label small">RSI</label>
+                                                <input type="number" class="form-control form-control-sm" id="test-rsi" value="45">
+                                            </div>
+                                            <div class="col-6 mb-2">
+                                                <label class="form-label small">MACD</label>
+                                                <input type="number" class="form-control form-control-sm" id="test-macd" value="0.5" step="0.1">
+                                            </div>
+                                            <div class="col-6 mb-2">
+                                                <label class="form-label small">SMA20</label>
+                                                <input type="number" class="form-control form-control-sm" id="test-sma20" value="1950">
+                                            </div>
+                                            <div class="col-6 mb-2">
+                                                <label class="form-label small">EMA50</label>
+                                                <input type="number" class="form-control form-control-sm" id="test-ema50" value="1940">
+                                            </div>
+                                            <div class="col-6 mb-2">
+                                                <label class="form-label small">ATR</label>
+                                                <input type="number" class="form-control form-control-sm" id="test-atr" value="15" step="0.1">
+                                            </div>
+                                            <div class="col-6 mb-2">
+                                                <label class="form-label small">BB_Width</label>
+                                                <input type="number" class="form-control form-control-sm" id="test-bb" value="0.02" step="0.01">
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="d-flex gap-2 mt-3">
+                                    <button class="btn btn-primary" onclick="testPrediction('xgboost')">
+                                        <i class="bi bi-lightning me-1"></i> Test XGBoost
+                                    </button>
+                                    <button class="btn btn-primary" onclick="testPrediction('cnn_lstm')">
+                                        <i class="bi bi-diagram-3 me-1"></i> Test CNN-LSTM
+                                    </button>
+                                    <button class="btn btn-primary" onclick="testPrediction('transformer')">
+                                        <i class="bi bi-braces me-1"></i> Test Transformer
+                                    </button>
+                                    <button class="btn btn-success" onclick="testPrediction('all')">
+                                        <i class="bi bi-stars me-1"></i> Test All
+                                    </button>
+                                </div>
+                                <div class="mt-4" id="test-results" style="display: none;">
+                                    <h6>Results</h6>
+                                    <div id="test-results-content"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="tab-pane fade" id="stats-tab">
+                        <div class="card border-top-0" style="border-radius: 0 0 12px 12px;">
+                            <div class="card-body">
+                                <h6 class="mb-3">Requests by Model</h6>
+                                <div class="row mb-4">
+                                    <div class="col-md-4">
+                                        <div class="d-flex align-items-center mb-2">
+                                            <span class="me-2">XGBoost</span>
+                                            <span class="ms-auto" id="stat-xgboost">0</span>
+                                        </div>
+                                        <div class="progress">
+                                            <div class="progress-bar bg-success" id="progress-xgboost" style="width: 0%"></div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <div class="d-flex align-items-center mb-2">
+                                            <span class="me-2">CNN-LSTM</span>
+                                            <span class="ms-auto" id="stat-cnn_lstm">0</span>
+                                        </div>
+                                        <div class="progress">
+                                            <div class="progress-bar bg-primary" id="progress-cnn_lstm" style="width: 0%"></div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <div class="d-flex align-items-center mb-2">
+                                            <span class="me-2">Transformer</span>
+                                            <span class="ms-auto" id="stat-transformer">0</span>
+                                        </div>
+                                        <div class="progress">
+                                            <div class="progress-bar" id="progress-transformer" style="width: 0%; background: #9C27B0;"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        const API = {
+            status: '/api/status',
+            requests: '/api/requests',
+            users: '/api/users',
+            stats: '/api/stats',
+            predictAll: '/api/predict_all'
+        };
+        
+        const MODEL_PORTS = { xgboost: 5001, cnn_lstm: 5002, transformer: 5003 };
+
+        function updateTime() {
+            document.getElementById('current-time').textContent = new Date().toLocaleString('vi-VN');
+        }
+        setInterval(updateTime, 1000);
+        updateTime();
+
+        async function refreshStatus() {
+            try {
+                const response = await fetch(API.status);
+                const data = await response.json();
+                
+                let html = '';
+                for (const [name, status] of Object.entries(data)) {
+                    const isOnline = status.status === 'healthy';
+                    const icon = name === 'xgboost' ? '🌳' : name === 'cnn_lstm' ? '🧠' : '⚡';
+                    
+                    html += `
+                        <div class="model-card ${isOnline ? 'online' : 'offline'}">
+                            <div class="d-flex align-items-center">
+                                <div class="model-icon model-${name} me-3">${icon}</div>
+                                <div class="flex-grow-1">
+                                    <h6 class="mb-1">${name.replace('_', '-').toUpperCase()}</h6>
+                                    <small class="text-secondary">Port ${status.port || MODEL_PORTS[name]}</small>
+                                </div>
+                                <span class="status-badge ${isOnline ? 'status-online' : 'status-offline'}">
+                                    ${isOnline ? 'Online' : 'Offline'}
+                                </span>
+                            </div>
+                            ${isOnline ? `<div class="mt-2 small text-secondary">
+                                <i class="bi bi-cpu me-1"></i>${status.device || 'cpu'}
+                                <span class="mx-2">|</span>
+                                <i class="bi bi-graph-up me-1"></i>${status.requests_served || 0} requests
+                            </div>` : ''}
+                        </div>`;
+                }
+                document.getElementById('models-container').innerHTML = html;
+            } catch (error) { console.error('Error:', error); }
+        }
+
+        async function refreshRequests() {
+            try {
+                const response = await fetch(API.requests + '?limit=50');
+                const data = await response.json();
+                
+                let html = '';
+                for (const req of data) {
+                    const signalClass = req.signal === 'BUY' ? 'signal-buy' : req.signal === 'SELL' ? 'signal-sell' : 'signal-hold';
+                    const time = new Date(req.timestamp).toLocaleTimeString('vi-VN');
+                    const email = req.user_info?.email || 'anonymous';
+                    const name = req.user_info?.name || email.split('@')[0];
+                    const phone = req.user_info?.phone || 'N/A';
+                    const initials = name.substring(0, 2).toUpperCase();
+                    
+                    html += `<tr>
+                        <td class="small">${time}</td>
+                        <td>
+                            <div class="d-flex align-items-center">
+                                <div class="user-avatar me-2" style="width:32px;height:32px;font-size:0.75rem;">${initials}</div>
+                                <div>
+                                    <div class="small fw-semibold">${name}</div>
+                                    <div class="text-secondary" style="font-size:0.7rem;">${email}</div>
+                                    <div class="text-info" style="font-size:0.65rem;"><i class="bi bi-telephone me-1"></i>${phone}</div>
+                                </div>
+                            </div>
+                        </td>
+                        <td><span class="badge bg-secondary">${req.symbol}</span></td>
+                        <td><span class="badge bg-dark">${req.model}</span></td>
+                        <td><span class="signal-badge ${signalClass}">${req.signal}</span></td>
+                        <td>${req.confidence?.toFixed(1) || 0}%</td>
+                        <td class="small text-secondary">${req.processing_time?.toFixed(0) || 0}ms</td>
+                    </tr>`;
+                }
+                
+                if (!html) html = '<tr><td colspan="7" class="text-center text-secondary py-4">No requests yet</td></tr>';
+                document.getElementById('requests-table').innerHTML = html;
+            } catch (error) { console.error('Error:', error); }
+        }
+
+        async function refreshUsers() {
+            try {
+                const response = await fetch(API.users);
+                const data = await response.json();
+                
+                let html = '';
+                for (const user of data) {
+                    const initials = (user.name || user.email.split('@')[0]).substring(0, 2).toUpperCase();
+                    const lastReq = user.last_request ? new Date(user.last_request).toLocaleString('vi-VN') : 'N/A';
+                    
+                    html += `<div class="activity-item">
+                        <div class="d-flex align-items-center">
+                            <div class="user-avatar me-3">${initials}</div>
+                            <div class="flex-grow-1">
+                                <div class="fw-semibold">${user.name || 'Unknown'}</div>
+                                <div class="small text-secondary">${user.email}</div>
+                                <div class="small text-info"><i class="bi bi-telephone me-1"></i>${user.phone || 'N/A'}</div>
+                            </div>
+                            <div class="text-end">
+                                <div class="fw-bold text-primary">${user.request_count}</div>
+                                <div class="small text-secondary">requests</div>
+                            </div>
+                        </div>
+                        <div class="time-ago mt-2"><i class="bi bi-clock me-1"></i>Last: ${lastReq}</div>
+                    </div>`;
+                }
+                
+                if (!html) html = '<div class="text-center text-secondary py-4">No active users</div>';
+                document.getElementById('users-container').innerHTML = html;
+            } catch (error) { console.error('Error:', error); }
+        }
+
+        async function refreshStats() {
+            try {
+                const response = await fetch(API.stats);
+                const data = await response.json();
+                
+                document.getElementById('stat-total').textContent = data.total_requests || 0;
+                document.getElementById('stat-today').textContent = data.requests_today || 0;
+                document.getElementById('stat-users').textContent = data.active_users || 0;
+                
+                const byModel = data.requests_by_model || {};
+                const total = Object.values(byModel).reduce((a, b) => a + b, 0) || 1;
+                
+                for (const model of ['xgboost', 'cnn_lstm', 'transformer']) {
+                    const count = byModel[model] || 0;
+                    const pct = (count / total) * 100;
+                    document.getElementById(`stat-${model}`).textContent = count;
+                    document.getElementById(`progress-${model}`).style.width = `${pct}%`;
+                }
+            } catch (error) { console.error('Error:', error); }
+        }
+
+        async function testPrediction(model) {
+            const userInfo = {
+                email: document.getElementById('test-email').value,
+                name: document.getElementById('test-name').value,
+                phone: document.getElementById('test-phone').value
+            };
+            
+            const payload = {
+                symbol: document.getElementById('test-symbol').value,
+                user_info: userInfo,
+                indicators: {
+                    M15: {
+                        RSI: parseFloat(document.getElementById('test-rsi').value),
+                        MACD: parseFloat(document.getElementById('test-macd').value),
+                        SMA_20: parseFloat(document.getElementById('test-sma20').value),
+                        EMA_50: parseFloat(document.getElementById('test-ema50').value),
+                        ATR: parseFloat(document.getElementById('test-atr').value),
+                        BB_WIDTH: parseFloat(document.getElementById('test-bb').value)
+                    }
+                }
+            };
+            
+            document.getElementById('test-results').style.display = 'block';
+            document.getElementById('test-results-content').innerHTML = '<div class="text-center"><div class="spinner-border text-primary"></div><p class="mt-2">Processing...</p></div>';
+            
+            try {
+                let results = {};
+                
+                if (model === 'all') {
+                    const response = await fetch(API.predictAll, {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(payload)
+                    });
+                    results = await response.json();
+                } else {
+                    const response = await fetch(`http://localhost:${MODEL_PORTS[model]}/predict`, {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(payload)
+                    });
+                    results[model] = await response.json();
+                }
+                
+                let html = '<div class="row">';
+                for (const [name, result] of Object.entries(results)) {
+                    if (result.error) {
+                        html += `<div class="col-md-4 mb-3"><div class="card bg-danger bg-opacity-10">
+                            <div class="card-body"><h6>${name.toUpperCase()}</h6><p class="text-danger mb-0">${result.error}</p></div>
+                        </div></div>`;
+                    } else {
+                        html += `<div class="col-md-4 mb-3"><div class="card">
+                            <div class="card-body text-center">
+                                <h6 class="text-secondary">${name.replace('_', '-').toUpperCase()}</h6>
+                                <div class="signal-badge ${result.signal === 'BUY' ? 'signal-buy' : result.signal === 'SELL' ? 'signal-sell' : 'signal-hold'} fs-4 my-3">${result.signal}</div>
+                                <div class="fs-3 fw-bold">${result.confidence?.toFixed(1) || 0}%</div>
+                                <small class="text-secondary">Confidence</small>
+                            </div>
+                        </div></div>`;
+                    }
+                }
+                html += '</div>';
+                document.getElementById('test-results-content').innerHTML = html;
+                
+                setTimeout(() => { refreshRequests(); refreshUsers(); refreshStats(); }, 500);
+            } catch (error) {
+                document.getElementById('test-results-content').innerHTML = `<div class="alert alert-danger"><i class="bi bi-exclamation-triangle me-2"></i>Error: ${error.message}</div>`;
+            }
+        }
+
+        refreshStatus();
+        refreshRequests();
+        refreshUsers();
+        refreshStats();
+
+        setInterval(refreshStatus, 10000);
+        setInterval(refreshRequests, 5000);
+        setInterval(refreshUsers, 10000);
+        setInterval(refreshStats, 5000);
+    </script>
+</body>
+</html>

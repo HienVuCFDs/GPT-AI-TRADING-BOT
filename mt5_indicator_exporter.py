@@ -8,26 +8,7 @@ import glob
 import logging
 import os
 import json
-
-# Internal utility functions
-def overwrite_json_safely(file_path: str, data: any, backup: bool = True) -> bool:
-    """Save JSON data safely with backup support"""
-    try:
-        os.makedirs(os.path.dirname(file_path), exist_ok=True)
-        with open(file_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        return True
-    except Exception as e:
-        print(f"Error saving file {file_path}: {e}")
-        return False
-
-def ensure_directory(path: str):
-    """Ensure directory exists"""
-    os.makedirs(path, exist_ok=True)
-
-def auto_cleanup_on_start(directories: list, hours: int = 72):
-    """Auto cleanup on start"""
-    pass
+from utils import overwrite_json_safely, ensure_directory, auto_cleanup_on_start
 
 def log_rate_limited_error(message: str):
     """Log rate limited error"""
@@ -177,6 +158,7 @@ def load_config():
         "symbols": ["XAUUSD", "GBPUSD", "GBPJPY"],
         "timeframes": {
             "M15": {"num_candles": 500},
+            "M30": {"num_candles": 400},
             "H1": {"num_candles": 400}, 
             "H4": {"num_candles": 150}
         },
@@ -274,6 +256,8 @@ def collect_selected_indicator_columns(df, selected_indicator_names):
         'ema100': ['EMA100'],
         'ema200': ['EMA200'],
         'sma': ['SMA'],
+        'sma20': ['SMA20'],
+        'sma50': ['SMA50'],
         'bollinger': ['BB_Upper', 'BB_Middle', 'BB_Lower', 'bb_upper','bb_middle','bb_lower'],
         'psar': ['PSAR', 'psar'],
         'mfi': ['MFI', 'mfi'],
@@ -298,6 +282,9 @@ def collect_selected_indicator_columns(df, selected_indicator_names):
         'fibonacci': ['fib_','fib0.','fib_236','fib_382','fib_500','fib_618','fib_786']
     }
     normalized_selected = {normalize_indicator_key(n) for n in selected_indicator_names}
+    logger.info(f"[collect_selected_indicator_columns] normalized_selected: {normalized_selected}")
+    logger.info(f"[collect_selected_indicator_columns] Available columns: {list(df.columns)}")
+    
     # First pass: keep underlying indicator value columns
     for col in df.columns:
         if col.endswith('_signal') or col == 'overall_signal':
@@ -1398,13 +1385,10 @@ def validate_and_fix_indicators(df):
     """Validate and fix indicator values to ensure proper display on frontend"""
     logger.info(f"Validating indicators for {len(df)} records")
     
-    # List of expected indicators that frontend might need
-    expected_indicators = [
-        'SMA20', 'SMA50', 'EMA20', 'EMA50', 'EMA100', 'EMA200', 'TEMA20', 'TEMA50', 'TEMA100', 'TEMA200',
-        'RSI14', 'MACD_12_26_9', 'MACD_signal_12_26_9', 'MACD_hist_12_26_9',
-        'StochK_14_3', 'StochD_14_3', 'BB_Upper_20_2', 'BB_Middle_20_2', 'BB_Lower_20_2',
-        'ATR14', 'ADX14', 'CCI20', 'WilliamsR14', 'ROC12', 'OBV', 'MFI14', 'PSAR'
-    ]
+    # Get actual indicators from dataframe columns instead of hardcoded list
+    actual_indicators = [col for col in df.columns if not col in ['time', 'open', 'high', 'low', 'close', 
+                        'tick_volume', 'spread', 'real_volume', 'checksum', 'current', 'current_price', 'volume',
+                        'rsi', 'rsi_signal', 'volume_signal', 'buy_signal_count', 'sell_signal_count', 'overall_signal']]
 
     # If a whitelist is active, only validate indicators whose base family is whitelisted
     if INDICATOR_WHITELIST is not None:
@@ -1432,7 +1416,14 @@ def validate_and_fix_indicators(df):
             'stochastic': 'stochastic',  # user may choose stochrsi instead; keep separate
             'ma': 'ma',
         }
-        for ind in expected_indicators:
+        for ind in actual_indicators:
+            # Check direct mapping first (e.g., SMA20 -> sma20) 
+            direct_key = normalize_indicator_key(ind)
+            if direct_key in wl:
+                filtered.append(ind)
+                continue
+            
+            # Then check family mapping
             fam = base_family(ind)
             fam_key = normalize_indicator_key(family_alias.get(fam, fam))
             # Only keep if family explicitly selected in whitelist
@@ -1440,15 +1431,15 @@ def validate_and_fix_indicators(df):
                 filtered.append(ind)
         # If filtering removed all, fall back to original to avoid empty validation silently
         if filtered:
-            expected_indicators = filtered
-            logger.info(f"Whitelist active: validating only {len(expected_indicators)} indicators: {expected_indicators}")
+            actual_indicators = filtered
+            logger.info(f"Whitelist active: validating only {len(actual_indicators)} indicators: {actual_indicators}")
         else:
-            logger.info("Whitelist active but none of expected indicators selected; skipping validation stage")
+            logger.info("Whitelist active but none of actual indicators selected; skipping validation stage")
             return df
     
     issues_found = 0
     
-    for indicator in expected_indicators:
+    for indicator in actual_indicators:
         if indicator in df.columns:
             # Count NaN values
             nan_count = df[indicator].isna().sum()
@@ -1667,8 +1658,6 @@ def calculate_all_indicators(df, symbol: str, timeframe: str) -> bool:
         
         # Define the standard indicator set to calculate
         standard_indicators = [
-            {"name": "MA", "params": {"period": 20, "ma_type": "SMA"}},
-            {"name": "MA", "params": {"period": 50, "ma_type": "SMA"}},
             {"name": "MA", "params": {"period": 20, "ma_type": "EMA"}},
             {"name": "MA", "params": {"period": 50, "ma_type": "EMA"}},
             {"name": "MA", "params": {"period": 100, "ma_type": "EMA"}},
@@ -1756,15 +1745,18 @@ def calc_fibonacci_levels(df, lookback: int = 100) -> Dict[str, float]:
         df[key] = value
     return levels
 
-def export_indicators(symbol, timeframe, count, indicator_list):
-    # 🧹 AUTO CLEANUP before processing indicators
-    logger.info("🧹 MT5 Indicator Exporter: Auto cleanup before processing...")
-    try:
-        cleanup_result = cleanup_indicator_data(max_age_hours=48, keep_latest=15)
-        logger.info(f"✅ Cleaned {cleanup_result['total_files_deleted']} files, "
-                   f"freed {cleanup_result['total_space_freed_mb']:.2f} MB")
-    except Exception as e:
-        logger.warning(f"⚠️ Cleanup warning: {e}")
+def export_indicators(symbol, timeframe, count, indicator_list, skip_cleanup=False):
+    # 🧹 AUTO CLEANUP before processing indicators (unless skipped for aggregator preexport)
+    if not skip_cleanup:
+        logger.info("🧹 MT5 Indicator Exporter: Auto cleanup before processing...")
+        try:
+            cleanup_result = cleanup_indicator_data(max_age_hours=48, keep_latest=15)
+            logger.info(f"✅ Cleaned {cleanup_result['total_files_deleted']} files, "
+                       f"freed {cleanup_result['total_space_freed_mb']:.2f} MB")
+        except Exception as e:
+            logger.warning(f"⚠️ Cleanup warning: {e}")
+    else:
+        logger.info("🔄 Skipping cleanup for aggregator preexport - preserving existing files")
     
     df = fetch_candles_from_json(symbol, timeframe, count)
     if df is None:
@@ -2527,35 +2519,26 @@ def calculate_selected_indicators(df, indicator_list):
                 
         except Exception as e:
             logger.error(f"Error calculating indicator {name}: {e}")
+    
+    # Extract requested MAs from indicator_list for ensure_required_mas
+    requested_mas = []
+    for indi in indicator_list:
+        if indi.get("name") == "MA":
+            params = indi.get("params", {})
+            period = params.get("period", 20)
+            ma_type = params.get("ma_type", "EMA")
+            ma_col = f"{ma_type}{period}"
+            requested_mas.append((ma_col, period, ma_type))
             
     try:
-        ensure_required_mas(df)
+        ensure_required_mas(df, requested_mas)
     except Exception as e:
         logger.error(f"Error ensuring required MAs: {e}")
 
     logger.info(f"Successfully calculated {len(requested_indicators)} indicators")
-    # Ensure common MA families exist for strict consumers
-    try:
-        close_series = df['close'] if 'close' in df.columns else None
-        if close_series is not None:
-            # Standard periods we commonly consume downstream
-            periods = [20, 50, 100, 200]
-            for p in periods:
-                col = f"WMA{p}"
-                if col not in df.columns:
-                    try:
-                        df[col] = calc_wma(close_series, p)
-                    except Exception:
-                        df[col] = None
-            for p in periods:
-                col = f"TEMA{p}"
-                if col not in df.columns:
-                    try:
-                        df[col] = calc_tema(close_series, p)
-                    except Exception:
-                        df[col] = None
-    except Exception as _e:
-        logger.warning(f"Post-calc MA enrichment warning: {_e}")
+    # Note: Removed hardcoded WMA/TEMA generation to respect UI indicator selection
+    # Only calculate indicators explicitly requested by user interface
+    
     return df
 
 def update_data_with_new_candle(symbol, timeframe, count=100):
@@ -2738,21 +2721,19 @@ def calc_keltner_channel(df, window=20):
 # ---------------------------------------------------------------------------
 # Helper functions added for stabilization
 # ---------------------------------------------------------------------------
-def ensure_required_mas(df):
-    """Ensure mandatory moving averages (SMA20, EMA20, EMA50, EMA100, EMA200) exist.
+def ensure_required_mas(df, requested_mas=None):
+    """Ensure only requested moving averages exist (dynamic based on UI selection).
     If missing, compute directly from closing prices.
     """
     close = df.get('close')
     if close is None:
         return
-    ma_specs = [
-        ("SMA20", 20, "SMA"),
-        ("SMA50", 50, "SMA"),
-        ("EMA20", 20, "EMA"),
-        ("EMA50", 50, "EMA"),
-        ("EMA100", 100, "EMA"),
-        ("EMA200", 200, "EMA"),
-    ]
+    
+    # Only create MAs that were specifically requested, not hardcoded defaults
+    if requested_mas is None:
+        return  # Don't create anything if no specific MAs requested
+        
+    ma_specs = requested_mas
     for col, period, ma_type in ma_specs:
         if col not in df.columns:
             try:

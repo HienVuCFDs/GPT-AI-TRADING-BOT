@@ -195,8 +195,14 @@ def find_swings_improved(df, order=5, min_strength=0.5):
     
     return np.array(valid_lows), np.array(valid_highs)
 
-def determine_trend(df, lookback=50):
-    """Determine trend direction using multiple methods with improved scoring"""
+def determine_trend(df, lookback=70):
+    """Determine trend direction using multiple methods with improved scoring
+    
+    Returns:
+        tuple: (trend_direction, sideway_range_data)
+        - trend_direction: str ('Strong Uptrend', 'Uptrend', 'Downtrend', 'Strong Downtrend', 'Sideway')
+        - sideway_range_data: dict with range info if Sideway, else None
+    """
     if len(df) < lookback:
         lookback = len(df)
     
@@ -205,12 +211,12 @@ def determine_trend(df, lookback=50):
     df['ema_slow'] = df['close'].ewm(span=26).mean()
     ema_trend = 1 if df['ema_fast'].iloc[-1] > df['ema_slow'].iloc[-1] else -1
     
-    # Add EMA slope strength
-    ema_slope_strength = (df['ema_fast'].iloc[-1] - df['ema_fast'].iloc[-5]) / df['ema_fast'].iloc[-5]
-    ema_slope_score = 1 if ema_slope_strength > 0.001 else (-1 if ema_slope_strength < -0.001 else 0)
+    # 🎯 FIX: Increase candle count for EMA slope (5 → 20 candles)
+    ema_slope_strength = (df['ema_fast'].iloc[-1] - df['ema_fast'].iloc[-20]) / df['ema_fast'].iloc[-20]
+    ema_slope_score = 1 if ema_slope_strength > 0.002 else (-1 if ema_slope_strength < -0.002 else 0)
     
-    # Method 2: Price momentum with multiple timeframes
-    short_momentum = (df['close'].iloc[-1] - df['close'].iloc[-10]) / df['close'].iloc[-10]
+    # 🎯 FIX: Increase candle count for momentum (10 → 30, lookback → lookback)
+    short_momentum = (df['close'].iloc[-1] - df['close'].iloc[-30]) / df['close'].iloc[-30]
     long_momentum = (df['close'].iloc[-1] - df['close'].iloc[-lookback]) / df['close'].iloc[-lookback]
     
     short_trend = 1 if short_momentum > 0.01 else (-1 if short_momentum < -0.01 else 0)
@@ -242,22 +248,168 @@ def determine_trend(df, lookback=50):
     # Combine all methods with weighted scoring
     trend_score = (ema_trend * 1.5) + (ema_slope_score * 1.0) + (short_trend * 1.2) + (long_trend * 1.0) + (hh_ll_trend * 1.3)
     
+    # 🐛 DEBUG: Log trend score for analysis
+    try:
+        symbol_name = df.get('symbol', 'UNKNOWN') if hasattr(df, 'get') else 'UNKNOWN'
+        print(f"🔍 TREND SCORE DEBUG [{symbol_name}]:")
+        print(f"   ema_trend: {ema_trend} × 1.5 = {ema_trend * 1.5}")
+        print(f"   ema_slope_score: {ema_slope_score} × 1.0 = {ema_slope_score * 1.0}")
+        print(f"   short_trend: {short_trend} × 1.2 = {short_trend * 1.2}")
+        print(f"   long_trend: {long_trend} × 1.0 = {long_trend * 1.0}")
+        print(f"   hh_ll_trend: {hh_ll_trend} × 1.3 = {hh_ll_trend * 1.3}")
+        print(f"   📊 TOTAL TREND_SCORE: {trend_score}")
+        print(f"   ✅ Sideway range: -2.5 < score < 2.5")
+        if -2.5 < trend_score < 2.5:
+            print(f"   🎯 SIDEWAY DETECTED!")
+    except Exception as e:
+        print(f"⚠️ Debug logging error: {e}")
+    
+    # 🎯 CHECK PRICE RANGE FIRST - if narrow range, force Sideway regardless of trend_score
+    # Use 20 candles (not 30) to focus on recent consolidation
+    recent_high = df['high'].tail(20).max()
+    recent_low = df['low'].tail(20).min()
+    current_price = df['close'].iloc[-1]
+    price_range_pct = ((recent_high - recent_low) / current_price) * 100
+    
+    print(f"📏 PRICE RANGE CHECK (20 candles):")
+    print(f"   High: {recent_high:.2f}")
+    print(f"   Low: {recent_low:.2f}")
+    print(f"   Range: {recent_high - recent_low:.2f} ({price_range_pct:.2f}%)")
+    print(f"   Threshold: 2.5%")
+    
     # Enhanced trend classification
-    if trend_score >= 3:
-        return "Strong Uptrend"
-    elif trend_score >= 1.5:
-        return "Uptrend"
-    elif trend_score <= -3:
-        return "Strong Downtrend"
-    elif trend_score <= -1.5:
-        return "Downtrend"
+    sideway_range_data = None
+    
+    # 🚨 PRIORITY: If price range < 2.5% over 20 candles → FORCE SIDEWAY
+    if price_range_pct < 2.5:
+        trend_direction = "Sideway"
+        sideway_range_data = calculate_sideway_range(df, lookback)
+        print(f"🎯 FORCED SIDEWAY: Price range {price_range_pct:.2f}% < 2.5% threshold")
+    elif trend_score >= 4.0:
+        trend_direction = "Strong Uptrend"
+    elif trend_score >= 2.5:
+        trend_direction = "Uptrend"
+    elif trend_score <= -4.0:
+        trend_direction = "Strong Downtrend"
+    elif trend_score <= -2.5:
+        trend_direction = "Downtrend"
     else:
-        return "Sideway"
+        # 🎯 SIDEWAY: -2.5 < trend_score < 2.5
+        trend_direction = "Sideway"
+        # 📊 Calculate Sideway Range (Biên độ giá đi ngang)
+        sideway_range_data = calculate_sideway_range(df, lookback)
+    
+    return trend_direction, sideway_range_data
+
+def calculate_sideway_range(df, lookback=20):
+    """📊 Tính toán biên độ giá trong thị trường sideway (20 nến gần nhất)
+    
+    Returns:
+        dict: {
+            'range_high': float,          # Đỉnh biên độ
+            'range_low': float,           # Đáy biên độ
+            'range_width': float,         # Độ rộng (price units)
+            'range_width_pct': float,     # Độ rộng (%)
+            'range_midpoint': float,      # Điểm giữa biên độ
+            'current_position_pct': float,# Vị trí hiện tại trong biên độ (0-100%)
+            'touches_top': int,           # Số lần chạm đỉnh
+            'touches_bottom': int,        # Số lần chạm đáy
+            'volatility': float,          # Biến động trong biên độ
+            'consolidation_strength': str # Mức độ consolidation
+        }
+    """
+    try:
+        # 🎯 CHỈ TÍNH TRONG 20 NẾN GÁN NHẤT
+        lookback = min(20, len(df))
+        
+        # Lấy dữ liệu lookback period
+        recent_df = df.tail(lookback)
+        
+        # Tìm high/low của biên độ (điểm cực đại/cực tiểu)
+        range_high_point = recent_df['high'].max()
+        range_low_point = recent_df['low'].min()
+        range_width = range_high_point - range_low_point
+        range_midpoint = (range_high_point + range_low_point) / 2
+        
+        # 🎯 Tạo VÙNG GIÁ thay vì điểm giá cố định
+        # Zone buffer = 0.5% của range width (có thể điều chỉnh)
+        zone_buffer = range_width * 0.005  # 0.5% buffer
+        
+        # Resistance zone (vùng kháng cự) = range_high ± buffer
+        resistance_zone_high = range_high_point + zone_buffer
+        resistance_zone_low = range_high_point - zone_buffer
+        
+        # Support zone (vùng hỗ trợ) = range_low ± buffer
+        support_zone_high = range_low_point + zone_buffer
+        support_zone_low = range_low_point - zone_buffer
+        
+        # Tính % độ rộng
+        range_width_pct = (range_width / range_midpoint) * 100 if range_midpoint > 0 else 0
+        
+        # Vị trí hiện tại trong biên độ (0% = đáy, 100% = đỉnh)
+        current_price = recent_df['close'].iloc[-1]
+        if range_width > 0:
+            current_position_pct = ((current_price - range_low_point) / range_width) * 100
+        else:
+            current_position_pct = 50.0  # Trung tâm nếu không có range
+        
+        # Đếm số lần chạm vùng resistance/support (sử dụng zone thay vì điểm)
+        # Chạm resistance zone: high >= resistance_zone_low
+        touches_top = sum(1 for high in recent_df['high'] if high >= resistance_zone_low and high <= resistance_zone_high)
+        # Chạm support zone: low <= support_zone_high
+        touches_bottom = sum(1 for low in recent_df['low'] if low >= support_zone_low and low <= support_zone_high)
+        
+        # Tính volatility trong biên độ (standard deviation của close prices)
+        volatility = recent_df['close'].pct_change().std() * 100 if len(recent_df) > 1 else 0
+        
+        # Đánh giá consolidation strength
+        # Càng nhiều touches + volatility thấp = consolidation mạnh
+        consolidation_score = (touches_top + touches_bottom) / max(volatility, 0.1)
+        
+        if consolidation_score > 15:
+            consolidation_strength = "Very Strong"  # Rất chặt
+        elif consolidation_score > 10:
+            consolidation_strength = "Strong"       # Chặt
+        elif consolidation_score > 5:
+            consolidation_strength = "Moderate"     # Trung bình
+        else:
+            consolidation_strength = "Weak"         # Yếu
+        
+        return {
+            # 🎯 PRICE ZONES (vùng giá thay vì điểm giá)
+            'resistance_zone': {
+                'high': float(resistance_zone_high),
+                'low': float(resistance_zone_low),
+                'center': float(range_high_point)
+            },
+            'support_zone': {
+                'high': float(support_zone_high),
+                'low': float(support_zone_low),
+                'center': float(range_low_point)
+            },
+            # Legacy fields for backward compatibility
+            'range_high': float(range_high_point),
+            'range_low': float(range_low_point),
+            'range_width': float(range_width),
+            'range_width_pct': float(range_width_pct),
+            'range_midpoint': float(range_midpoint),
+            'current_price': float(current_price),
+            'current_position_pct': float(current_position_pct),
+            'touches_top': int(touches_top),
+            'touches_bottom': int(touches_bottom),
+            'volatility': float(volatility),
+            'consolidation_strength': consolidation_strength,
+            'zone_buffer_pct': 0.5  # Zone buffer = 0.5% of range width
+        }
+        
+    except Exception as e:
+        logger.error(f"Error calculating sideway range: {e}")
+        return None
 
 def calc_trendline_improved(df, order=5):
     """Calculate trendline based on trend direction and swing points"""
     lows, highs = find_swings_improved(df, order)
-    trend_direction = determine_trend(df)
+    trend_direction, sideway_range_data = determine_trend(df)
     
     slope, intercept = 0, df['close'].iloc[-1]
     trendline = np.full(len(df), df['close'].iloc[-1])
@@ -309,11 +461,11 @@ def calc_trendline_improved(df, order=5):
         except Exception as e:
             logger.warning(f"Failed to calculate sideway trendline: {e}")
     
-    return trendline, slope, intercept, lows, highs, trend_direction
+    return trendline, slope, intercept, lows, highs, trend_direction, sideway_range_data
 
 def calc_trendline_swing(df, order=5, price_col="close"):
     """Legacy function - redirects to improved version"""
-    trendline, slope, intercept, lows, highs, _ = calc_trendline_improved(df, order)
+    trendline, slope, intercept, lows, highs, _, _ = calc_trendline_improved(df, order)
     return trendline, slope, intercept, lows, highs
 
 def calc_channel_improved(df, trendline, highs, lows, trend_direction):
@@ -632,7 +784,11 @@ def remove_sr_overlap(supports, resistances, threshold=0.002):
     return filtered_supports, filtered_resistances
 
 def check_breakout_improved(df, channel_upper, channel_lower, trend_direction):
-    """Enhanced breakout detection with trend context"""
+    """Enhanced breakout detection with trend context
+    
+    CRITICAL: Breakout must be confirmed by CLOSE PRICE, not just high/low wicks!
+    True breakout = candle CLOSES above resistance or below support
+    """
     prices = df['close'].values
     high_prices = df['high'].values
     low_prices = df['low'].values
@@ -644,37 +800,52 @@ def check_breakout_improved(df, channel_upper, channel_lower, trend_direction):
     # Volume confirmation
     volume_confirmation = current_volume > avg_volume * 1.2 if avg_volume > 0 else True
     
-    # Price breakout conditions
-    upper_breakout = high_prices[-1] > channel_upper[-1]
-    lower_breakout = low_prices[-1] < channel_lower[-1]
+    # 🎯 CRITICAL FIX: Breakout MUST be confirmed by CLOSE PRICE
+    # Not just high/low touch - requires candle to CLOSE beyond SR level
+    upper_breakout = prices[-1] > channel_upper[-1]  # Close above resistance
+    lower_breakout = prices[-1] < channel_lower[-1]  # Close below support
+    
+    # Check for false breakouts (wick touched but didn't close beyond)
+    upper_wick_only = high_prices[-1] > channel_upper[-1] and not upper_breakout
+    lower_wick_only = low_prices[-1] < channel_lower[-1] and not lower_breakout
     
     # Trend-aware breakout validation
     if trend_direction == "Uptrend":
         if upper_breakout and volume_confirmation:
             # Continuation breakout in uptrend
             return "Strong Breakout Up"
+        elif upper_breakout and not volume_confirmation:
+            return "Weak Breakout Up (Low Volume)"
         elif lower_breakout:
             # Potential trend reversal
             return "Trend Reversal (Break Down)"
+        elif upper_wick_only:
+            return "False Breakout Up (Wick Only)"
     elif trend_direction == "Downtrend":
         if lower_breakout and volume_confirmation:
             # Continuation breakout in downtrend
             return "Strong Breakout Down"
+        elif lower_breakout and not volume_confirmation:
+            return "Weak Breakout Down (Low Volume)"
         elif upper_breakout:
             # Potential trend reversal
             return "Trend Reversal (Break Up)"
+        elif lower_wick_only:
+            return "False Breakout Down (Wick Only)"
     else:
-        # Sideway trend
+        # Sideway trend - breakouts are often FALSE in consolidation
         if upper_breakout and volume_confirmation:
-            return "Breakout Up"
+            return "Breakout Up (Confirm with retest)"
         elif lower_breakout and volume_confirmation:
-            return "Breakout Down"
-    
-    # Check for potential false breakouts
-    if upper_breakout and not volume_confirmation:
-        return "Weak Breakout Up (Low Volume)"
-    elif lower_breakout and not volume_confirmation:
-        return "Weak Breakout Down (Low Volume)"
+            return "Breakout Down (Confirm with retest)"
+        elif upper_breakout and not volume_confirmation:
+            return "Weak Breakout Up (Low Volume - Likely False)"
+        elif lower_breakout and not volume_confirmation:
+            return "Weak Breakout Down (Low Volume - Likely False)"
+        elif upper_wick_only:
+            return "False Breakout Up (Wick Only - Rejection)"
+        elif lower_wick_only:
+            return "False Breakout Down (Wick Only - Rejection)"
     
     return "No Breakout"
 
@@ -900,7 +1071,7 @@ def analyze_trend_channel_sr(symbol, timeframe, count=200):
             raise ValueError(f"Insufficient data: {len(df)} candles (minimum 50 required)")
         
         # Calculate improved trendline
-        trendline, slope, intercept, lows, highs, trend_direction = calc_trendline_improved(df)
+        trendline, slope, intercept, lows, highs, trend_direction, sideway_range_data = calc_trendline_improved(df)
         
         # Calculate improved channel
         channel_upper, channel_lower = calc_channel_improved(df, trendline, highs, lows, trend_direction)
@@ -921,10 +1092,16 @@ def analyze_trend_channel_sr(symbol, timeframe, count=200):
         max_dev = float(np.max(deviations))
         min_dev = float(np.min(deviations))
         
-        # Enhanced trendline description
-        trend_strength = abs(slope) * 1000  # Normalize slope
+        # Enhanced trendline description with PROPER normalization
+        # Calculate average price for normalization
+        avg_price = df['close'].mean()
+        # Normalize slope as percentage change per candle relative to price
+        # Then scale to reasonable range (0-10)
+        slope_pct = abs(slope) / avg_price * 100  # Percentage slope per candle
+        trend_strength = min(slope_pct * 2, 10.0)  # Cap at 10.0, scale by 2x for sensitivity
+        
         trendline_value = (f"{trendline[0]:.5f} → {trendline[-1]:.5f} | "
-                          f"Slope: {slope:.6f} | Strength: {trend_strength:.2f} | "
+                          f"Slope: {slope:.6f} ({slope_pct:.3f}%/candle) | Strength: {trend_strength:.2f} | "
                           f"Direction: {trend_direction}")
         
         # Get detailed support/resistance info
@@ -1030,6 +1207,9 @@ def analyze_trend_channel_sr(symbol, timeframe, count=200):
                 "is_reversal": "Reversal" in breakout
             },
             
+            # 📊 Sideway Range Analysis (only present if trend is Sideway)
+            "sideway_range": sideway_range_data if sideway_range_data else None,
+            
             # Raw data
             "ohlc": df.tail(100).to_dict(orient="records"),  # Only last 100 candles to reduce size
             
@@ -1070,6 +1250,17 @@ def analyze_trend_channel_sr(symbol, timeframe, count=200):
         logger.info(f"📏 Channel width: {result['channel_width']:.5f}")
         logger.info(f"📈 Trend strength: {trend_strength:.2f}")
         logger.info(f"📊 Volatility: {result['volatility']:.2f}%")
+        
+        # 📊 Log Sideway Range if present
+        if sideway_range_data:
+            logger.info(f"📊 SIDEWAY RANGE DETECTED:")
+            logger.info(f"   Range: {sideway_range_data['range_low']:.5f} - {sideway_range_data['range_high']:.5f}")
+            logger.info(f"   Width: {sideway_range_data['range_width']:.5f} ({sideway_range_data['range_width_pct']:.2f}%)")
+            logger.info(f"   Midpoint: {sideway_range_data['range_midpoint']:.5f}")
+            logger.info(f"   Current Position: {sideway_range_data['current_position_pct']:.1f}% (0%=đáy, 100%=đỉnh)")
+            logger.info(f"   Touches: {sideway_range_data['touches_bottom']} bottom, {sideway_range_data['touches_top']} top")
+            logger.info(f"   Consolidation: {sideway_range_data['consolidation_strength']}")
+            logger.info(f"   Volatility: {sideway_range_data['volatility']:.2f}%")
         
         # Build table data for UI
         table_rows = []
@@ -1112,6 +1303,21 @@ def analyze_trend_channel_sr(symbol, timeframe, count=200):
             "Type": "Breakout",
             "Value": breakout
         })
+        
+        # 📊 Add Sideway Range to table if present
+        if sideway_range_data:
+            table_rows.append({
+                "Symbol": symbol,
+                "Timeframe": timeframe,
+                "Type": "📊 Sideway Range",
+                "Value": f"{sideway_range_data['range_low']:.5f} - {sideway_range_data['range_high']:.5f} (Width: {sideway_range_data['range_width_pct']:.1f}%)"
+            })
+            table_rows.append({
+                "Symbol": symbol,
+                "Timeframe": timeframe,
+                "Type": "📍 Range Position",
+                "Value": f"{sideway_range_data['current_position_pct']:.1f}% | Consolidation: {sideway_range_data['consolidation_strength']}"
+            })
         
         result["support_resistance"] = table_rows
         

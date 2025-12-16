@@ -354,6 +354,7 @@ class MT5ConnectionManager:
                             'tp': getattr(p, 'tp', None),
                             'type': getattr(p, 'type', None),
                             'time': getattr(p, 'time', None),
+                            'comment': getattr(p, 'comment', ''),  # 🎯 CRITICAL for DCA level detection
                         })
                     except Exception:
                         pass
@@ -567,11 +568,20 @@ class MT5ConnectionManager:
         """Background worker for continuous monitoring."""
         logger.info('Monitoring worker started')
         
+        # Store previous positions for change detection
+        previous_positions = {}
+        
         while not self._monitoring_stop_event.is_set():
             try:
                 if not self.is_connected():
                     logger.warning('Lost MT5 connection, stopping monitoring')
                     break
+                    
+                # Check for position changes BEFORE saving scan
+                try:
+                    self._check_position_changes(previous_positions)
+                except Exception as e:
+                    logger.error(f'Error checking position changes: {e}')
                     
                 # Save account scan with timestamp
                 filepath = self._save_timestamped_scan()
@@ -593,6 +603,81 @@ class MT5ConnectionManager:
                 break  # Stop event was set
                 
         logger.info('Monitoring worker stopped')
+
+    def _check_position_changes(self, previous_positions):
+        """Check for position changes and send notifications"""
+        try:
+            if not getattr(self, 'mock_mode', False):
+                import MetaTrader5 as mt5
+                current_positions = mt5.positions_get()
+                
+                if current_positions is None:
+                    return
+                    
+                # Convert to dict for easier comparison
+                current_pos_dict = {}
+                for pos in current_positions:
+                    ticket = pos.ticket
+                    current_pos_dict[ticket] = {
+                        'symbol': pos.symbol,
+                        'type': pos.type,
+                        'volume': pos.volume,
+                        'sl': pos.sl,
+                        'tp': pos.tp,
+                        'profit': pos.profit,
+                        'price_open': pos.price_open
+                    }
+                
+                # Check for changes
+                self._detect_and_notify_changes(previous_positions, current_pos_dict)
+                
+                # Update previous positions for next check
+                previous_positions.clear()
+                previous_positions.update(current_pos_dict)
+                
+        except Exception as e:
+            logger.error(f'Error checking position changes: {e}')
+    
+    def _detect_and_notify_changes(self, previous_positions, current_positions):
+        """Detect changes and send appropriate notifications"""
+        try:
+            # Import notification system
+            from unified_notification_system import get_unified_notification_system
+            notification_system = get_unified_notification_system()
+            
+            # Check settings
+            settings = notification_system.config.get('settings', {})
+            
+            # Check for new positions (order tracking)
+            if settings.get('track_order_updates', False):
+                for ticket, pos in current_positions.items():
+                    if ticket not in previous_positions:
+                        logger.info(f"📈 New position detected: {pos['symbol']}")
+                        notification_system.send_order_update_notification(pos)
+            
+            # Check for closed positions
+            if settings.get('notify_order_close', False):
+                for ticket, pos in previous_positions.items():
+                    if ticket not in current_positions:
+                        logger.info(f"🔒 Position closed: {pos['symbol']}")
+                        notification_system.send_order_close_notification(pos)
+            
+            # Check for SL/TP changes
+            if settings.get('notify_sl_tp_changes', False):
+                for ticket, current_pos in current_positions.items():
+                    if ticket in previous_positions:
+                        prev_pos = previous_positions[ticket]
+                        
+                        # Check if SL or TP changed
+                        sl_changed = prev_pos['sl'] != current_pos['sl']
+                        tp_changed = prev_pos['tp'] != current_pos['tp']
+                        
+                        if sl_changed or tp_changed:
+                            logger.info(f"🛡️ SL/TP changed for {current_pos['symbol']}")
+                            notification_system.send_sl_tp_change_notification(current_pos)
+                            
+        except Exception as e:
+            logger.error(f'Error detecting position changes: {e}')
 
     def _save_timestamped_scan(self) -> str | None:
         """Save account scan with timestamp in filename and optional data cleanup."""

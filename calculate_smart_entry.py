@@ -1,21 +1,14 @@
-def get_pip_value(symbol: str) -> float:
-    """Calculate pip value for different symbol types"""
-    symbol_upper = symbol.upper()
-    
-    if 'JPY' in symbol_upper:
-        return 0.01  # JPY pairs: 1 pip = 0.01
-    elif symbol_upper in ['XAUUSD', 'XAGUSD', 'GOLD', 'SILVER']:
-        return 0.1   # Precious metals: 1 pip = 0.1 (metals standard)
-    elif symbol_upper in ['BTCUSD', 'ETHUSD', 'LTCUSD']:
-        return 1.0   # High-value crypto: 1 pip = 1 USD (e.g., ETH 4000.00 -> 4070.00 = 70 pips)
-    elif symbol_upper in ['SOLUSD']:
-        return 0.1   # SOL: 1 pip = 0.1 (SOL 220.00 -> 220.70 = 7 pips)
-    else:
-        return 0.0001  # Major FX pairs: 1 pip = 0.0001
+from utils import get_pip_value
+from constants import (
+    STOCHASTIC_OVERBOUGHT,
+    STOCHASTIC_OVERSOLD,
+    CONFIDENCE_BOOST_BASE,
+    CONFIDENCE_BOOST_MULTIPLIER
+)
 
 def calculate_smart_entry(symbol: str, signal: str, current_price: float, atr: float, 
                           ema20: float, support_levels: list, resistance_levels: list, 
-                          tf_data: dict) -> dict:
+                          tf_data: dict, sideway_range: dict = None) -> dict:
     """
     Calculate intelligent entry price with INDICATOR-BASED logic
     NEW LOGIC:
@@ -35,6 +28,49 @@ def calculate_smart_entry(symbol: str, signal: str, current_price: float, atr: f
     try:
         if not isinstance(current_price, (int, float)) or current_price <= 0:
             return None
+        
+        # 🎯 PRIORITY: SIDEWAY RANGE LOGIC (if sideway_range provided)
+        if sideway_range:
+            support_zone = sideway_range.get('support_zone', {})
+            resistance_zone = sideway_range.get('resistance_zone', {})
+            
+            if signal == 'BUY' and support_zone:
+                # BUY at support zone - entry at zone center or current price
+                support_center = support_zone.get('center', support_zone.get('low', current_price))
+                entry_price = current_price  # Use current price for market order
+                
+                # S/L below support zone, T/P at resistance zone
+                sl_price = support_zone.get('low', current_price * 0.99) * 0.997  # 0.3% below support zone
+                tp_price = resistance_zone.get('center', current_price * 1.015) if resistance_zone else current_price * 1.015
+                
+                return {
+                    'entry_price': entry_price,
+                    'order_type': 'market',
+                    'limit_price': None,
+                    'entry_reason': f'Sideway BUY at support zone',
+                    'confidence_boost': 10.0,  # Boost confidence for zone-based entry
+                    'sl_price': sl_price,
+                    'tp_price': tp_price
+                }
+            
+            elif signal == 'SELL' and resistance_zone:
+                # SELL at resistance zone - entry at zone center or current price
+                resistance_center = resistance_zone.get('center', resistance_zone.get('high', current_price))
+                entry_price = current_price  # Use current price for market order
+                
+                # S/L above resistance zone, T/P at support zone
+                sl_price = resistance_zone.get('high', current_price * 1.01) * 1.003  # 0.3% above resistance zone
+                tp_price = support_zone.get('center', current_price * 0.985) if support_zone else current_price * 0.985
+                
+                return {
+                    'entry_price': entry_price,
+                    'order_type': 'market',
+                    'limit_price': None,
+                    'entry_reason': f'Sideway SELL at resistance zone',
+                    'confidence_boost': 10.0,  # Boost confidence for zone-based entry
+                    'sl_price': sl_price,
+                    'tp_price': tp_price
+                }
             
         # Get key levels for analysis
         support_levels = [s for s in (support_levels or []) if isinstance(s, (int, float))]
@@ -114,10 +150,10 @@ def calculate_smart_entry(symbol: str, signal: str, current_price: float, atr: f
             
             # INDICATOR PRIORITY 3: STOCHASTIC OVERSOLD ENTRY
             if stoch_k and isinstance(stoch_k, (int, float)):
-                if stoch_k < 30:  # Oversold condition
+                if stoch_k < STOCHASTIC_OVERSOLD:  # Oversold condition
                     # Wait for stochastic to turn up from oversold
                     if stoch_d and stoch_k > stoch_d:  # K line crossing above D line
-                        confidence_boost = 8.0 + (30 - stoch_k) * 0.2  # Higher boost for deeper oversold
+                        confidence_boost = CONFIDENCE_BOOST_BASE + (STOCHASTIC_OVERSOLD - stoch_k) * CONFIDENCE_BOOST_MULTIPLIER  # Higher boost for deeper oversold
                         if confidence_boost > best_boost:
                             best_entry = current_price
                             best_reason = f'Stoch Oversold Turn: K={stoch_k:.1f}'
@@ -200,10 +236,10 @@ def calculate_smart_entry(symbol: str, signal: str, current_price: float, atr: f
             
             # INDICATOR PRIORITY 3: STOCHASTIC OVERBOUGHT ENTRY
             if stoch_k and isinstance(stoch_k, (int, float)):
-                if stoch_k > 70:  # Overbought condition
+                if stoch_k > STOCHASTIC_OVERBOUGHT:  # Overbought condition
                     # Wait for stochastic to turn down from overbought
                     if stoch_d and stoch_k < stoch_d:  # K line crossing below D line
-                        confidence_boost = 8.0 + (stoch_k - 70) * 0.2  # Higher boost for deeper overbought
+                        confidence_boost = CONFIDENCE_BOOST_BASE + (stoch_k - STOCHASTIC_OVERBOUGHT) * CONFIDENCE_BOOST_MULTIPLIER  # Higher boost for deeper overbought
                         if confidence_boost > best_boost:
                             best_entry = current_price
                             best_reason = f'Stoch Overbought Turn: K={stoch_k:.1f}'

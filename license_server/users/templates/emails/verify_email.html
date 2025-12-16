@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body { 
+            font-family: 'Segoe UI', Arial, sans-serif; 
+            line-height: 1.6; 
+            color: #333; 
+            margin: 0;
+            padding: 0;
+            background-color: #f4f4f4;
+        }
+        .wrapper {
+            width: 100%;
+            padding: 40px 0;
+            background-color: #f4f4f4;
+        }
+        .container { 
+            max-width: 600px; 
+            margin: 0 auto; 
+            background: white;
+            border-radius: 16px;
+            overflow: hidden;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+        }
+        .header { 
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+            color: white; 
+            padding: 40px 30px; 
+            text-align: center; 
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 28px;
+            font-weight: 700;
+        }
+        .header p {
+            margin: 10px 0 0;
+            opacity: 0.9;
+            font-size: 16px;
+        }
+        .content { 
+            padding: 40px 30px; 
+        }
+        .content h2 {
+            color: #333;
+            margin-top: 0;
+            font-size: 22px;
+        }
+        .content p {
+            color: #555;
+            font-size: 15px;
+        }
+        .button-container {
+            text-align: center;
+            margin: 30px 0;
+        }
+        .button { 
+            display: inline-block; 
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+            color: white !important; 
+            padding: 16px 40px; 
+            text-decoration: none; 
+            border-radius: 8px; 
+            font-weight: 600;
+            font-size: 16px;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+        }
+        .link-box {
+            background: #f8f9fa; 
+            padding: 15px; 
+            word-break: break-all; 
+            border-radius: 8px;
+            font-size: 13px;
+            color: #666;
+            border: 1px solid #e9ecef;
+        }
+        .warning { 
+            background: #fff3cd; 
+            border-left: 4px solid #ffc107; 
+            padding: 15px; 
+            border-radius: 0 8px 8px 0; 
+            margin: 20px 0; 
+        }
+        .warning strong {
+            color: #856404;
+        }
+        .info-box {
+            background: #e8f4fd;
+            border-left: 4px solid #2196f3;
+            padding: 15px;
+            border-radius: 0 8px 8px 0;
+            margin: 20px 0;
+        }
+        .footer { 
+            text-align: center; 
+            padding: 30px; 
+            color: #888; 
+            font-size: 13px;
+            background: #f8f9fa;
+            border-top: 1px solid #e9ecef;
+        }
+        .footer a {
+            color: #667eea;
+            text-decoration: none;
+        }
+        .icon {
+            font-size: 48px;
+            margin-bottom: 15px;
+        }
+    </style>
+</head>
+<body>
+    <div class="wrapper">
+        <div class="container">
+            <div class="header">
+                <div class="icon">🚀</div>
+                <h1>Trading Bot</h1>
+                <p>Xác thực tài khoản của bạn</p>
+            </div>
+            
+            <div class="content">
+                <h2>Xin chào {{ user.username }}! 👋</h2>
+                
+                <p>Cảm ơn bạn đã đăng ký tài khoản <strong>Trading Bot</strong>. Để hoàn tất đăng ký và bắt đầu sử dụng dịch vụ, vui lòng xác thực email của bạn bằng cách nhấn nút bên dưới.</p>
+                
+                <div class="button-container">
+                    <a href="{{ verification_url }}" class="button">✅ Xác Thực Tài Khoản</a>
+                </div>
+                
+                <p>Hoặc copy link sau và dán vào trình duyệt:</p>
+                <div class="link-box">
+                    {{ verification_url }}
+                </div>
+                
+                <div class="warning">
+                    ⏰ <strong>Lưu ý:</strong> Link xác thực này sẽ hết hạn sau <strong>{{ expires_hours }} giờ</strong>. Nếu link hết hạn, bạn có thể yêu cầu gửi lại email xác thực mới.
+                </div>
+                
+                <div class="info-box">
+                    <strong>📋 Sau khi xác thực:</strong>
+                    <ul style="margin: 10px 0 0; padding-left: 20px;">
+                        <li>Tài khoản của bạn sẽ được kích hoạt</li>
+                        <li>Admin sẽ xét duyệt và cấp License cho bạn</li>
+                        <li>Bạn sẽ nhận được thông báo khi có License</li>
+                    </ul>
+                </div>
+                
+                <p style="color: #888; font-size: 13px;">Nếu bạn không đăng ký tài khoản này, vui lòng bỏ qua email này. Tài khoản sẽ tự động bị xóa sau 7 ngày nếu không được xác thực.</p>
+            </div>
+            
+            <div class="footer">
+                <p><strong>Trading Bot</strong> - Hệ thống giao dịch tự động</p>
+                <p>© 2025 Trading Bot. All rights reserved.</p>
+                <p style="margin-top: 15px; font-size: 11px; color: #aaa;">
+                    Email này được gửi tự động, vui lòng không trả lời.<br>
+                    Nếu cần hỗ trợ, liên hệ: <a href="mailto:support@tradingbot.com">support@tradingbot.com</a>
+                </p>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

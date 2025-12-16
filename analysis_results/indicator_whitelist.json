@@ -1,13 +1,18 @@
 [
+  "adx",
   "atr",
   "bollinger",
+  "chaikin",
   "donchian",
+  "ema10",
   "ema100",
   "ema20",
   "ema200",
   "ema50",
   "fibonacci",
   "ichimoku",
-  "sma20",
-  "stochastic"
+  "macd",
+  "rsi",
+  "stochastic",
+  "candlestick"
 ]

@@ -1,0 +1,184 @@
+{% extends "admin/base_dashboard.html" %}
+{% load static %}
+
+{% block title %}Mã Kích Hoạt{% endblock %}
+
+{% block page_title %}Quản lý Mã Kích Hoạt{% endblock %}
+{% block page_description %}Tạo và quản lý mã kích hoạt tài khoản Trial{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <!-- Form tạo mã mới -->
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-header bg-success text-white">
+                <h5 class="mb-0"><i class="fas fa-plus-circle"></i> Tạo Mã Mới</h5>
+            </div>
+            <div class="card-body">
+                <form method="POST" action="{% url 'generate_codes' %}">
+                    {% csrf_token %}
+                    <div class="mb-3">
+                        <label class="form-label">Số lượng mã</label>
+                        <input type="number" name="count" class="form-control" value="1" min="1" max="100">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Số ngày Trial</label>
+                        <input type="number" name="trial_days" class="form-control" value="7" min="1" max="365">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Số lần sử dụng tối đa</label>
+                        <input type="number" name="max_uses" class="form-control" value="1" min="1" max="1000">
+                    </div>
+                    <button type="submit" class="btn btn-success w-100">
+                        <i class="fas fa-key"></i> Tạo Mã Kích Hoạt
+                    </button>
+                </form>
+            </div>
+        </div>
+        
+        <!-- Thống kê -->
+        <div class="card mt-3">
+            <div class="card-header bg-info text-white">
+                <h5 class="mb-0"><i class="fas fa-chart-bar"></i> Thống Kê</h5>
+            </div>
+            <div class="card-body">
+                <div class="d-flex justify-content-between mb-2">
+                    <span>Tổng số mã:</span>
+                    <strong>{{ codes|length }}</strong>
+                </div>
+                <div class="d-flex justify-content-between mb-2">
+                    <span>Mã còn hiệu lực:</span>
+                    <strong class="text-success">{{ codes|length }}</strong>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Danh sách mã -->
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-header bg-primary text-white">
+                <h5 class="mb-0"><i class="fas fa-list"></i> Danh Sách Mã Kích Hoạt</h5>
+            </div>
+            <div class="card-body p-0">
+                {% if codes %}
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th style="width: 120px;">Mã</th>
+                                <th class="text-center" style="width: 80px;">Ngày Trial</th>
+                                <th class="text-center" style="width: 100px;">Đã dùng/Tối đa</th>
+                                <th class="text-center" style="width: 80px;">Trạng thái</th>
+                                <th style="width: 150px;">Ngày tạo</th>
+                                <th class="text-center" style="width: 100px;">Thao tác</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for code in codes %}
+                            <tr>
+                                <td>
+                                    <div class="d-flex align-items-center">
+                                        <code class="fs-5 me-2 text-primary fw-bold" id="code-{{ code.id }}">{{ code.code }}</code>
+                                        <button class="btn btn-sm btn-outline-secondary copy-btn" 
+                                                onclick="copyCode('{{ code.code }}')" title="Sao chép">
+                                            <i class="fas fa-copy"></i>
+                                        </button>
+                                    </div>
+                                </td>
+                                <td class="text-center">
+                                    <span class="badge bg-info">{{ code.trial_days }} ngày</span>
+                                </td>
+                                <td class="text-center">
+                                    <span class="{% if code.used_count >= code.max_uses %}text-danger{% else %}text-success{% endif %}">
+                                        {{ code.used_count }}/{{ code.max_uses }}
+                                    </span>
+                                </td>
+                                <td class="text-center">
+                                    {% if code.is_valid %}
+                                        <span class="badge bg-success">Có hiệu lực</span>
+                                    {% else %}
+                                        <span class="badge bg-danger">Hết hiệu lực</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    <small class="text-muted">{{ code.created_at|date:"d/m/Y H:i" }}</small>
+                                </td>
+                                <td class="text-center">
+                                    <form action="{% url 'delete_code' code.id %}" method="POST" style="display:inline;"
+                                          onsubmit="return confirm('Xóa mã {{ code.code }}?');">
+                                        {% csrf_token %}
+                                        <button type="submit" class="btn btn-sm btn-danger" title="Xóa">
+                                            <i class="fas fa-trash"></i>
+                                        </button>
+                                    </form>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <div class="text-center py-5">
+                    <i class="fas fa-key fa-3x text-muted mb-3"></i>
+                    <p class="text-muted">Chưa có mã kích hoạt nào</p>
+                    <p class="text-muted small">Sử dụng form bên trái để tạo mã mới</p>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Copy all codes -->
+{% if codes %}
+<div class="card">
+    <div class="card-header bg-secondary text-white">
+        <h5 class="mb-0"><i class="fas fa-clipboard-list"></i> Sao Chép Hàng Loạt</h5>
+    </div>
+    <div class="card-body">
+        <textarea id="all-codes" class="form-control mb-2" rows="3" readonly>{% for code in codes %}{% if code.is_valid %}{{ code.code }}{% if not forloop.last %}
+{% endif %}{% endif %}{% endfor %}</textarea>
+        <button class="btn btn-primary" onclick="copyAllCodes()">
+            <i class="fas fa-clipboard"></i> Sao chép tất cả mã còn hiệu lực
+        </button>
+    </div>
+</div>
+{% endif %}
+
+<script>
+function copyCode(code) {
+    navigator.clipboard.writeText(code).then(function() {
+        showToast('Đã sao chép: ' + code);
+    });
+}
+
+function copyAllCodes() {
+    const textarea = document.getElementById('all-codes');
+    navigator.clipboard.writeText(textarea.value).then(function() {
+        showToast('Đã sao chép tất cả mã!');
+    });
+}
+
+function showToast(message) {
+    // Simple toast notification
+    const toast = document.createElement('div');
+    toast.className = 'position-fixed bottom-0 end-0 p-3';
+    toast.style.zIndex = 9999;
+    toast.innerHTML = `
+        <div class="toast show" role="alert">
+            <div class="toast-header bg-success text-white">
+                <i class="fas fa-check-circle me-2"></i>
+                <strong class="me-auto">Thành công</strong>
+                <button type="button" class="btn-close btn-close-white" onclick="this.parentElement.parentElement.parentElement.remove()"></button>
+            </div>
+            <div class="toast-body">
+                ${message}
+            </div>
+        </div>
+    `;
+    document.body.appendChild(toast);
+    setTimeout(() => toast.remove(), 3000);
+}
+</script>
+{% endblock %}

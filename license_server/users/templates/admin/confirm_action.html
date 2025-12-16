@@ -1,0 +1,60 @@
+{% extends 'admin/base_dashboard.html' %}
+
+{% block title %}{{ action_title }} - License Server{% endblock %}
+{% block page_title %}<span data-i18n="confirm_action">Confirm Action</span>{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-6">
+        <div class="card-custom">
+            <div class="card-header-custom text-center">
+                <h4>
+                    {% if action == 'delete' %}
+                    <i class="bi bi-exclamation-triangle text-danger me-2"></i>
+                    {% else %}
+                    <i class="bi bi-question-circle text-warning me-2"></i>
+                    {% endif %}
+                    <span data-i18n="confirm_action">{{ action_title }}</span>
+                </h4>
+            </div>
+            <div class="card-body-custom text-center py-5">
+                <p class="mb-4 fs-5">{{ action_message }}</p>
+                
+                {% if user_to_delete %}
+                <div class="alert alert-light mb-4">
+                    <strong>User:</strong> {{ user_to_delete.username }}<br>
+                    <strong>Email:</strong> {{ user_to_delete.email }}<br>
+                    <strong>Joined:</strong> {{ user_to_delete.date_joined|date:"d/m/Y H:i" }}
+                </div>
+                {% endif %}
+                
+                {% if license_to_delete %}
+                <div class="alert alert-light mb-4">
+                    <strong>License:</strong> {{ license_to_delete.license_key }}<br>
+                    <strong>User:</strong> {{ license_to_delete.user.username }}<br>
+                    <strong>Type:</strong> {{ license_to_delete.license_type|upper }}
+                </div>
+                {% endif %}
+                
+                {% if device_to_delete %}
+                <div class="alert alert-light mb-4">
+                    <strong>Device:</strong> {{ device_to_delete.device_name|default:device_to_delete.hardware_id }}<br>
+                    <strong>User:</strong> {{ device_to_delete.license.user.username }}<br>
+                    <strong>OS:</strong> {{ device_to_delete.os_info }}
+                </div>
+                {% endif %}
+                
+                <form method="post" action="{{ confirm_url }}" class="d-inline">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-danger btn-lg me-2">
+                        <i class="bi bi-check-lg me-1"></i> <span data-i18n="confirm">Confirm</span>
+                    </button>
+                    <a href="{{ cancel_url }}" class="btn btn-secondary btn-lg">
+                        <i class="bi bi-x-lg me-1"></i> <span data-i18n="cancel">Cancel</span>
+                    </a>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

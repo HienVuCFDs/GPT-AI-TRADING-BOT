@@ -11,6 +11,43 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Optional, Any, List, Dict, Tuple, Set, Union
 import os, sys, json, gzip, glob, re, logging, time
+from utils import get_pip_value as util_get_pip_value
+from constants import (
+    CONFIDENCE_VERY_HIGH,
+    CONFIDENCE_HIGH,
+    CONFIDENCE_MEDIUM,
+    CONFIDENCE_LOW,
+    CONFIDENCE_MULTIPLIER_VERY_HIGH,
+    CONFIDENCE_MULTIPLIER_HIGH,
+    CONFIDENCE_MULTIPLIER_MEDIUM,
+    CONFIDENCE_MULTIPLIER_LOW,
+    MIN_SL_PIPS,
+    MAX_SL_PIPS,
+    ATR_SL_MULTIPLIER,
+    PRICE_MOVEMENT_SIGNIFICANT,
+    PRICE_MOVEMENT_STABLE,
+    PRICE_ACTION_STRONG_MOVE,
+    PRICE_ACTION_STABLE,
+    RSI_OVERBOUGHT,
+    RSI_OVERSOLD
+)
+
+# 🤖 AI/ML Signal Predictor Integration (Standalone Deep Learning)
+ML_AVAILABLE = False
+_ml_predictor = None
+try:
+    from ai_models import get_ml_predictor, MLSignalPredictor
+    _ml_predictor = get_ml_predictor()
+    ML_AVAILABLE = _ml_predictor.is_loaded
+    if ML_AVAILABLE:
+        logging.getLogger(__name__).info(f"✅ Standalone DL model loaded successfully")
+except ImportError as e:
+    logging.getLogger(__name__).warning(f"⚠️ ai_models not available: {e}")
+except Exception as e:
+    logging.getLogger(__name__).warning(f"⚠️ ML Predictor init error: {e}")
+
+if not ML_AVAILABLE:
+    logger = logging.getLogger(__name__)  # Will be redefined later if not exists
 
 # Fix encoding for Windows console
 if sys.platform == "win32":
@@ -44,6 +81,101 @@ except Exception:  # pragma: no cover
         TF = ["D1","H4","H1","M30","M15","M5"]
         STRICT_IND_ONLY = False
     CFG = _DummyCFG()  # type: ignore
+
+# ============================================================================
+# 🔄 GLOBAL RISK SETTINGS SINGLETON - Load once, use everywhere
+# ============================================================================
+_GLOBAL_RISK_SETTINGS: Dict = {}
+_GLOBAL_RISK_SETTINGS_LOADED: bool = False
+
+def get_global_risk_settings(force_reload: bool = False) -> Dict:
+    """
+    🔄 Load risk settings once and cache globally.
+    All functions should use this instead of loading from file directly.
+    
+    Args:
+        force_reload: Force reload from file (useful after GUI saves)
+    
+    Returns:
+        Dict with all risk settings
+    """
+    global _GLOBAL_RISK_SETTINGS, _GLOBAL_RISK_SETTINGS_LOADED
+    
+    if _GLOBAL_RISK_SETTINGS_LOADED and not force_reload:
+        return _GLOBAL_RISK_SETTINGS
+    
+    settings = {}
+    
+    try:
+        risk_settings_path = 'risk_management/risk_settings.json'
+        if os.path.exists(risk_settings_path):
+            with open(risk_settings_path, 'r', encoding='utf-8') as f:
+                settings = json.load(f)
+            logger.info(f"✅ Global risk settings loaded from {risk_settings_path}")
+        else:
+            logger.warning(f"⚠️ Risk settings file not found: {risk_settings_path}")
+    except Exception as e:
+        logger.error(f"❌ Failed to load risk settings: {e}")
+    
+    # Apply comprehensive defaults to ensure all keys exist
+    defaults = {
+        # Volume settings
+        'volume_mode': 'Khối lượng mặc định',
+        'fixed_volume_lots': 0.01,
+        'min_volume_auto': 0.01,
+        'max_total_volume': 'OFF',
+        
+        # S/L T/P settings
+        'sltp_mode': 'Bội số ATR',
+        'default_sl_pips': 50,
+        'default_tp_pips': 100,
+        'atr_sl_multiplier': 2.5,
+        'atr_tp_multiplier': 1.5,
+        
+        # Breakeven settings
+        'breakeven_min_pips': 20.0,
+        'breakeven_max_pips': 50.0,
+        
+        # Trailing Stop settings
+        'trailing_activation_pips': 150.0,
+        'trailing_min_pips': 70.0,
+        'trailing_max_pips': 100.0,
+        'trailing_use_volatility': True,
+        
+        # Risk settings
+        'max_risk_per_trade': 5.0,
+        'max_total_risk': 20.0,
+        'max_drawdown': 15.0,
+        'min_margin_level': 300.0,
+        'risk_mode': 'moderate',
+        
+        # DCA settings
+        'enable_dca': False,
+        'max_dca_levels': 3,
+        
+        # Buffer settings
+        'min_sl_buffer_from_entry_pips': 35,
+        'opposite_signal_sl_buffer_pips': 20,
+        'signal_adjustment_sl_pips': 40,
+        'signal_adjustment_tp_pips': 120,
+    }
+    
+    # Merge defaults with loaded settings (loaded values override defaults)
+    for key, default_value in defaults.items():
+        if key not in settings:
+            settings[key] = default_value
+            logger.debug(f"🔧 Applied default: {key} = {default_value}")
+    
+    _GLOBAL_RISK_SETTINGS = settings
+    _GLOBAL_RISK_SETTINGS_LOADED = True
+    
+    return settings
+
+def reload_global_risk_settings() -> Dict:
+    """Force reload risk settings from file. Call after GUI saves."""
+    return get_global_risk_settings(force_reload=True)
+
+# ============================================================================
 
 def price_decimals(symbol: str) -> int:
     """Heuristic decimal precision for pretty printing (aligned with order rounding)."""
@@ -289,34 +421,8 @@ def calculate_pips(symbol: str, entry_price: float, current_price: float, direct
         return 0.0
 
 def get_pip_value(symbol: str) -> float:
-    """Get pip value for symbol (point size for pip calculation) - UPDATED FOR NEW PIP STANDARDS"""
-    try:
-        s = (symbol or '').upper()
-        
-        # Gold/Silver metals
-        if s.startswith('XAU') or s.startswith('XAG'):
-            return 0.1  # 0.1 = 1 pip for metals
-            
-        # Cryptocurrency - distinguish between high-value and other crypto
-        elif any(crypto in s for crypto in ['BTC', 'ETH', 'SOL', 'ADA', 'DOGE', 'BNB', 'TRX', 'SHIB', 'ARB', 'OP', 'APE', 'SAND', 'CRO', 'FTT']):
-            # High-value crypto (BTC, ETH): 1 pip = 1.0 unit (70 pips = $70 USD)
-            if any(high_crypto in s for high_crypto in ['BTC', 'ETH']):
-                return 1.0  # BTC/ETH: 1 pip = 1.0 price unit (e.g., ETH 4000.00 -> 4070.00 = 70 pips)
-            elif 'SOL' in s:
-                return 0.1  # SOL: 1 pip = 0.1 (SOL 220.00 -> 220.70 = 7 pips)
-            else:
-                return 0.01  # ADA, DOGE, BNB, etc: 1 pip = 0.01
-                
-        # JPY pairs (2 decimal places)
-        elif s.endswith('JPY'):
-            return 0.01  # 0.01 = 1 pip for JPY pairs
-            
-        # Major FX pairs (4 decimal places) 
-        else:
-            return 0.0001  # 0.0001 = 1 pip for major pairs
-            
-    except Exception:
-        return 0.0001  # Default fallback for major FX
+    """Get pip value for symbol - using centralized utility"""
+    return util_get_pip_value(symbol)
 
 def calculate_smart_sl_buffer(symbol: str, current_price: float, entry_price: float, direction: str, confidence: float) -> float:
     """
@@ -412,14 +518,14 @@ def calculate_smart_sl_buffer(symbol: str, current_price: float, entry_price: fl
         # 4️⃣ CONFIDENCE-BASED ADJUSTMENT
         # Higher confidence = tighter SL, Lower confidence = wider SL
         confidence_multiplier = 1.0
-        if confidence >= 80:
-            confidence_multiplier = 0.9  # Tighter SL for high confidence
-        elif confidence >= 70:
-            confidence_multiplier = 1.0  # Standard SL
-        elif confidence >= 60:  
-            confidence_multiplier = 1.1  # Slightly wider SL
+        if confidence >= CONFIDENCE_VERY_HIGH:
+            confidence_multiplier = CONFIDENCE_MULTIPLIER_VERY_HIGH  # Tighter SL for very high confidence
+        elif confidence >= CONFIDENCE_HIGH:
+            confidence_multiplier = CONFIDENCE_MULTIPLIER_HIGH  # Standard SL for high confidence
+        elif confidence >= CONFIDENCE_MEDIUM:  
+            confidence_multiplier = CONFIDENCE_MULTIPLIER_MEDIUM  # Slightly wider SL for medium confidence
         else:
-            confidence_multiplier = 1.3  # Much wider SL for low confidence
+            confidence_multiplier = CONFIDENCE_MULTIPLIER_LOW  # Much wider SL for low confidence
         
         # 5️⃣ PRICE ACTION CONTEXT
         # Check if we're in trending or ranging market
@@ -427,14 +533,14 @@ def calculate_smart_sl_buffer(symbol: str, current_price: float, entry_price: fl
         
         price_action_multiplier = 1.0
         # If price has moved significantly from entry, we need wider buffer
-        if entry_to_current_pips > 100:
-            price_action_multiplier = 1.2  # Wider buffer in strong moves
-        elif entry_to_current_pips < 20:
-            price_action_multiplier = 0.9  # Tighter buffer if price is stable
+        if entry_to_current_pips > PRICE_MOVEMENT_SIGNIFICANT:
+            price_action_multiplier = PRICE_ACTION_STRONG_MOVE  # Wider buffer in strong moves
+        elif entry_to_current_pips < PRICE_MOVEMENT_STABLE:
+            price_action_multiplier = PRICE_ACTION_STABLE  # Tighter buffer if price is stable
         
         # 6️⃣ COMBINE ALL FACTORS
         # Base SL from ATR (minimum 2x ATR, maximum 4x ATR for safety)
-        base_sl_pips = max(30, min(atr_pips * 2.5, 150))  # Reasonable bounds
+        base_sl_pips = max(MIN_SL_PIPS, min(atr_pips * ATR_SL_MULTIPLIER, MAX_SL_PIPS))  # Reasonable bounds
         
         # Apply all multipliers
         smart_sl_pips = (base_sl_pips * 
@@ -482,6 +588,10 @@ def calculate_smart_sl_buffer(symbol: str, current_price: float, entry_price: fl
 def enhanced_action_decision(position: dict, signal: dict, risk_metrics: dict, args, risk_settings: dict = None) -> dict:
     """Enhanced action decision making with risk-adjusted logic."""
     try:
+        # 🔄 USE GLOBAL RISK SETTINGS SINGLETON - ensures consistency
+        if risk_settings is None:
+            risk_settings = get_global_risk_settings()
+        
         # Extract position data with proper None checking and TYPE CONVERSION
         pos_dir = str(position.get('direction', '') or '')
         profit = float(position.get('profit', 0) or 0)
@@ -493,6 +603,13 @@ def enhanced_action_decision(position: dict, signal: dict, risk_metrics: dict, a
         symbol = str(position.get('symbol', '') or '')
         entry_price = float(position.get('price_open', 0) or 0)
         current_price = float(position.get('price_current', 0) or 0)
+        # 🎯 Extract current SL/TP from position for trailing stop logic
+        current_sl = position.get('sl')
+        if current_sl is not None:
+            current_sl = float(current_sl)
+        current_tp = position.get('tp')
+        if current_tp is not None:
+            current_tp = float(current_tp)
         
         # Calculate pips profit/loss with None safety and TYPE CONVERSION
         pips = 0.0
@@ -612,18 +729,7 @@ def enhanced_action_decision(position: dict, signal: dict, risk_metrics: dict, a
             pip_loss_critical = int(-100 * multiplier)
         
         # 🚨 1. EMERGENCY RISK MANAGEMENT (GUI-controlled)
-        # Load risk settings first to check GUI disable flags
-        try:
-            import os
-            import json
-            risk_settings_path = 'risk_management/risk_settings.json'
-            risk_settings = {}
-            if os.path.exists(risk_settings_path):
-                with open(risk_settings_path, 'r', encoding='utf-8') as f:
-                    risk_settings = json.load(f)
-        except Exception:
-            risk_settings = {}
-        
+        # 🔄 USE GLOBAL RISK SETTINGS (already loaded at function start)
         # Check if emergency features are disabled by GUI
         disable_emergency_stop = risk_settings.get('disable_emergency_stop', False)
         disable_max_dd_close = risk_settings.get('disable_max_dd_close', False)
@@ -666,18 +772,20 @@ def enhanced_action_decision(position: dict, signal: dict, risk_metrics: dict, a
                 print(f"🔧 FORCING to loss logic - preventing move_sl_to_be on losing position")
                 action = 'hold'
                 priority_score = max(priority_score, 20)
-                rationale.append(f'⏳ Lỗ ({actual_profit:.2f}$) - BUG PREVENTED: pips vs profit mismatch')
+                rationale.append(f'⏳ Lỗ ({actual_profit:.2f}$) - pips dương nhưng lợi nhuận âm')
             elif pct_equity < 0:
                 print(f"🚨 BUG PREVENTED [EQUITY CHECK]: {symbol} pips={pips} > 0 but pct_equity={pct_equity}% < 0!")
                 print(f"🔧 FORCING to loss logic - preventing move_sl_to_be on negative equity position")
                 action = 'hold'
                 priority_score = max(priority_score, 20)
-                rationale.append(f'⏳ Lỗ ({pct_equity:.2f}%) - BUG PREVENTED: pips vs equity mismatch')
+                rationale.append(f'⏳ Lỗ ({pct_equity:.2f}%) - pips dương nhưng vốn âm')
             elif action != 'close_full':  # Nếu chưa có quyết định đóng từ tín hiệu ngược
-                # 🎯 HARDCODED SL MANAGEMENT RULES - Không phụ thuộc vào risk_settings
-                move_to_be_min = 20      # Lãi tối thiểu để move SL to BE
-                move_to_be_max = 50      # Lãi tối đa cho move SL to BE
-                trailing_activation = 70  # Lãi kích hoạt trailing stop
+                # 🎯 LOAD SL MANAGEMENT RULES FROM GLOBAL RISK_SETTINGS (GUI settings - always available)
+                move_to_be_min = risk_settings.get('breakeven_min_pips', 70.0)
+                move_to_be_max = risk_settings.get('breakeven_max_pips', 100.0)
+                trailing_activation = risk_settings.get('trailing_activation_pips', 150.0)
+                
+                print(f"📊 SL Management Settings: BE range={move_to_be_min}-{move_to_be_max} pips, Trailing={trailing_activation} pips")
                 
                 if pips >= trailing_activation:
                     # 🛡️ VALIDATION: Check before trailing stop
@@ -685,7 +793,7 @@ def enhanced_action_decision(position: dict, signal: dict, risk_metrics: dict, a
                         print(f"🚨 BUG PREVENTED: {symbol} almost set trailing_sl but profit={actual_profit}, equity={pct_equity}%!")
                         action = 'hold'
                         priority_score = max(priority_score, 20)
-                        rationale.append(f'⏳ EMERGENCY HOLD - prevented trailing on losing position')
+                        rationale.append(f'⏳ GIỮ KHẨN CẤP - ngăn trailing stop trên vị thế lỗ')
                     else:
                         # Trailing stop for high profits (>= 70 pips) - VALIDATED
                         print(f"✅ VALIDATED TRAILING: {symbol} pips={pips}, profit=${actual_profit}, equity={pct_equity}%")
@@ -699,17 +807,17 @@ def enhanced_action_decision(position: dict, signal: dict, risk_metrics: dict, a
                         print(f"🔧 EMERGENCY OVERRIDE: Switching to hold instead of move_sl_to_be")
                         action = 'hold'
                         priority_score = max(priority_score, 20)
-                        rationale.append(f'⏳ EMERGENCY HOLD - prevented move_sl_to_be on losing position')
+                        rationale.append(f'⏳ GIỮ KHẨN CẤP - ngăn dời SL về hòa vốn trên vị thế lỗ')
                     else:
                         # Move to breakeven for moderate profits (20-50 pips) - TRIPLE VALIDATED
                         print(f"✅ VALIDATED MOVE_SL_TO_BE: {symbol} pips={pips}, profit=${actual_profit}, equity={pct_equity}%")
                         action = 'move_sl_to_be'
                         priority_score = max(priority_score, 45)
-                        rationale.append(f'📈 Lãi ({pips:.1f} pips) trong vùng {move_to_be_min}-{move_to_be_max} - Move S/L về breakeven')
+                        rationale.append(f'📈 Lợi nhuận ({pips:.1f} pips) trong khoảng {move_to_be_min}-{move_to_be_max} - Dời S/L về hòa vốn')
                 else:
                     action = 'hold'
                     priority_score = max(priority_score, 25)
-                    rationale.append(f'📊 Giữ nguyên ({pips:.1f} pips) - chưa đủ điều kiện để điều chỉnh SL')
+                    rationale.append(f'📊 Giữ nguyên ({pips:.1f} pips) - chưa đủ điều kiện điều chỉnh SL')
         
         # 📉 4. POSITION HOLDING LOGIC (Simplified)
         # Giữ lệnh trừ khi có tín hiệu ngược (đã xử lý ở trên)
@@ -717,7 +825,7 @@ def enhanced_action_decision(position: dict, signal: dict, risk_metrics: dict, a
             if action != 'close_full':  # Nếu chưa có quyết định đóng từ tín hiệu ngược
                 action = 'hold'
                 priority_score = max(priority_score, 20)
-                rationale.append(f'⏳ Lỗ ({pips:.1f} pips) - chờ thị trường phục hồi')
+                rationale.append(f'⏳ Lỗ ({pips:.1f} pips) - chờ thị trường hồi phục')
         
         # 📊 5. NEUTRAL POSITION (no significant profit/loss)
         else:  # pips == 0 or very close to breakeven
@@ -809,142 +917,80 @@ def enhanced_action_decision(position: dict, signal: dict, risk_metrics: dict, a
                     pip_value = get_pip_value(symbol) if pip_value is None else pip_value
                     proposed_sl = apply_enhanced_sl_protection(idea_sl, pos_dir, current_price, pip_value)
             elif current_price and entry_price:
-                # Load risk settings from file to get default_sl_pips
-                try:
-                    import os
-                    risk_settings_path = 'risk_management/risk_settings.json'
-                    default_sl_pips = 50  # Fallback
-                    
-                    if os.path.exists(risk_settings_path):
-                        with open(risk_settings_path, 'r', encoding='utf-8') as f:
-                            risk_settings = json.load(f)
-                            default_sl_pips = risk_settings.get('default_sl_pips', 50)
-                    
-                    # 🎯 ENHANCED PROTECTIVE SL CALCULATION - AVOID ENTRY POINT PROXIMITY
-                    pip_value = get_pip_value(symbol)
-                    
-                    # 🧠 SMART DYNAMIC SL CALCULATION - Market-Based Protection
-                    min_sl_buffer_from_entry_pips = calculate_smart_sl_buffer(symbol, current_price, entry_price, pos_dir, conf)
+                # 🔄 USE GLOBAL RISK SETTINGS (already loaded at function start)
+                default_sl_pips = risk_settings.get('default_sl_pips', 50)
+                
+                # 🎯 ENHANCED PROTECTIVE SL CALCULATION - AVOID ENTRY POINT PROXIMITY
+                pip_value = get_pip_value(symbol)
+                
+                # 🧠 SMART DYNAMIC SL CALCULATION - Market-Based Protection
+                min_sl_buffer_from_entry_pips = calculate_smart_sl_buffer(symbol, current_price, entry_price, pos_dir, conf)
 
+                
+                # Factor 1: Signal strength adjustment
+                signal_multiplier = 1.5 if conf >= 80 else 1.2 if conf >= 70 else 1.0 if conf >= 50 else 0.8
+                
+                # Factor 2: Risk mode adjustment
+                risk_multiplier = 0.8 if risk_mode == 'conservative' else 1.2 if risk_mode == 'aggressive' else 1.0
+                
+                # Factor 3: Volatility adjustment
+                volatility_multiplier = 1.3 if overall_risk == 'HIGH' else 0.8 if overall_risk == 'LOW' else 1.0
+                
+                # Calculate adaptive SL distance with MINIMUM SAFETY BUFFER
+                base_sl_pips = max(default_sl_pips, min_sl_buffer_from_entry_pips + 10)  # Ensure minimum distance
+                adaptive_sl_pips = base_sl_pips * signal_multiplier * risk_multiplier * volatility_multiplier
+                
+                # 🛡️ SAFETY CHECK: Ensure S/L is NOT too close to entry point
+                entry_to_current_pips = abs(current_price - entry_price) / pip_value
+                
+                # Calculate candidate SL based on case type
+                if pips < 0 and abs(pips) < pip_threshold_small:  # Small loss case - use entry-based protection
+                    min_sl_from_entry = min_sl_buffer_from_entry_pips * pip_value
                     
-                    # Factor 1: Signal strength adjustment
-                    signal_multiplier = 1.5 if conf >= 80 else 1.2 if conf >= 70 else 1.0 if conf >= 50 else 0.8
-                    
-                    # Factor 2: Risk mode adjustment
-                    risk_multiplier = 0.8 if risk_mode == 'conservative' else 1.2 if risk_mode == 'aggressive' else 1.0
-                    
-                    # Factor 3: Volatility adjustment
-                    volatility_multiplier = 1.3 if overall_risk == 'HIGH' else 0.8 if overall_risk == 'LOW' else 1.0
-                    
-                    # Calculate adaptive SL distance with MINIMUM SAFETY BUFFER
-                    base_sl_pips = max(default_sl_pips, min_sl_buffer_from_entry_pips + 10)  # Ensure minimum distance
-                    adaptive_sl_pips = base_sl_pips * signal_multiplier * risk_multiplier * volatility_multiplier
-                    
-                    # 🛡️ SAFETY CHECK: Ensure S/L is NOT too close to entry point
-                    entry_to_current_pips = abs(current_price - entry_price) / pip_value
-                    
-                    # Calculate candidate SL based on case type
-                    if pips < 0 and abs(pips) < pip_threshold_small:  # Small loss case - use entry-based protection
-                        min_sl_from_entry = min_sl_buffer_from_entry_pips * pip_value
-                        
-                        if pos_dir == 'BUY':
-                            candidate_sl = entry_price - min_sl_from_entry
-                        else:  # SELL
-                            candidate_sl = entry_price + min_sl_from_entry
-                    else:
-                        # Normal case - use adaptive calculation
-                        if pos_dir == 'BUY':
-                            candidate_sl = current_price - (adaptive_sl_pips * pip_value)
-                        else:  # SELL
-                            candidate_sl = current_price + (adaptive_sl_pips * pip_value)
-                    
-                    # �️ APPLY UNIVERSAL ENHANCED PROTECTION TO ALL CASES
-                    proposed_sl = apply_enhanced_sl_protection(candidate_sl, pos_dir, current_price, pip_value)
-                        
-                except Exception as e:
-                    # 🛡️ UNIVERSAL FALLBACK LOGIC with Enhanced Protection
-                    pip_value = get_pip_value(symbol)
-                    min_sl_buffer_pips = 35  # Minimum safe buffer - prevent premature stops
-                    
-                    # Use larger distance for protection even in fallback
-                    sl_distance = max(pip_threshold_small * 0.8, min_sl_buffer_pips + 5) if signal_alignment == 'ALIGNED' else max(pip_threshold_small * 0.5, min_sl_buffer_pips)
-                    
-                    # Calculate candidate SL
                     if pos_dir == 'BUY':
-                        # Base calculation from current price
-                        candidate_sl_base = current_price - (sl_distance * pip_value)
-                        
-                        # Entry protection if available
-                        if entry_price:
-                            min_sl_from_entry = min_sl_buffer_pips * pip_value
-                            candidate_sl_entry = entry_price - min_sl_from_entry
-                            candidate_sl = min(candidate_sl_base, candidate_sl_entry)
-                        else:
-                            candidate_sl = candidate_sl_base
-                            
-                    else:  # SELL position
-                        # Base calculation from current price
-                        candidate_sl_base = current_price + (sl_distance * pip_value)
-                        
-                        # Entry protection if available
-                        if entry_price:
-                            min_sl_from_entry = min_sl_buffer_pips * pip_value
-                            candidate_sl_entry = entry_price + min_sl_from_entry
-                            candidate_sl = max(candidate_sl_base, candidate_sl_entry)
-                        else:
-                            candidate_sl = candidate_sl_base
-                    
-                    # �️ APPLY UNIVERSAL ENHANCED PROTECTION TO FALLBACK
-                    proposed_sl = apply_enhanced_sl_protection(candidate_sl, pos_dir, current_price, pip_value)
+                        candidate_sl = entry_price - min_sl_from_entry
+                    else:  # SELL
+                        candidate_sl = entry_price + min_sl_from_entry
+                else:
+                    # Normal case - use adaptive calculation
+                    if pos_dir == 'BUY':
+                        candidate_sl = current_price - (adaptive_sl_pips * pip_value)
+                    else:  # SELL
+                        candidate_sl = current_price + (adaptive_sl_pips * pip_value)
+                
+                # 🛡️ APPLY UNIVERSAL ENHANCED PROTECTION TO ALL CASES
+                proposed_sl = apply_enhanced_sl_protection(candidate_sl, pos_dir, current_price, pip_value)
                 
         elif action == 'set_tp':
             # Calculate appropriate TP based on risk settings and signal
             if idea_tp:
                 proposed_tp = idea_tp
             elif current_price and entry_price:
-                # Load risk settings from file to get default_tp_pips
-                try:
-                    import os
-                    risk_settings_path = 'risk_management/risk_settings.json'
-                    default_tp_pips = 100  # Fallback
-                    
-                    if os.path.exists(risk_settings_path):
-                        with open(risk_settings_path, 'r', encoding='utf-8') as f:
-                            risk_settings = json.load(f)
-                            default_tp_pips = risk_settings.get('default_tp_pips', 100)
-                    
-                    # Use default_tp_pips from risk settings instead of dynamic calculation
-                    pip_value = get_pip_value(symbol)
-                    
-                    if pos_dir == 'BUY':
-                        # For BUY positions, TP should be above current price
-                        proposed_tp = current_price + (default_tp_pips * pip_value)
-                    else:  # SELL position
-                        # For SELL positions, TP should be below current price
-                        proposed_tp = current_price - (default_tp_pips * pip_value)
-                        
-                except Exception as e:
-                    # Fallback to original logic if risk settings can't be loaded
-                    if pos_dir == 'BUY':
-                        tp_distance = pip_threshold_medium * 1.5 if signal_alignment == 'ALIGNED' else pip_threshold_small
-                        pip_value = get_pip_value(symbol)
-                        proposed_tp = current_price + (tp_distance * pip_value)
-                    else:
-                        tp_distance = pip_threshold_medium * 1.5 if signal_alignment == 'ALIGNED' else pip_threshold_small
-                        pip_value = get_pip_value(symbol)
-                        proposed_tp = current_price - (tp_distance * pip_value)
+                # 🔄 USE GLOBAL RISK SETTINGS (already loaded at function start)
+                default_tp_pips = risk_settings.get('default_tp_pips', 100)
+                
+                # Use default_tp_pips from risk settings instead of dynamic calculation
+                pip_value = get_pip_value(symbol)
+                
+                if pos_dir == 'BUY':
+                    # For BUY positions, TP should be above current price
+                    proposed_tp = current_price + (default_tp_pips * pip_value)
+                else:  # SELL position
+                    # For SELL positions, TP should be below current price
+                    proposed_tp = current_price - (default_tp_pips * pip_value)
                     
         elif action == 'move_sl_to_be':
             # Move SL to breakeven (entry price)
             move_sl_price = entry_price
             
         elif action == 'set_trailing_sl':
-            # 🎯 ENHANCED TRAILING SL với biến động thị trường từ trendline_sr
+            # 🎯 AUTO-UPDATE TRAILING SL - Tự động điều chỉnh S/L theo giá
             if current_price and entry_price:
-                # 🎯 HARDCODED TRAILING SETTINGS - Không phụ thuộc vào risk_settings
-                trailing_min = 20        # Khoảng cách trailing tối thiểu (pips)
-                trailing_max = 50        # Khoảng cách trailing tối đa (pips)  
-                use_volatility = True    # Luôn sử dụng market volatility
+                # 🎯 LOAD TRAILING SETTINGS FROM GLOBAL RISK_SETTINGS (GUI settings - always available)
+                trailing_activation = risk_settings.get('trailing_activation_pips', 150.0)
+                trailing_min = risk_settings.get('trailing_min_pips', 70.0)
+                trailing_max = risk_settings.get('trailing_max_pips', 100.0)
+                use_volatility = risk_settings.get('trailing_use_volatility', True)
                 
                 # Get market volatility data từ trendline_sr
                 volatility = 0.6  # Default moderate volatility
@@ -999,17 +1045,48 @@ def enhanced_action_decision(position: dict, signal: dict, risk_metrics: dict, a
                 pip_value = get_pip_value(symbol)
                 trail_distance = trail_distance_pips * pip_value
                 
+                # 🎯 CALCULATE NEW TRAILING S/L based on current price
                 if pos_dir == 'BUY':
-                    # For BUY positions, trailing distance from current high
-                    activate_price = current_price - (trail_distance * 0.5)
+                    # For BUY: New S/L = Current Price - Trail Distance
+                    # S/L should only move UP, never down
+                    new_sl = current_price - trail_distance
+                    
+                    if current_sl is None:
+                        # No existing SL - set initial trailing SL
+                        move_sl_price = new_sl
+                        logger.info(f"🎯 TRAILING BUY: Setting initial S/L at {new_sl:.5f} (trailing {trail_distance_pips:.1f} pips)")
+                    elif new_sl > current_sl:
+                        # Only update if new S/L is higher (protecting more profit)
+                        move_sl_price = new_sl
+                        logger.info(f"🎯 TRAILING BUY: S/L {current_sl:.5f} → {new_sl:.5f} (trailing {trail_distance_pips:.1f} pips)")
+                    else:
+                        # Keep current S/L (don't move down)
+                        move_sl_price = None
+                        logger.debug(f"⏸️ TRAILING BUY: S/L stays at {current_sl:.5f} (new {new_sl:.5f} not higher)")
                 else:  # SELL position
-                    # For SELL positions, trailing distance from current low
-                    activate_price = current_price + (trail_distance * 0.5)
+                    # For SELL: New S/L = Current Price + Trail Distance
+                    # S/L should only move DOWN, never up
+                    new_sl = current_price + trail_distance
+                    
+                    if current_sl is None:
+                        # No existing SL - set initial trailing SL
+                        move_sl_price = new_sl
+                        logger.info(f"🎯 TRAILING SELL: Setting initial S/L at {new_sl:.5f} (trailing {trail_distance_pips:.1f} pips)")
+                    elif new_sl < current_sl:
+                        # Only update if new S/L is lower (protecting more profit)
+                        move_sl_price = new_sl
+                        logger.info(f"🎯 TRAILING SELL: S/L {current_sl:.5f} → {new_sl:.5f} (trailing {trail_distance_pips:.1f} pips)")
+                    else:
+                        # Keep current S/L (don't move up)
+                        move_sl_price = None
+                        logger.debug(f"⏸️ TRAILING SELL: S/L stays at {current_sl:.5f} (new {new_sl:.5f} not lower)")
                 
+                # Create trailing config for monitoring
                 trailing_config = {
+                    'activation_threshold_pips': round(trailing_activation, 1),
                     'trail_distance_pips': round(trail_distance_pips, 1),
                     'trail_distance': round(trail_distance, 5),
-                    'activate_price': round(activate_price, 5),
+                    'new_sl': round(move_sl_price, 5) if move_sl_price else None,
                     'mode': f'volatility_adaptive_{trend_direction.lower()}',
                     'symbol': symbol,
                     'direction': pos_dir,
@@ -1020,6 +1097,11 @@ def enhanced_action_decision(position: dict, signal: dict, risk_metrics: dict, a
                         'trailing_range': f'{trailing_min}-{trailing_max} pips'
                     }
                 }
+                
+                # If no S/L update needed, change action to hold
+                if not move_sl_price:
+                    action = 'hold'
+                    rationale.append(f'⏸️ Trailing S/L không cần update (giá chưa di chuyển đủ)')
         
         return {
             'action': action,
@@ -6467,9 +6549,9 @@ class Report:
                     last3d = [x for x in d_ser[-3:] if x is not None]
                     if len(last3k) == 3 and len(last3d) == 3:
                         if min(last3k) > 80 and min(last3d) > 80:
-                            stoch_extra_note = (stoch_extra_note + "; " if stoch_extra_note else "") + "Stochastic: embedded quá mua (>80 nhiều nến)"
+                            stoch_extra_note = (stoch_extra_note + "; " if stoch_extra_note else "") + "Stochastic: embedded overbought (>80 multiple bars)"
                         elif max(last3k) < 20 and max(last3d) < 20:
-                            stoch_extra_note = (stoch_extra_note + "; " if stoch_extra_note else "") + "Stochastic: embedded quá bán (<20 nhiều nến)"
+                            stoch_extra_note = (stoch_extra_note + "; " if stoch_extra_note else "") + "Stochastic: embedded oversold (<20 multiple bars)"
         except Exception:
             stoch_extra_note = None
 
@@ -6481,20 +6563,20 @@ class Report:
                 srsi_ser = _stochrsi_series_from_rsi(rsi_ser)
                 if len(srsi_ser) >= 2 and srsi_ser[-2] is not None and srsi_ser[-1] is not None:
                     if srsi_ser[-2] <= 0.5 and srsi_ser[-1] > 0.5:
-                        stochrsi_extra_note = "StochRSI vừa vượt 0.5 (thiên mua)"
+                        stochrsi_extra_note = "StochRSI just crossed above 0.5 (bullish bias)"
                     elif srsi_ser[-2] >= 0.5 and srsi_ser[-1] < 0.5:
-                        stochrsi_extra_note = "StochRSI vừa rơi dưới 0.5 (thiên bán)"
+                        stochrsi_extra_note = "StochRSI just fell below 0.5 (bearish bias)"
                     # Cross 0.8 or 0.2: short-term reversal cues
                     if srsi_ser[-2] is not None and srsi_ser[-1] is not None:
                         if srsi_ser[-2] >= 0.8 and srsi_ser[-1] < 0.8:
-                            stochrsi_extra_note = (stochrsi_extra_note + "; " if stochrsi_extra_note else "") + "Cắt ↓ 0.8: đảo chiều ngắn hạn"
+                            stochrsi_extra_note = (stochrsi_extra_note + "; " if stochrsi_extra_note else "") + "Cross ↓ 0.8: short-term reversal"
                         if srsi_ser[-2] <= 0.2 and srsi_ser[-1] > 0.2:
-                            stochrsi_extra_note = (stochrsi_extra_note + "; " if stochrsi_extra_note else "") + "Cắt ↑ 0.2: đảo chiều ngắn hạn"
+                            stochrsi_extra_note = (stochrsi_extra_note + "; " if stochrsi_extra_note else "") + "Cross ↑ 0.2: short-term reversal"
                 if stochrsi is not None:
                     if stochrsi >= 0.8:
-                        stochrsi_extra_note = (stochrsi_extra_note + "; " if stochrsi_extra_note else "") + "StochRSI vùng cực mạnh (>0.8)"
+                        stochrsi_extra_note = (stochrsi_extra_note + "; " if stochrsi_extra_note else "") + "StochRSI extreme strong zone (>0.8)"
                     elif stochrsi <= 0.2:
-                        stochrsi_extra_note = (stochrsi_extra_note + "; " if stochrsi_extra_note else "") + "StochRSI vùng cực yếu (<0.2)"
+                        stochrsi_extra_note = (stochrsi_extra_note + "; " if stochrsi_extra_note else "") + "StochRSI extreme weak zone (<0.2)"
         except Exception:
             stochrsi_extra_note = None
         # MACD cross, histogram slope & phase
@@ -6509,23 +6591,23 @@ class Report:
                     b1, b2 = macd_sig_ser[-2], macd_sig_ser[-1]
                     if a1 is not None and a2 is not None and b1 is not None and b2 is not None:
                         if a1 <= b1 and a2 > b2:
-                            macd_cross_note = "MACD cắt ↑ signal: mua"
+                            macd_cross_note = "MACD cross ↑ signal: buy"
                         elif a1 >= b1 and a2 < b2:
-                            macd_cross_note = "MACD cắt ↓ signal: bán"
+                            macd_cross_note = "MACD cross ↓ signal: sell"
                 if macd_hist_ser and len(macd_hist_ser) >= 2 and macd_hist_ser[-2] is not None and macd_hist_ser[-1] is not None:
                     h_prev, h_now = macd_hist_ser[-2], macd_hist_ser[-1]
                     if h_now > h_prev:
-                        macd_hist_slope_note = "Histogram ↑: đà mạnh lên"
+                        macd_hist_slope_note = "Histogram ↑: momentum strengthening"
                     elif h_now < h_prev:
-                        macd_hist_slope_note = "Histogram ↓: đà suy yếu"
+                        macd_hist_slope_note = "Histogram ↓: momentum weakening"
                     if h_now > 0 and h_now > h_prev:
-                        macd_phase_note = "tăng gia tốc"
+                        macd_phase_note = "accelerating up"
                     elif h_now > 0 and h_now < h_prev:
-                        macd_phase_note = "tăng chậm lại"
+                        macd_phase_note = "slowing up"
                     elif h_now < 0 and h_now < h_prev:
-                        macd_phase_note = "giảm gia tốc"
+                        macd_phase_note = "accelerating down"
                     elif h_now < 0 and h_now > h_prev:
-                        macd_phase_note = "giảm suy yếu"
+                        macd_phase_note = "slowing down"
                     elif abs(h_now) < 1e-6:
                         macd_phase_note = "chuyển pha"
         except Exception:
@@ -6570,9 +6652,9 @@ class Report:
                         t1, t2 = trix_vals[-2], trix_vals[-1]
                         s1, s2 = sig[-2], sig[-1]
                         if t1 <= s1 and t2 > s2:
-                            trix_signal_cross_note = "TRIX cắt ↑ signal: mua"
+                            trix_signal_cross_note = "TRIX cross ↑ signal: buy"
                         elif t1 >= s1 and t2 < s2:
-                            trix_signal_cross_note = "TRIX cắt ↓ signal: bán"
+                            trix_signal_cross_note = "TRIX cross ↓ signal: sell"
                     # phase detection (early vs mature based on zero-line crosses in recent window)
                     last = trix_vals[-1]
                     window = trix_vals[-6:]
@@ -6580,13 +6662,13 @@ class Report:
                         crossed_up = any(w < 0 for w in window[:-1]) and last > 0
                         crossed_dn = any(w > 0 for w in window[:-1]) and last < 0
                         if crossed_up and last > 0:
-                            trix_phase_note = "pha tăng sớm"
+                            trix_phase_note = "early uptrend phase"
                         elif crossed_dn and last < 0:
-                            trix_phase_note = "pha giảm sớm"
+                            trix_phase_note = "early downtrend phase"
                         elif last > 0:
-                            trix_phase_note = "pha tăng trưởng thành"
+                            trix_phase_note = "mature uptrend phase"
                         elif last < 0:
-                            trix_phase_note = "pha giảm trưởng thành"
+                            trix_phase_note = "mature downtrend phase"
         except Exception:
             trix_slope_note = None
             trix_signal_cross_note = None
@@ -6626,20 +6708,20 @@ class Report:
                 vp = vortex.get('vi_plus'); vm = vortex.get('vi_minus')
                 if all(isinstance(x, (int,float)) for x in [vp_prev, vm_prev, vp, vm]):
                     if vp_prev <= vm_prev and vp > vm:
-                        vortex_cross_note = "Vortex: VI+ cắt ↑ VI- (chuyển pha tăng)"
+                        vortex_cross_note = "Vortex: VI+ cross ↑ VI- (shift to uptrend)"
                     elif vp_prev >= vm_prev and vp < vm:
-                        vortex_cross_note = "Vortex: VI+ cắt ↓ VI- (chuyển pha giảm)"
+                        vortex_cross_note = "Vortex: VI+ cross ↓ VI- (shift to downtrend)"
                     gapv = abs(vp - vm)
                     if gapv >= 0.2:
-                        vortex_gap_note = "Khoảng cách VI lớn: xu hướng mạnh"
+                        vortex_gap_note = "Large VI gap: strong trend"
                     if gapv >= 0.60:
-                        vortex_intensity_note = "cực mạnh"
+                        vortex_intensity_note = "very strong"
                     elif gapv >= 0.40:
-                        vortex_intensity_note = "mạnh"
+                        vortex_intensity_note = "strong"
                     elif gapv >= 0.25:
-                        vortex_intensity_note = "vừa"
+                        vortex_intensity_note = "moderate"
                     elif gapv >= 0.15:
-                        vortex_intensity_note = "yếu"
+                        vortex_intensity_note = "weak"
         except Exception:
             vortex_cross_note = None
             vortex_gap_note = None
@@ -6725,10 +6807,10 @@ class Report:
                     kwidth = (ku - kl) / max(price_trend,1e-12)
                     if bwidth <= 0.010:
                         # Localized Vietnamese text
-                        bb_in_kc_note = "Độ rộng Bollinger < độ rộng Keltner: nén mạnh (BB-in-KC)"
+                        bb_in_kc_note = "Bollinger width < Keltner width: strong squeeze (BB-in-KC)"
                     elif bwidth >= 0.030:
                         # Use f-string to inject bwidth value correctly
-                        bb_in_kc_note = f"Bollinger: Rộng (độ rộng {bwidth:.4f}) – biến động cao"
+                        bb_in_kc_note = f"Bollinger: Wide (width {bwidth:.4f}) – high volatility"
         except Exception:
             bb_in_kc_note = None
 
@@ -6739,15 +6821,15 @@ class Report:
             if isinstance(d_lo, (int,float)) and isinstance(d_up, (int,float)) and price_trend is not None and d_up > d_lo:
                 pct = (price_trend - d_lo) / max(d_up - d_lo, 1e-12) * 100.0
                 if pct >= 70:
-                    channel_percentile_note = f"Channel percentile: {pct:.1f}% (gần biên trên)"
+                    channel_percentile_note = f"Channel percentile: {pct:.1f}% (near upper edge)"
                 elif pct <= 30:
-                    channel_percentile_note = f"Channel percentile: {pct:.1f}% (gần biên dưới)"
+                    channel_percentile_note = f"Channel percentile: {pct:.1f}% (near lower edge)"
                 else:
                     channel_percentile_note = f"Channel percentile: {pct:.1f}%"
                 if price_trend > d_up:
-                    channel_breakout_note = "Breakout biên trên (Donchian)"
+                    channel_breakout_note = "Breakout upper edge (Donchian)"
                 elif price_trend < d_lo:
-                    channel_breakout_note = "Breakout biên dưới (Donchian)"
+                    channel_breakout_note = "Breakout lower edge (Donchian)"
         except Exception:
             channel_percentile_note = None
             channel_breakout_note = None
@@ -6761,15 +6843,15 @@ class Report:
                     prev_mfi = _mfi(highs[:-1], lows[:-1], closes[:-1], volumes[:-1])
                     if prev_mfi is not None and mfi is not None:
                         if prev_mfi <= 50 < mfi:
-                            mfi_cross_note = "MFI cắt ↑ 50: đổi bias tăng"
+                            mfi_cross_note = "MFI cross ↑ 50: bullish bias"
                         elif prev_mfi >= 50 > mfi:
-                            mfi_cross_note = "MFI cắt ↓ 50: đổi bias giảm"
+                            mfi_cross_note = "MFI cross ↓ 50: bearish bias"
                 prev_chaikin = _chaikin_osc(highs[:-1], lows[:-1], closes[:-1], volumes[:-1]) if len(highs) == len(lows) == len(closes) == len(volumes) and len(closes) >= 2 else None
                 if prev_chaikin is not None and chaikin is not None:
                     if prev_chaikin <= 0 < chaikin:
-                        chaikin_cross_note = "Chaikin cắt ↑ 0: tích luỹ"
+                        chaikin_cross_note = "Chaikin cross ↑ 0: accumulation"
                     elif prev_chaikin >= 0 > chaikin:
-                        chaikin_cross_note = "Chaikin cắt ↓ 0: phân phối"
+                        chaikin_cross_note = "Chaikin cross ↓ 0: distribution"
         except Exception:
             mfi_cross_note = None
             chaikin_cross_note = None
@@ -6781,9 +6863,9 @@ class Report:
                 eu = env.get('upper'); el = env.get('lower')
                 if isinstance(eu, (int,float)) and isinstance(el, (int,float)):
                     if price_trend > eu:
-                        envelopes_state_note = "Đóng trên dải trên: đà tăng mạnh / breakout"
+                        envelopes_state_note = "Close above upper band: strong uptrend / breakout"
                     elif price_trend < el:
-                        envelopes_state_note = "Đóng dưới dải dưới: đà giảm mạnh / breakout"
+                        envelopes_state_note = "Close below lower band: strong downtrend / breakout"
         except Exception:
             envelopes_state_note = None
 
@@ -6794,9 +6876,9 @@ class Report:
                 cci_ser = _cci_series(highs, lows, closes)
                 if len(cci_ser) >= 2 and cci_ser[-2] is not None and cci_ser[-1] is not None:
                     if cci_ser[-2] <= -100 and cci_ser[-1] > -100:
-                        cci_extra_note = "CCI vừa vượt -100 (giảm yếu dần)"
+                        cci_extra_note = "CCI just crossed above -100 (downtrend weakening)"
                     elif cci_ser[-2] >= 100 and cci_ser[-1] < 100:
-                        cci_extra_note = "CCI vừa rơi dưới 100 (tăng yếu dần)"
+                        cci_extra_note = "CCI just fell below 100 (uptrend weakening)"
                 if cci is not None:
                     if cci >= 200:
                         cci_extra_note = (cci_extra_note + "; " if cci_extra_note else "") + "CCI cực mạnh (≥200)"
@@ -6812,9 +6894,9 @@ class Report:
                 wr_ser = _willr_series(highs, lows, closes)
                 if len(wr_ser) >= 2 and wr_ser[-2] is not None and wr_ser[-1] is not None:
                     if wr_ser[-2] <= -80 and wr_ser[-1] > -80:
-                        willr_extra_note = "%R thoát vùng quá bán (>-80)"
+                        willr_extra_note = "%R exit oversold zone (>-80)"
                     elif wr_ser[-2] >= -20 and wr_ser[-1] < -20:
-                        willr_extra_note = "%R thoát vùng quá mua (<-20)"
+                        willr_extra_note = "%R exit overbought zone (<-20)"
         except Exception:
             willr_extra_note = None
 
@@ -6949,21 +7031,21 @@ class Report:
         if isinstance(atr,(int,float)) and price_trend:
             vr = atr / max(price_trend,1e-12)
             if vr < 0.002:
-                atr_vol_txt = "biến động thấp"
+                atr_vol_txt = "low volatility"
             elif vr < 0.005:
-                atr_vol_txt = "biến động trung bình"
+                atr_vol_txt = "average volatility"
             else:
-                atr_vol_txt = "biến động cao"
+                atr_vol_txt = "high volatility"
         # Donchian percentile inline (if earlier computed)
         donch_inline = None
         if isinstance(d_lo,(int,float)) and isinstance(d_up,(int,float)) and price_trend and d_up>d_lo:
             pct = (price_trend - d_lo)/max(d_up-d_lo,1e-12)*100.0
             if pct >= 70:
-                donch_inline = f"vị trí {pct:.1f}% gần biên trên"
+                donch_inline = f"position {pct:.1f}% near upper edge"
             elif pct <= 30:
-                donch_inline = f"vị trí {pct:.1f}% gần biên dưới"
+                donch_inline = f"position {pct:.1f}% near lower edge"
             else:
-                donch_inline = f"vị trí {pct:.1f}% trong kênh"
+                donch_inline = f"position {pct:.1f}% inside channel"
         # EMA fallback note if missing
         def ema_fallback_note(val, period):
             # Treat None or NaN as missing; detect partial calc
@@ -7678,23 +7760,23 @@ class Report:
             ma_line("TEMA20", tema20, tema_sup, tema20_note),
             # Ichimoku and Keltner - Enhanced descriptions
             f"        • {ichi_label}: " + (
-                'Tenkan > Kijun (xu hướng tăng mạnh)' if (ffloat(ich_tenkan,0)>ffloat(ich_kijun,0)) else 
-                'Tenkan <= Kijun (xu hướng giảm hoặc chuyển đổi)' if (ich_tenkan is not None and ich_kijun is not None) else 
-                f"Tenkan {fmt(ich_tenkan,4)} (đường chuyển đổi)" if ich_tenkan is not None else
-                f"Kijun {fmt(ich_kijun,4)} (đường cơ sở)" if ich_kijun is not None else
-                f"Senkou A {fmt(ich_senkou_a,4)} (mây dẫn đầu)" if ich_senkou_a is not None else
-                f"Senkou B {fmt(ich_senkou_b,4)} (mây dẫn đầu)" if ich_senkou_b is not None else
-                f"Chikou {fmt(ich_chikou,4)} (đường trễ)" if ich_chikou is not None else
-                'chờ dữ liệu đầy đủ'
+                'Tenkan > Kijun (strong uptrend)' if (ffloat(ich_tenkan,0)>ffloat(ich_kijun,0)) else 
+                'Tenkan <= Kijun (downtrend or transition)' if (ich_tenkan is not None and ich_kijun is not None) else 
+                f"Tenkan {fmt(ich_tenkan,4)} (conversion line)" if ich_tenkan is not None else
+                f"Kijun {fmt(ich_kijun,4)} (base line)" if ich_kijun is not None else
+                f"Senkou A {fmt(ich_senkou_a,4)} (leading span A)" if ich_senkou_a is not None else
+                f"Senkou B {fmt(ich_senkou_b,4)} (leading span B)" if ich_senkou_b is not None else
+                f"Chikou {fmt(ich_chikou,4)} (lagging span)" if ich_chikou is not None else
+                'awaiting full data'
             ) + f" {support_tag(ichi_sup)}",
             (f"          → {ichi_cloud_note}" if ichi_cloud_note else None),
             (f"          → {ichi_cloud_extra}" if ichi_cloud_extra else None),
             f"        • {kelt_label}: " + (
-                'trong kênh' if kelt and kelt.get('upper') and kelt.get('lower') and price_trend and kelt['lower'] <= price_trend <= kelt['upper'] else 
-                f"trên kênh (giá {fmt(price_trend,4)} > {fmt(kelt.get('upper'),4)})" if kelt and kelt.get('upper') and price_trend and price_trend > kelt['upper'] else
-                f"dưới kênh (giá {fmt(price_trend,4)} < {fmt(kelt.get('lower'),4)})" if kelt and kelt.get('lower') and price_trend and price_trend < kelt['lower'] else
+                'inside channel' if kelt and kelt.get('upper') and kelt.get('lower') and price_trend and kelt['lower'] <= price_trend <= kelt['upper'] else 
+                f"above channel (price {fmt(price_trend,4)} > {fmt(kelt.get('upper'),4)})" if kelt and kelt.get('upper') and price_trend and price_trend > kelt['upper'] else
+                f"below channel (price {fmt(price_trend,4)} < {fmt(kelt.get('lower'),4)})" if kelt and kelt.get('lower') and price_trend and price_trend < kelt['lower'] else
                 f"upper={fmt(kelt.get('upper'),4)}, lower={fmt(kelt.get('lower'),4)}" if kelt and (kelt.get('upper') or kelt.get('lower')) else
-                "không đủ dữ liệu"
+                "insufficient data"
             ),
             # CCI and Williams without threshold hints
             f"        • {cci_label}: {fmt(_last_any_prefix_primary(['cci']) or cci,1)}" + (f" – {cci_txt}" if cci_txt else ""),
@@ -7705,38 +7787,38 @@ class Report:
             f"        • {roc_label}: {fmt(_last_any_prefix_primary(['roc']) or roc,2)}" + (f" – {roc_desc}" if roc_desc else ""),
             f"        • OBV: {fmt(obv_val_disp,0)}" + (f" – {obv_desc}" if obv_desc else (f" – {obv_txt}" if obv_txt else "")),
             (f"          → {obv_slope_note}" if 'obv_slope_note' in locals() and obv_slope_note else None),
-            f"        • {eom_label}: " + (f"{fmt(eom,3)}" if eom is not None else "chưa tính được") + (f" – {eom_txt}" if eom_txt and eom is not None else "") + (f" ({eom_extra_note})" if eom_extra_note else ""),
+            f"        • {eom_label}: " + (f"{fmt(eom,3)}" if eom is not None else "not calculated") + (f" – {eom_txt}" if eom_txt and eom is not None else "") + (f" ({eom_extra_note})" if eom_extra_note else ""),
             f"        • {force_label}: {fmt(force_val_disp,3)}" + (f" – {force_desc}" if force_desc else (f" – {force_txt}" if force_txt else "")),
             (f"          → {force_extra_note}" if force_extra_note else None),
-            (f"          → Cường độ: {force_intensity_note}" if force_intensity_note else None),
+            (f"          → Intensity: {force_intensity_note}" if force_intensity_note else None),
             # Channels and cycles - Enhanced descriptions
             f"        • {donch_label}: " + (
-                'trong kênh' if (isinstance(d_lo,(int,float)) and isinstance(d_up,(int,float)) and d_lo<= (price_trend or d_lo) <= d_up) else 
-                f"trên kênh (giá {fmt(price_trend,4)} > {fmt(d_up,4)})" if (d_up is not None and price_trend and price_trend > d_up) else
-                f"dưới kênh (giá {fmt(price_trend,4)} < {fmt(d_lo,4)})" if (d_lo is not None and price_trend and price_trend < d_lo) else
+                'inside channel' if (isinstance(d_lo,(int,float)) and isinstance(d_up,(int,float)) and d_lo<= (price_trend or d_lo) <= d_up) else 
+                f"above channel (price {fmt(price_trend,4)} > {fmt(d_up,4)})" if (d_up is not None and price_trend and price_trend > d_up) else
+                f"below channel (price {fmt(price_trend,4)} < {fmt(d_lo,4)})" if (d_lo is not None and price_trend and price_trend < d_lo) else
                 f'high={fmt(d_up,4)}, low={fmt(d_lo,4)}' if (d_lo is not None and d_up is not None) else 
                 f'high={fmt(d_up,4)}' if d_up is not None else
                 f'low={fmt(d_lo,4)}' if d_lo is not None else
-                'không đủ dữ liệu'
+                'insufficient data'
             ) + (f" – {donch_inline}" if donch_inline else ""),
-            f"        • {trix_label}: " + (f"{fmt(trix,4)}" if trix is not None else "chưa tính được") + (f" – {trix_txt}" if trix_txt and trix is not None else ""),
+            f"        • {trix_label}: " + (f"{fmt(trix,4)}" if trix is not None else "not calculated") + (f" – {trix_txt}" if trix_txt and trix is not None else ""),
             (f"          → {trix_slope_note}" if trix_slope_note else None),
             (f"          → {trix_signal_cross_note}" if trix_signal_cross_note else None),
-            (f"          → Pha TRIX: {trix_phase_note}" if trix_phase_note else None),
-            f"        • {dpo_label}: " + (f"{fmt(dpo,3)}" if dpo is not None else "chưa tính được") + (f" – {dpo_txt}" if dpo_txt and dpo is not None else ""),
+            (f"          → TRIX Phase: {trix_phase_note}" if trix_phase_note else None),
+            f"        • {dpo_label}: " + (f"{fmt(dpo,3)}" if dpo is not None else "not calculated") + (f" – {dpo_txt}" if dpo_txt and dpo is not None else ""),
             (f"          → {dpo_extra_note}" if dpo_extra_note else None),
             f"        • {mass_label}: {fmt(massi,2)}" + (f" – {mass_txt}" if mass_txt else (f" – {massi_note}" if massi_note else "")),
             f"        • {vortex_label}: VI+ {fmt(vortex.get('vi_plus'),2)} / VI- {fmt(vortex.get('vi_minus'),2)} {support_tag(vortex_sup)}" + (f" – {vortex_desc}" if vortex_desc else (f" – {vortex_gap_note}" if vortex_gap_note else "")) + (f" ({vortex_intensity_note})" if vortex_intensity_note else ""),
             (f"          → {vortex_cross_note}" if vortex_cross_note else None),
             (f"          → {vortex_gap_note}" if vortex_gap_note else None),
-            f"        • KST: {('TĂNG' if (kst or 0)>0 else 'GIẢM' if (kst or 0)<0 else 'TRUNG TÍNH')} (diff {fmt(kst,2)}) {support_tag(kst_sup)}" + (f" – {kst_txt}" if kst_txt else "") + (f" ({kst_phase_note})" if kst_phase_note else ""),
+            f"        • KST: {('UP' if (kst or 0)>0 else 'DOWN' if (kst or 0)<0 else 'NEUTRAL')} (diff {fmt(kst,2)}) {support_tag(kst_sup)}" + (f" – {kst_txt}" if kst_txt else "") + (f" ({kst_phase_note})" if kst_phase_note else ""),
             f"        • Ultimate Osc: {fmt(ult,1)} {support_tag(ult_sup)}" + (f" – {ult_desc}" if ult_desc else (f" – {ult_txt}" if ult_txt else "")) + (f" ({ult_extra_note})" if ult_extra_note else ""),
             f"        • {(_wrap('Envelopes', _params.get('env_win'), _params.get('env_dev')) if 'env_win' in _params else 'Envelopes(20,2.0)')}: " + (
-                'trong dải (giá dao động bình thường)' if env and env.get('upper') and env.get('lower') and price_trend and env['lower'] <= price_trend <= env['upper'] else 
-                f"trên dải - đột phá tăng (giá {fmt(price_trend,4)} > {fmt(env.get('upper'),4)})" if env and env.get('upper') and price_trend and price_trend > env['upper'] else
-                f"dưới dải - đột phá giảm (giá {fmt(price_trend,4)} < {fmt(env.get('lower'),4)})" if env and env.get('lower') and price_trend and price_trend < env['lower'] else
+                'inside bands (price oscillating normally)' if env and env.get('upper') and env.get('lower') and price_trend and env['lower'] <= price_trend <= env['upper'] else 
+                f"above bands - breakout up (price {fmt(price_trend,4)} > {fmt(env.get('upper'),4)})" if env and env.get('upper') and price_trend and price_trend > env['upper'] else
+                f"below bands - breakout down (price {fmt(price_trend,4)} < {fmt(env.get('lower'),4)})" if env and env.get('lower') and price_trend and price_trend < env['lower'] else
                 f"upper={fmt(env.get('upper'),4)}, lower={fmt(env.get('lower'),4)}" if env and (env.get('upper') or env.get('lower')) else
-                'không đủ dữ liệu'
+                'insufficient data'
             ),
             (f"          → {envelopes_state_note}" if envelopes_state_note else None),
             (f"          → {bb_in_kc_note}" if bb_in_kc_note else None),
@@ -7744,7 +7826,7 @@ class Report:
             # Composite momentum line
             (f"        • Momentum/Cycle: MACD[{macd_phase_note or '-'}]; TRIX[{trix_phase_note or '-'}]; KST[{kst_phase_note or '-'}]; DPO[{dpo_txt or '-'}]"),
             # Always show Fibonacci line
-            (f"        • Fibonacci: {fibo_note}" if fibo_note else f"        • Fibonacci: {fibo_status or 'không gần mức quan trọng'}"),
+            (f"        • Fibonacci: {fibo_note}" if fibo_note else f"        • Fibonacci: {fibo_status or 'not near important level'}"),
             (f"        • Donchian %ile: {channel_percentile_note}" if channel_percentile_note else None),
             (f"          → {channel_breakout_note}" if channel_breakout_note else None),
             (f"          → {mfi_cross_note}" if mfi_cross_note else None),
@@ -8027,9 +8109,9 @@ class Report:
                                     suffix = ''
                                     if isinstance(prev,(int,float)) and isinstance(now,(int,float)):
                                         if now > prev:
-                                            suffix += " – dốc lên"
+                                            suffix += " – sloping up"
                                         elif now < prev:
-                                            suffix += " – dốc xuống"
+                                            suffix += " – sloping down"
                                     # nearest higher cross within selected
                                     higher = [q for q in ma_selected.get(fam, []) if q > p]
                                     if higher:
@@ -8040,9 +8122,9 @@ class Report:
                                             diff_prev = float(p_prev) - float(q_prev)
                                             diff_now = float(p_now) - float(q_now)
                                             if diff_prev <= 0 and diff_now > 0:
-                                                suffix += f" – cắt lên {fam}{q}"
+                                                suffix += f" – cross ↑ {fam}{q}"
                                             elif diff_prev >= 0 and diff_now < 0:
-                                                suffix += f" – cắt xuống {fam}{q}"
+                                                suffix += f" – cross ↓ {fam}{q}"
                                     if suffix and suffix not in ind_lines[idx]:
                                         ind_lines[idx] = ind_lines[idx] + suffix
                                 except Exception:
@@ -8062,9 +8144,9 @@ class Report:
                                     suffix = ''
                                     if isinstance(prev,(int,float)) and isinstance(now,(int,float)):
                                         if now > prev:
-                                            suffix += " – dốc lên"
+                                            suffix += " – sloping up"
                                         elif now < prev:
-                                            suffix += " – dốc xuống"
+                                            suffix += " – sloping down"
                                     higher = [q for q in ma_selected.get(fam, []) if q > p]
                                     if higher:
                                         q = min(higher)
@@ -8074,9 +8156,9 @@ class Report:
                                             diff_prev = float(p_prev) - float(q_prev)
                                             diff_now = float(p_now) - float(q_now)
                                             if diff_prev <= 0 and diff_now > 0:
-                                                suffix += f" – cắt lên {fam}{q}"
+                                                suffix += f" – cross ↑ {fam}{q}"
                                             elif diff_prev >= 0 and diff_now < 0:
-                                                suffix += f" – cắt xuống {fam}{q}"
+                                                suffix += f" – cross ↓ {fam}{q}"
                                     if suffix and suffix not in ind_lines[idx]:
                                         ind_lines[idx] = ind_lines[idx] + suffix
                                 except Exception:
@@ -8092,9 +8174,9 @@ class Report:
                                     suffix = ''
                                     if isinstance(prev,(int,float)) and isinstance(now,(int,float)):
                                         if now > prev:
-                                            suffix += " – dốc lên"
+                                            suffix += " – sloping up"
                                         elif now < prev:
-                                            suffix += " – dốc xuống"
+                                            suffix += " – sloping down"
                                     higher = [q for q in ma_selected.get(fam, []) if q > p]
                                     if higher:
                                         q = min(higher)
@@ -8104,9 +8186,9 @@ class Report:
                                             diff_prev = float(p_prev) - float(q_prev)
                                             diff_now = float(p_now) - float(q_now)
                                             if diff_prev <= 0 and diff_now > 0:
-                                                suffix += f" – cắt lên {fam}{q}"
+                                                suffix += f" – cross ↑ {fam}{q}"
                                             elif diff_prev >= 0 and diff_now < 0:
-                                                suffix += f" – cắt xuống {fam}{q}"
+                                                suffix += f" – cross ↓ {fam}{q}"
                                     if suffix and suffix not in ind_lines[idx]:
                                         ind_lines[idx] = ind_lines[idx] + suffix
                                 except Exception:
@@ -8134,9 +8216,9 @@ class Report:
                                     suffix = ''
                                     if isinstance(prev,(int,float)) and isinstance(now,(int,float)):
                                         if now > prev:
-                                            suffix += " – dốc lên"
+                                            suffix += " – sloping up"
                                         elif now < prev:
-                                            suffix += " – dốc xuống"
+                                            suffix += " – sloping down"
                                     higher = [q for q in ma_selected.get(fam, []) if q > p]
                                     if higher:
                                         q = min(higher)
@@ -8685,7 +8767,7 @@ class Report:
                 if macd_phase_note:
                     dom.append((0.70, f"Pha MACD: {macd_phase_note}"))
                 if trix_phase_note:
-                    dom.append((0.68, f"Pha TRIX: {trix_phase_note}"))
+                    dom.append((0.68, f"TRIX Phase: {trix_phase_note}"))
                 dom.sort(key=lambda x: x[0], reverse=True)
                 top = dom[:3]
                 # Loại bỏ trùng loại (ví dụ nhiều MACD) – ưu tiên đa dạng
@@ -8764,7 +8846,7 @@ class Report:
         # Donchian summary (add percentile if computed)
         if isinstance(d_lo, (int,float)) and isinstance(d_up, (int,float)) and price_trend is not None:
             width = (d_up - d_lo) / max(price_trend, 1e-12)
-            pos = 'gần biên trên' if (price_trend - d_lo) > (d_up - price_trend) else 'gần biên dưới'
+            pos = 'near upper edge' if (price_trend - d_lo) > (d_up - price_trend) else 'near lower edge'
             pct_line = None
             try:
                 if channel_percentile_note:
@@ -8773,7 +8855,7 @@ class Report:
                     m = re.search(r'(\d+\.?\d*)%', channel_percentile_note)
                     if m:
                         v = float(m.group(1))
-                        tier = 'cực cao' if v>=90 else 'cao' if v>=70 else 'trung bình' if v>=30 else 'thấp'
+                        tier = 'very high' if v>=90 else 'high' if v>=70 else 'average' if v>=30 else 'low'
                         pct_line = f"percentile {v:.1f}% ({tier})"
             except Exception:
                 pct_line = None
@@ -8796,9 +8878,9 @@ class Report:
                     bwidth = (bu - bl) / max(price_trend, 1e-12)
                     # Keep Vietnamese phrasing for VI report; EN will be translated later
                     if bwidth <= 0.010:
-                        summary_lines.append(f"  - Bollinger: Squeeze (độ rộng {bwidth:.4f}) – có thể sắp bứt phá")
+                        summary_lines.append(f"  - Bollinger: Squeeze (width {bwidth:.4f}) – potential breakout soon")
                     elif bwidth >= 0.030:
-                        summary_lines.append(f"  - Bollinger: Rộng (độ rộng {bwidth:.4f}) – biến động cao")
+                        summary_lines.append(f"  - Bollinger: Wide (width {bwidth:.4f}) – high volatility")
         except Exception:
             pass
         # Near support/resistance warnings
@@ -9162,146 +9244,188 @@ class Report:
             import os
             import glob
             logger.debug("[REPORT] Starting pattern aggregation for %s", sym)
-            # Check what timeframes have patterns available
+            
+            # 🎯 CHECK WHITELIST: Skip pattern loading entirely if patterns disabled
+            gui_whitelist_data = analysis.get('_indicator_whitelist')
+            patterns_enabled = True  # Default to enabled if no whitelist provided
+            if gui_whitelist_data:
+                # Normalize whitelist to check for 'patterns' token
+                if isinstance(gui_whitelist_data, (list, set)):
+                    wl_normalized = [str(x).lower() for x in gui_whitelist_data]
+                    logger.info("[REPORT] Whitelist normalized: %s", wl_normalized)
+                    # Check if 'patterns', 'pattern', 'price_pattern', 'price_patterns' token exists
+                    patterns_enabled = any(tok in wl_normalized for tok in ['patterns', 'pattern', 'price_pattern', 'price_patterns', 'price patterns'])
+                    logger.info("[REPORT] Patterns enabled: %s (found in whitelist: %s)", patterns_enabled, 'price_patterns' in wl_normalized or 'patterns' in wl_normalized)
+                    if not patterns_enabled:
+                        logger.debug("[REPORT] Price patterns disabled in whitelist - skipping pattern aggregation")
+                else:
+                    logger.warning("[REPORT] Whitelist not a list/set: type=%s, data=%s", type(gui_whitelist_data), gui_whitelist_data)
+            
+            # Initialize defaults that are used later in candlestick section
             available_pattern_tfs = []
-            import glob
+            tf_pref = []
             
-            # Check pattern_price folder for available timeframes
-            price_pattern_files = glob.glob(f"pattern_price/{sym}_H1_*.json") + glob.glob(f"pattern_price/{sym}_*_patterns.json")
-            for f in price_pattern_files:
-                try:
-                    if '_H1_' in f:
-                        available_pattern_tfs.append('H1')
-                    elif '_H4_' in f:
-                        available_pattern_tfs.append('H4')
-                    elif '_D1_' in f:
-                        available_pattern_tfs.append('D1')
-                    elif '_M30_' in f:
-                        available_pattern_tfs.append('M30')
-                    elif '_M15_' in f:
-                        available_pattern_tfs.append('M15')
-                    elif '_M5_' in f:
-                        available_pattern_tfs.append('M5')
-                except:
-                    pass
-            
-            # Check pattern_signals folder too
-            signal_pattern_files = glob.glob(f"pattern_signals/{sym}_H1_*.json") + glob.glob(f"pattern_signals/{sym}_*_patterns.json")  
-            for f in signal_pattern_files:
-                try:
-                    if '_H1_' in f:
-                        if 'H1' not in available_pattern_tfs:
-                            available_pattern_tfs.append('H1')
-                    elif '_H4_' in f:
-                        if 'H4' not in available_pattern_tfs:
-                            available_pattern_tfs.append('H4')
-                    elif '_D1_' in f:
-                        if 'D1' not in available_pattern_tfs:
-                            available_pattern_tfs.append('D1')
-                    elif '_M30_' in f:
-                        if 'M30' not in available_pattern_tfs:
-                            available_pattern_tfs.append('M30')
-                    elif '_M15_' in f:
-                        if 'M15' not in available_pattern_tfs:
-                            available_pattern_tfs.append('M15')
-                    elif '_M5_' in f:
-                        if 'M5' not in available_pattern_tfs:
-                            available_pattern_tfs.append('M5')
-                except:
-                    pass
-            
-            available_pattern_tfs = list(set(available_pattern_tfs))  # remove duplicates
-            
-            # If we found pattern files, load them directly instead of relying on tf_data_cache
-            tf_pref = available_pattern_tfs if available_pattern_tfs else tf_ordered()
-            # Collect price pattern candidates
-            cand_price: List[Tuple[float,int,str]] = []  # (conf, tf_rank, line)
-            for idx, tfp in enumerate(tf_pref):
-                td = tf_data_cache.get(tfp)
+            if not patterns_enabled:
+                # Skip all pattern loading - return empty pattern section
+                cand_price = []
+                # Still get timeframes for candlestick patterns (which are separate from price patterns)
+                tf_pref = tf_ordered()
+            else:
+                # Original pattern loading logic
+                # Check what timeframes have patterns available
+                available_pattern_tfs = []
+                import glob
                 
-                # If no cached data, try to load patterns directly
-                if not td or not td.price_patterns:
-                    # Try loading patterns directly from files
-                    direct_patterns = None
+                # Check pattern_price folder for available timeframes
+                # Support both sym and sym_m variants (e.g., BNBUSD and BNBUSD_m)
+                price_pattern_files = (
+                    glob.glob(f"pattern_price/{sym}_H1_*.json") + 
+                    glob.glob(f"pattern_price/{sym}_*_patterns.json") +
+                    glob.glob(f"pattern_price/{sym}_m_H1_*.json") + 
+                    glob.glob(f"pattern_price/{sym}_m_*_patterns.json")
+                )
+                for f in price_pattern_files:
                     try:
-                        # Try pattern_price folder first
-                        pattern_files = [
-                            f"pattern_price/{sym}_{tfp}_patterns.json",
-                            f"pattern_price/{sym}_{tfp}_best.json",
-                            f"pattern_price/{sym}_m_{tfp}_patterns.json",
-                        ]
-                        for pf in pattern_files:
-                            if os.path.exists(pf):
-                                direct_patterns = load_json(pf)
-                                break
-                                
-                        # If not found, try pattern_signals folder
-                        if not direct_patterns:
-                            signal_files = [
-                                f"pattern_signals/{sym}_{tfp}_priority_patterns.json",
-                                f"pattern_signals/{sym}_{tfp}_patterns.json",
+                        if '_H1_' in f:
+                            available_pattern_tfs.append('H1')
+                        elif '_H4_' in f:
+                            available_pattern_tfs.append('H4')
+                        elif '_D1_' in f:
+                            available_pattern_tfs.append('D1')
+                        elif '_M30_' in f:
+                            available_pattern_tfs.append('M30')
+                        elif '_M15_' in f:
+                            available_pattern_tfs.append('M15')
+                        elif '_M5_' in f:
+                            available_pattern_tfs.append('M5')
+                    except:
+                        pass
+                
+                # Check pattern_signals folder too
+                signal_pattern_files = (
+                    glob.glob(f"pattern_signals/{sym}_H1_*.json") + 
+                    glob.glob(f"pattern_signals/{sym}_*_patterns.json") +
+                    glob.glob(f"pattern_signals/{sym}_m_H1_*.json") + 
+                    glob.glob(f"pattern_signals/{sym}_m_*_patterns.json")
+                )
+                for f in signal_pattern_files:
+                    try:
+                        if '_H1_' in f:
+                            if 'H1' not in available_pattern_tfs:
+                                available_pattern_tfs.append('H1')
+                        elif '_H4_' in f:
+                            if 'H4' not in available_pattern_tfs:
+                                available_pattern_tfs.append('H4')
+                        elif '_D1_' in f:
+                            if 'D1' not in available_pattern_tfs:
+                                available_pattern_tfs.append('D1')
+                        elif '_M30_' in f:
+                            if 'M30' not in available_pattern_tfs:
+                                available_pattern_tfs.append('M30')
+                        elif '_M15_' in f:
+                            if 'M15' not in available_pattern_tfs:
+                                available_pattern_tfs.append('M15')
+                        elif '_M5_' in f:
+                            if 'M5' not in available_pattern_tfs:
+                                available_pattern_tfs.append('M5')
+                    except:
+                        pass
+                
+                available_pattern_tfs = list(set(available_pattern_tfs))  # remove duplicates
+                
+                # If we found pattern files, load them directly instead of relying on tf_data_cache
+                tf_pref = available_pattern_tfs if available_pattern_tfs else tf_ordered()
+                # Collect price pattern candidates
+                cand_price: List[Tuple[float,int,str]] = []  # (conf, tf_rank, line)
+                for idx, tfp in enumerate(tf_pref):
+                    td = tf_data_cache.get(tfp)
+                    
+                    # If no cached data, try to load patterns directly
+                    if not td or not td.price_patterns:
+                        # Try loading patterns directly from files
+                        direct_patterns = None
+                        try:
+                            # Try pattern_price folder first
+                            # Support both sym and sym_m variants (e.g., BNBUSD and BNBUSD_m)
+                            pattern_files = [
+                                f"pattern_price/{sym}_{tfp}_patterns.json",
+                                f"pattern_price/{sym}_{tfp}_best.json",
+                                f"pattern_price/{sym}_m_{tfp}_patterns.json",
                             ]
-                            for sf in signal_files:
-                                if os.path.exists(sf):
-                                    direct_patterns = load_json(sf)
-                                    print(f"DEBUG [PATTERN]: Loaded direct signals from {sf}")
+                            for pf in pattern_files:
+                                if os.path.exists(pf):
+                                    direct_patterns = load_json(pf)
                                     break
                                     
-                        if direct_patterns:
-                            # Create a temporary TFData object
-                            td = TFData(candles=None, indicators=None, price_patterns=direct_patterns, priority_patterns=None, sr=None)
+                            # If not found, try pattern_signals folder
+                            if not direct_patterns:
+                                signal_files = [
+                                    f"pattern_signals/{sym}_{tfp}_priority_patterns.json",
+                                    f"pattern_signals/{sym}_{tfp}_patterns.json",
+                                    f"pattern_signals/{sym}_m_{tfp}_priority_patterns.json",
+                                    f"pattern_signals/{sym}_m_{tfp}_patterns.json",
+                                ]
+                                for sf in signal_files:
+                                    if os.path.exists(sf):
+                                        direct_patterns = load_json(sf)
+                                        print(f"DEBUG [PATTERN]: Loaded direct signals from {sf}")
+                                        break
+                                        
+                            if direct_patterns:
+                                # Create a temporary TFData object
+                                td = TFData(candles=None, indicators=None, price_patterns=direct_patterns, priority_patterns=None, sr=None)
+                                
+                        except Exception as e:
+                            pass
                             
-                    except Exception as e:
+                    if not td or not td.price_patterns: continue
+                    try:
+                        if isinstance(td.price_patterns, list):
+                            logger.debug("[REPORT] %s %s price_patterns=%d", sym, tfp, len(td.price_patterns))
+                        else:
+                            logger.debug("[REPORT] %s %s price_patterns(type=%s)", sym, tfp, type(td.price_patterns))
+                    except Exception:
                         pass
-                        
-                if not td or not td.price_patterns: continue
-                try:
-                    if isinstance(td.price_patterns, list):
-                        logger.debug("[REPORT] %s %s price_patterns=%d", sym, tfp, len(td.price_patterns))
-                    else:
-                        logger.debug("[REPORT] %s %s price_patterns(type=%s)", sym, tfp, type(td.price_patterns))
-                except Exception:
-                    pass
-                plist = td.price_patterns
-                seq: List[dict] = []
-                if isinstance(plist, list):
-                    seq = [p for p in plist if isinstance(p, dict)]
-                elif isinstance(plist, dict):
-                    if isinstance(plist.get('patterns'), list):
-                        seq = [p for p in plist.get('patterns') if isinstance(p, dict)]
-                    elif any(k in plist for k in ('type','pattern')):
-                        seq = [plist]
-                for p in seq[:5]:  # limit per TF
-                    ptype = (p.get('type') or p.get('pattern') or '').replace('_',' ')
-                    if not ptype: continue
-                    conf = _conf_norm(p.get('confidence') or p.get('confidence_pct') or p.get('score'))
-                    arrow, meta = _price_pattern_meta(ptype)
-                    cand_price.append((conf, idx, f"        • {ptype} {arrow} ({tfp}) – {meta} – {int(round(conf))}% ({_tier(conf)})"))
-            # Rank: confidence desc then tf order
-            cand_price.sort(key=lambda x: (-x[0], x[1]))
-            seen_base = set()
-            for conf, idx, line in cand_price:
-                base = line.split('–')[0].strip()
-                if base not in seen_base:
-                    patt_lines.append(line)
-                    seen_base.add(base)
-                if len(patt_lines) >= 6: break
-            # Fallback aggregate if none
-            if not patt_lines:
-                try:
-                    tflist_agg = [tf for tf in tf_pref if tf in tf_data_cache]
-                    from math import isnan
-                    # attempt simple majority of pattern directions
-                    dirs: List[int] = []
-                    for conf, idx, line in cand_price:
-                        if '↑' in line: dirs.append(1)
-                        elif '↓' in line: dirs.append(-1)
-                    if dirs:
-                        s = sum(dirs)
-                        direction = 'nghiêng tăng' if s>0 else 'nghiêng giảm' if s<0 else 'trung tính'
-                        patt_lines.append(f"        • Tổng hợp: {direction} ({len(dirs)} mẫu)")
-                except Exception:
-                    pass
+                    plist = td.price_patterns
+                    seq: List[dict] = []
+                    if isinstance(plist, list):
+                        seq = [p for p in plist if isinstance(p, dict)]
+                    elif isinstance(plist, dict):
+                        if isinstance(plist.get('patterns'), list):
+                            seq = [p for p in plist.get('patterns') if isinstance(p, dict)]
+                        elif any(k in plist for k in ('type','pattern')):
+                            seq = [plist]
+                    for p in seq[:5]:  # limit per TF
+                        ptype = (p.get('type') or p.get('pattern') or '').replace('_',' ')
+                        if not ptype: continue
+                        conf = _conf_norm(p.get('confidence') or p.get('confidence_pct') or p.get('score'))
+                        arrow, meta = _price_pattern_meta(ptype)
+                        cand_price.append((conf, idx, f"        • {ptype} {arrow} ({tfp}) – {meta} – {int(round(conf))}% ({_tier(conf)})"))
+                # Rank: confidence desc then tf order
+                cand_price.sort(key=lambda x: (-x[0], x[1]))
+                seen_base = set()
+                for conf, idx, line in cand_price:
+                    base = line.split('–')[0].strip()
+                    if base not in seen_base:
+                        patt_lines.append(line)
+                        seen_base.add(base)
+                    if len(patt_lines) >= 6: break
+                # Fallback aggregate if none
+                if not patt_lines:
+                    try:
+                        tflist_agg = [tf for tf in tf_pref if tf in tf_data_cache]
+                        from math import isnan
+                        # attempt simple majority of pattern directions
+                        dirs: List[int] = []
+                        for conf, idx, line in cand_price:
+                            if '↑' in line: dirs.append(1)
+                            elif '↓' in line: dirs.append(-1)
+                        if dirs:
+                            s = sum(dirs)
+                            direction = 'nghiêng tăng' if s>0 else 'nghiêng giảm' if s<0 else 'trung tính'
+                            patt_lines.append(f"        • Tổng hợp: {direction} ({len(dirs)} mẫu)")
+                    except Exception:
+                        pass
             # Candlestick patterns
             cand_candles: List[Tuple[float,int,str]] = []
             for idx, tfp in enumerate(tf_pref):
@@ -9313,10 +9437,12 @@ class Report:
                     direct_candle_patterns = None
                     try:
                         # Try pattern_signals folder first
+                        # Support both sym and sym_m variants (e.g., BNBUSD and BNBUSD_m)
                         signal_files = [
                             f"pattern_signals/{sym}_{tfp}_priority_patterns.json",
                             f"pattern_signals/{sym}_{tfp}_patterns.json",
                             f"pattern_signals/{sym}_m_{tfp}_priority_patterns.json",
+                            f"pattern_signals/{sym}_m_{tfp}_patterns.json",
                         ]
                         for sf in signal_files:
                             if os.path.exists(sf):
@@ -9369,13 +9495,22 @@ class Report:
                 logger.error("[REPORT] Pattern aggregation failed for %s: %s", sym, e, exc_info=True)
             except Exception:
                 pass
-        lines.append("  - Mô hình giá:")
-        if not patt_lines:
+        
+        # Only show price patterns section if patterns are enabled and we have data
+        if patterns_enabled and patt_lines:
+            lines.append("  - Mô hình giá:")
+            lines += patt_lines
+        elif not patterns_enabled:
+            # Don't show section at all when patterns are disabled
             try:
-                logger.debug("[REPORT] No price patterns aggregated for %s; cand_price_raw=%d", sym, len(cand_price) if 'cand_price' in locals() else -1)
+                logger.debug("[REPORT] Price patterns disabled in whitelist - skipping section for %s", sym)
             except Exception:
                 pass
-        lines += (patt_lines if patt_lines else ["        • -"])
+        else:
+            # Patterns enabled but no data - show empty marker
+            lines.append("  - Mô hình giá:")
+            lines.append("        • -")
+        
         lines.append("  - Mô hình nến:")
         # Deduplicate candle lines
         if candle_lines:
@@ -9868,8 +10003,8 @@ class Aggregator:
         # DCA settings will be synced from risk_settings after loading
         self.current_price = current_price  # Current price extracted from indicators
         
-        # Load risk settings from file
-        self.risk_settings = self._load_risk_settings()
+        # 🔄 USE GLOBAL RISK SETTINGS SINGLETON - ensures consistency across all components
+        self.risk_settings = get_global_risk_settings()
         self._sync_dca_settings()
 
     def _sync_dca_settings(self):
@@ -9887,100 +10022,6 @@ class Aggregator:
         
         logger.debug(f"Synced DCA settings: {self.dca_settings}")
 
-    def _load_risk_settings(self) -> Dict:
-        """🔄 Load and validate risk settings with comprehensive mode detection"""
-        settings = {}
-        
-        try:
-            # 1️⃣ Try loading from risk_management/risk_settings.json (primary source)
-            with open("risk_management/risk_settings.json", 'r', encoding='utf-8') as f:
-                settings = json.load(f)
-            logger.info(f"✅ Risk settings loaded from risk_management/risk_settings.json")
-            
-        except Exception as e:
-            logger.warning(f"⚠️ Could not load from risk_settings.json: {e}")
-            
-            # 2️⃣ Fallback: Try loading from user_config.pkl
-            try:
-                import pickle
-                with open('user_config.pkl', 'rb') as f:
-                    config = pickle.load(f)
-                gui_settings = config.get('risk_management', {})
-                if gui_settings:
-                    settings.update(gui_settings)
-                    logger.info(f"🔄 Fallback: Settings loaded from user_config.pkl")
-            except Exception as e2:
-                logger.warning(f"⚠️ Could not load from user_config.pkl: {e2}")
-        
-        # 3️⃣ Validate and enhance loaded settings
-        settings = self._validate_and_enhance_settings(settings)
-        
-        # 4️⃣ Log comprehensive mode information
-        self._log_comprehensive_mode_info(settings)
-        
-        return settings
-    
-    def _validate_and_enhance_settings(self, settings: Dict) -> Dict:
-        """🔧 Validate and enhance settings with proper defaults"""
-        
-        # Core defaults
-        defaults = {
-            # Volume settings
-            "volume_mode": "Khối lượng mặc định",
-            "fixed_volume_lots": 0.01,
-            "min_volume_auto": 0.01,
-            "max_total_volume": "OFF",
-            
-            # S/L T/P Mode settings
-            "sltp_mode": "Bội số ATR",  # Default to ATR mode
-            "default_sl_pips": 50,
-            "default_tp_pips": 100,
-            "default_sl_atr_multiplier": 2.5,
-            "default_tp_atr_multiplier": 1.5,
-            "default_sl_percentage": 2.0,
-            "default_tp_percentage": 4.0,
-            "signal_sl_factor": 1.0,
-            "signal_tp_factor": 1.5,
-            
-            # DCA Mode settings  
-            "dca_mode": "atr_multiple",  # Default to ATR-based DCA
-            "enable_dca": True,
-            "max_dca_levels": 4,
-            "dca_distance_pips": 50.0,
-            "dca_atr_multiplier": 0.85,
-            "dca_volume_multiplier": 1.5,
-            "dca_percentage": 1.5,
-            "dca_base_distance_pips": 50.0,
-            
-            # Risk management
-            "max_risk_percent": "OFF",
-            
-            # Signal-based adjustment settings
-            "enable_signal_based_adjustment": True,  # Enable signal-based S/L T/P adjustment
-            "signal_improvement_min_profit_pips": 15,  # Min profit to allow signal improvement
-            "min_sl_buffer_from_entry_pips": 35,  # Min buffer from entry when adjusting S/L
-            "opposite_signal_min_profit_pips": 30,  # Min profit to act on opposite signals
-            "opposite_signal_sl_buffer_pips": 20,  # Buffer when locking profit on opposite signal
-            "signal_adjustment_sl_pips": 40,  # Default S/L adjustment pips
-            "signal_adjustment_tp_pips": 120,  # Default T/P adjustment pips
-        }
-        
-        # Apply defaults for missing settings
-        for key, default_value in defaults.items():
-            if key not in settings or settings[key] is None:
-                settings[key] = default_value
-                logger.info(f"🔧 Applied default: {key} = {default_value}")
-        
-        # Validate mode combinations
-        sltp_mode = settings.get('sltp_mode', 'Bội số ATR')
-        dca_mode = settings.get('dca_mode', 'atr_multiple')
-        
-        # Smart mode validation
-        if sltp_mode == 'Bội số ATR' and dca_mode != 'atr_multiple':
-            logger.warning(f"⚠️ Mode mismatch: S/L T/P is ATR but DCA is {dca_mode}. Consider using 'atr_multiple' for DCA.")
-        
-        return settings
-    
     def _log_comprehensive_mode_info(self, settings: Dict):
         """📊 Log comprehensive information about current modes and settings"""
         
@@ -10062,33 +10103,254 @@ class Aggregator:
             logger.error(f"Error loading market volatility: {e}")
             return {'volatility': 0.5, 'trend_strength': 0.5, 'trend_direction': 'Sideways'}
 
+    def _is_news_detection_enabled(self) -> bool:
+        """
+        📰 Check if news detection is enabled in GUI (News tab checkbox)
+        Reads from news_output/news_settings.json or user_config.json
+        """
+        try:
+            # Priority 1: Check news_settings.json (NewsTab saves here)
+            news_settings_file = 'news_output/news_settings.json'
+            if os.path.exists(news_settings_file):
+                with open(news_settings_file, 'r', encoding='utf-8') as f:
+                    news_settings = json.load(f)
+                if 'use_economic_calendar' in news_settings:
+                    enabled = news_settings.get('use_economic_calendar', True)
+                    logger.debug(f"📰 News detection from news_settings.json: {enabled}")
+                    return enabled
+            
+            # Priority 2: Check user_config.json
+            user_config_file = 'user_config.json'
+            if os.path.exists(user_config_file):
+                with open(user_config_file, 'r', encoding='utf-8') as f:
+                    user_config = json.load(f)
+                enabled = user_config.get('use_economic_calendar', True)
+                logger.debug(f"📰 News detection from user_config.json: {enabled}")
+                return enabled
+            
+            # Default: enabled
+            return True
+            
+        except Exception as e:
+            logger.warning(f"📰 Error checking news detection setting: {e}")
+            return True  # Default to enabled on error
+
+    def _calculate_news_penalty(self) -> Dict[str, Any]:
+        """
+        📰 Calculate confidence penalty based on recently released news
+        Only considers news from recent_news_with_actual_*.json (news with actual values released in last 60 min)
+        Filters by currency relevance to the symbol
+        Only active when "Enable News detection" is checked in News tab
+        
+        Returns:
+            Dict with 'penalty' (float 0-30), 'news_events' (list), 'reason' (str)
+        """
+        import glob
+        import re
+        from datetime import datetime
+        import pytz
+        
+        result = {
+            'penalty': 0.0,
+            'news_events': [],
+            'reason': 'No recent news impact',
+            'base_confidence': None,  # Will be set by caller
+            'adjusted_confidence': None
+        }
+        
+        try:
+            # 🔒 CHECK: Only calculate news penalty if news detection is enabled in GUI
+            news_detection_enabled = self._is_news_detection_enabled()
+            if not news_detection_enabled:
+                logger.debug("📰 News detection is DISABLED in GUI - skipping news penalty")
+                result['reason'] = 'News detection disabled'
+                return result
+            
+            # Find latest recent_news_with_actual file
+            news_files = glob.glob('news_output/recent_news_with_actual_*.json')
+            if not news_files:
+                logger.debug("📰 No recent_news_with_actual files found")
+                return result
+            
+            latest_file = max(news_files, key=os.path.getmtime)
+            
+            with open(latest_file, 'r', encoding='utf-8') as f:
+                recent_news = json.load(f)
+            
+            if not recent_news:
+                logger.debug("📰 Recent news file is empty - no impact")
+                return result
+            
+            # Extract currencies from symbol
+            symbol_upper = self.symbol.upper().replace('.', '').replace('_', '').replace('-', '')
+            currency_list = ['USD', 'EUR', 'GBP', 'JPY', 'AUD', 'NZD', 'CAD', 'CHF', 'XAU', 'XAG', 'BTC', 'ETH', 'SOL', 'BNB', 'LTC']
+            symbol_currencies = [c for c in currency_list if c in symbol_upper]
+            
+            if not symbol_currencies:
+                logger.debug(f"📰 Could not extract currencies from symbol: {self.symbol}")
+                return result
+            
+            logger.info(f"📰 Checking news for {self.symbol} (currencies: {symbol_currencies})")
+            
+            # Calculate penalty based on relevant news
+            total_penalty = 0.0
+            relevant_events = []
+            
+            # Impact penalty mapping (x2 for stronger news impact)
+            impact_penalties = {
+                'high': 30.0,      # High impact: -30% confidence (was 15%)
+                'medium': 16.0,   # Medium impact: -16% confidence (was 8%)
+                'low': 6.0        # Low impact: -6% confidence (was 3%)
+            }
+            
+            for news in recent_news:
+                news_currency = news.get('currency', '').upper()
+                
+                # Check if news currency affects our symbol
+                if news_currency not in symbol_currencies:
+                    continue
+                
+                # Get impact level
+                impact = news.get('impact', 'Low')
+                if isinstance(impact, int):
+                    # Convert numeric to string
+                    impact_map = {1: 'Low', 2: 'Medium', 3: 'High'}
+                    impact = impact_map.get(impact, 'Low')
+                
+                impact_lower = impact.lower()
+                penalty = impact_penalties.get(impact_lower, 0.0)
+                
+                if penalty > 0:
+                    event_name = news.get('event', 'Unknown')
+                    actual = news.get('actual', 'N/A')
+                    forecast = news.get('forecast', 'N/A')
+                    # Use time_vn_24h as primary (24h format), fallback to time (12h format)
+                    time_str = news.get('time_vn_24h', '') or news.get('time', '')
+                    
+                    # Calculate surprise factor (actual vs forecast)
+                    surprise_multiplier = 1.0
+                    try:
+                        actual_val = float(re.sub(r'[^\d.-]', '', str(actual)))
+                        forecast_val = float(re.sub(r'[^\d.-]', '', str(forecast)))
+                        if forecast_val != 0:
+                            surprise_pct = abs((actual_val - forecast_val) / forecast_val) * 100
+                            if surprise_pct > 50:  # Big surprise
+                                surprise_multiplier = 1.5
+                                logger.info(f"   📊 Big surprise: {surprise_pct:.1f}% deviation!")
+                            elif surprise_pct > 20:  # Moderate surprise
+                                surprise_multiplier = 1.2
+                    except (ValueError, TypeError):
+                        pass  # Cannot calculate surprise
+                    
+                    adjusted_penalty = penalty * surprise_multiplier
+                    total_penalty += adjusted_penalty
+                    
+                    relevant_events.append({
+                        'currency': news_currency,
+                        'event': event_name,
+                        'impact': impact,
+                        'actual': actual,
+                        'forecast': forecast,
+                        'time': time_str,
+                        'penalty': adjusted_penalty
+                    })
+                    
+                    logger.info(f"   📰 {news_currency} {impact} impact: {event_name}")
+                    logger.info(f"      Actual: {actual} vs Forecast: {forecast}")
+                    logger.info(f"      Penalty: -{adjusted_penalty:.1f}%")
+            
+            # Cap total penalty at 60% (was 30%)
+            total_penalty = min(total_penalty, 60.0)
+            
+            if total_penalty > 0:
+                result['penalty'] = total_penalty
+                result['news_events'] = relevant_events
+                result['reason'] = f"{len(relevant_events)} recent news event(s) affecting {', '.join(symbol_currencies)}"
+                logger.warning(f"📰 NEWS PENALTY for {self.symbol}: -{total_penalty:.1f}% ({len(relevant_events)} events)")
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"📰 Error calculating news penalty: {e}")
+            return result
+
     def _calculate_volume_from_risk_settings(self, entry_price: float, sl_price: float, 
                                            entry_type: str = "NEW_ENTRY", account_balance: float = None) -> float:
         """Calculate volume based on risk settings from JSON file"""
         try:
             volume_mode = self.risk_settings.get("volume_mode", "Theo rủi ro (Tự động)")
-            fixed_volume = self.risk_settings.get("fixed_volume_lots", 0.05)
+            # Get volume from correct key based on mode
+            fixed_volume = self.risk_settings.get("fixed_volume_lots", self.risk_settings.get("default_volume_lots", 0.1))
+            default_volume = self.risk_settings.get("default_volume_lots", 0.1)
+            selected_symbols_count = self.risk_settings.get("selected_symbols_count", 1)
+            if selected_symbols_count <= 0:
+                selected_symbols_count = 1
+                
             logger.info(f"🔍 VOLUME CALCULATION DEBUG:")
             logger.info(f"   volume_mode: '{volume_mode}'")  
             logger.info(f"   fixed_volume_lots: {fixed_volume}")
+            logger.info(f"   default_volume_lots: {default_volume}")
+            logger.info(f"   selected_symbols_count: {selected_symbols_count}")
             logger.info(f"   entry_type: {entry_type}")
             
             # ========== PRIMARY VOLUME CALCULATION (Base Volume) ==========
             
             if "cố định" in volume_mode.lower() or "Fixed Volume" in volume_mode:
                 # MODE 2: Fixed Volume - Tất cả lệnh dùng volume cố định
-                base_volume = self.risk_settings.get("fixed_volume_lots", 0.05)  # Use proper fallback
+                # Try fixed_volume_lots first, fallback to default_volume_lots
+                base_volume = self.risk_settings.get("fixed_volume_lots", self.risk_settings.get("default_volume_lots", 0.1))
                 logger.info(f"💰 Fixed Volume Mode: {base_volume} lots (no scaling)")
                 
             elif "mặc định" in volume_mode.lower() or "Default Volume" in volume_mode:
-                # MODE 3: Default Volume - Use fixed_volume_lots setting
-                base_volume = self.risk_settings.get("fixed_volume_lots", 0.05)  # Use proper default volume
+                # MODE 3: Default Volume - Use default_volume_lots setting
+                base_volume = self.risk_settings.get("default_volume_lots", 0.1)
                 logger.info(f"💰 Default Volume Mode: {base_volume} lots (DCA scales from this)")
                 
-            elif "Theo rủi ro" in volume_mode and "Tự động" in volume_mode:
-                # MODE 1: Auto Risk-Based - Lệnh đầu = min volume, DCA scales up
-                base_volume = self.risk_settings.get("min_volume_auto", 0.01)
-                logger.info(f"💰 Auto Risk-Based Mode: {base_volume} lots (min volume, DCA scales up)")
+            elif "Theo rủi ro" in volume_mode or "tự động" in volume_mode.lower() or "auto" in volume_mode.lower():
+                # MODE 1: Auto Risk-Based - Tính volume theo % rủi ro, chia đều cho số symbols
+                max_risk_percent = self.risk_settings.get("max_risk_percent", 2.0)
+                min_volume = self.risk_settings.get("min_volume_auto", 0.01)
+                
+                # Handle OFF case
+                if isinstance(max_risk_percent, str) and max_risk_percent.upper() == "OFF":
+                    max_risk_percent = 999.0
+                else:
+                    try:
+                        max_risk_percent = float(max_risk_percent)
+                    except:
+                        max_risk_percent = 2.0
+                
+                # Get account balance
+                if account_balance is None:
+                    try:
+                        import MetaTrader5 as mt5
+                        if mt5.initialize():
+                            account_info = mt5.account_info()
+                            if account_info:
+                                account_balance = account_info.balance
+                            mt5.shutdown()
+                    except:
+                        pass
+                
+                if account_balance and account_balance > 0 and sl_price > 0 and entry_price > 0:
+                    # Calculate risk amount per symbol
+                    total_risk_amount = account_balance * (max_risk_percent / 100.0)
+                    risk_amount_per_symbol = total_risk_amount / selected_symbols_count
+                    
+                    # Calculate pip distance
+                    pip_distance = abs(entry_price - sl_price)
+                    if pip_distance > 0:
+                        # Estimate pip value (simplified - assumes $10 per pip per lot for most pairs)
+                        pip_value = 10.0
+                        base_volume = risk_amount_per_symbol / (pip_distance * 10000 * pip_value)
+                        base_volume = max(base_volume, min_volume)
+                        logger.info(f"💰 Auto Risk-Based: ${total_risk_amount:.2f} / {selected_symbols_count} symbols = ${risk_amount_per_symbol:.2f}/symbol -> {base_volume:.3f} lots")
+                    else:
+                        base_volume = min_volume
+                        logger.warning(f"💰 Auto Risk-Based: Invalid SL, using min_volume: {base_volume} lots")
+                else:
+                    base_volume = min_volume
+                    logger.info(f"💰 Auto Risk-Based Mode: Using min_volume {base_volume} lots (no balance/SL data)")
                 
             else:
                 # Fallback to min volume
@@ -10456,8 +10718,8 @@ class Aggregator:
                 valid_resistances = [r for r in (resistance_levels or []) if r > entry_price]
                 if valid_resistances:
                     nearest_resistance = min(valid_resistances)  # Closest resistance above entry
-                    tp_price = nearest_resistance - buffer_distance  # TP below resistance with buffer
-                    logger.info(f"🟢 BUY TP: Resistance {nearest_resistance:.5f} - buffer {dynamic_buffer_pips:.1f}pips = {tp_price:.5f}")
+                    tp_price = nearest_resistance + buffer_distance  # TP ABOVE resistance for better profit (FIXED: was minus)
+                    logger.info(f"🟢 BUY TP: Resistance {nearest_resistance:.5f} + buffer {dynamic_buffer_pips:.1f}pips = {tp_price:.5f}")
                 else:
                     # No resistance found, use fallback
                     fallback_tp_pips = self.risk_settings.get('default_tp_pips', 100)
@@ -10483,8 +10745,8 @@ class Aggregator:
                 valid_supports = [s for s in (support_levels or []) if s < entry_price]
                 if valid_supports:
                     nearest_support = max(valid_supports)  # Closest support below entry
-                    tp_price = nearest_support + buffer_distance  # TP above support with buffer
-                    logger.info(f"🔴 SELL TP: Support {nearest_support:.5f} + buffer {dynamic_buffer_pips:.1f}pips = {tp_price:.5f}")
+                    tp_price = nearest_support - buffer_distance  # TP BELOW support for better profit (FIXED: was plus)
+                    logger.info(f"🔴 SELL TP: Support {nearest_support:.5f} - buffer {dynamic_buffer_pips:.1f}pips = {tp_price:.5f}")
                 else:
                     # No support found, use fallback
                     fallback_tp_pips = self.risk_settings.get('default_tp_pips', 100)
@@ -10503,25 +10765,44 @@ class Aggregator:
                 
                 logger.info(f"✅ S/R SL/TP calculated: SL={sl_pips:.1f}pips, TP={tp_pips:.1f}pips")
                 
+                # 🎯 SIDEWAY-AWARE validation - smaller ranges are OK for sideway trading
+                # Check if this is being called from sideway logic (S/R based)
+                is_sideway_call = len(support_levels or []) <= 2 and len(resistance_levels or []) <= 2
+                
                 # Enhanced validation - minimum and maximum distances based on symbol type
                 min_sl_pips = 30.0  # Minimum 30 pips for SL
                 min_tp_pips = 20.0  # Minimum 20 pips for TP
                 max_sl_pips = 300.0  # Maximum 300 pips for SL to prevent too wide stops
                 max_tp_pips = 500.0  # Maximum 500 pips for TP
                 
-                # Crypto pairs need larger distances
-                if any(crypto in self.symbol for crypto in ['BTC', 'ETH', 'BNB', 'SOL', 'LTC']):
-                    min_sl_pips = 100.0  # 100 pips minimum for crypto
-                    min_tp_pips = 50.0   # 50 pips minimum for crypto TP
-                    max_sl_pips = 500.0  # 500 pips maximum for crypto SL
-                    max_tp_pips = 800.0  # 800 pips maximum for crypto TP
+                # Crypto pairs - use ATR-based dynamic minimum instead of fixed values
+                if any(crypto in self.symbol for crypto in ['BTC', 'ETH', 'BNB', 'SOL', 'LTC', 'ADA', 'XRP', 'DOGE']):
+                    # For crypto, minimum SL should be proportional to ATR, not fixed
+                    if atr and atr > 0:
+                        atr_pips = atr / pip_value
+                        min_sl_pips = max(15.0, atr_pips * 0.3)   # 30% of ATR, min 15 pips (relaxed for sideway)
+                        min_tp_pips = max(10.0, atr_pips * 0.2)   # 20% of ATR, min 10 pips (relaxed for sideway)
+                    else:
+                        min_sl_pips = 20.0   # Fallback minimum for crypto
+                        min_tp_pips = 15.0   # Fallback minimum for crypto TP
+                    max_sl_pips = 800.0  # 800 pips maximum for crypto SL
+                    max_tp_pips = 1200.0  # 1200 pips maximum for crypto TP
                 
                 # Metals (XAUUSD, XAGUSD) have different ranges
                 elif any(metal in self.symbol for metal in ['XAU', 'XAG']):
-                    min_sl_pips = 20.0   # 20 pips minimum for metals
-                    min_tp_pips = 30.0   # 30 pips minimum for metals TP
-                    max_sl_pips = 150.0  # 150 pips maximum for metals SL
-                    max_tp_pips = 300.0  # 300 pips maximum for metals TP
+                    min_sl_pips = 10.0   # 10 pips minimum for metals (relaxed for sideway)
+                    min_tp_pips = 10.0   # 10 pips minimum for metals TP (relaxed for sideway)
+                    max_sl_pips = 200.0  # 200 pips maximum for metals SL
+                    max_tp_pips = 400.0  # 400 pips maximum for metals TP
+                
+                # 🎯 Forex pairs - use smaller minimums for sideway trading
+                else:
+                    if is_sideway_call:
+                        min_sl_pips = 15.0   # 15 pips minimum for FX sideway
+                        min_tp_pips = 10.0   # 10 pips minimum for FX sideway TP (allow small range trades)
+                    else:
+                        min_sl_pips = 30.0   # 30 pips minimum for FX trend
+                        min_tp_pips = 20.0   # 20 pips minimum for FX trend TP
                 
                 # Check if calculated distances are within reasonable ranges
                 if (min_sl_pips <= sl_pips <= max_sl_pips and 
@@ -10832,34 +11113,32 @@ class Aggregator:
                     
 
     def _get_symbol_specific_settings(self) -> Dict[str, Any]:
-        """Get symbol-specific risk settings from risk_settings.json"""
+        """Get symbol-specific settings from cached risk_settings"""
         try:
-            unified_file = "risk_management/risk_settings.json"
-            if os.path.exists(unified_file):
-                with open(unified_file, 'r', encoding='utf-8') as f:
-                    settings = json.load(f)
-                
-                # 🔧 FIX: Normalize symbol for lookup (handle variants like SOLUSD_m -> SOLUSD)
-                normalized_symbol = self.symbol.upper().rstrip('.').replace('_M', '').replace('_m', '')
-                
-                # Try multiple symbol variations
-                symbol_variants = [
-                    normalized_symbol,  # SOLUSD_m -> SOLUSD
-                    self.symbol.upper().rstrip('.'),  # Original without dots
-                    self.symbol  # Original as-is
-                ]
-                
-                symbol_settings = {}
-                for variant in symbol_variants:
-                    symbol_settings = settings.get('symbol_specific_settings', {}).get(variant, {})
-                    if symbol_settings:
-                        logger.info(f"🎯 Found symbol settings for '{variant}' (from '{self.symbol}')")
-                        break
-                
-                if not symbol_settings:
-                    available_symbols = list(settings.get('symbol_specific_settings', {}).keys())
-                    logger.warning(f"⚠️ No symbol-specific settings found for {self.symbol} or variants {symbol_variants}")
-                    logger.info(f"📋 Available symbols: {available_symbols}")
+            # 🔄 USE CACHED RISK SETTINGS (already loaded in __init__)
+            settings = self.risk_settings
+            
+            # 🔧 FIX: Normalize symbol for lookup (handle variants like SOLUSD_m -> SOLUSD)
+            normalized_symbol = self.symbol.upper().rstrip('.').replace('_M', '').replace('_m', '')
+            
+            # Try multiple symbol variations
+            symbol_variants = [
+                normalized_symbol,  # SOLUSD_m -> SOLUSD
+                self.symbol.upper().rstrip('.'),  # Original without dots
+                self.symbol  # Original as-is
+            ]
+            
+            symbol_settings = {}
+            for variant in symbol_variants:
+                symbol_settings = settings.get('symbol_specific_settings', {}).get(variant, {})
+                if symbol_settings:
+                    logger.info(f"🎯 Found symbol settings for '{variant}' (from '{self.symbol}')")
+                    break
+            
+            if not symbol_settings:
+                available_symbols = list(settings.get('symbol_specific_settings', {}).keys())
+                logger.warning(f"⚠️ No symbol-specific settings found for {self.symbol} or variants {symbol_variants}")
+                logger.info(f"📋 Available symbols: {available_symbols}")
                 
                 # Return symbol settings with fallback to global defaults
                 global_settings = settings.get('basic_settings', {})
@@ -10896,7 +11175,7 @@ class Aggregator:
         
         try:
             # 🔧 MODE 1: ATR MULTIPLE - Dynamic based on ATR
-            if dca_mode == 'atr_multiple':
+            if dca_mode in ['atr_multiple', 'Bội số ATR']:
                 return self._calculate_atr_based_dca_distance()
             
             # 🔧 MODE 2: FIXED PIPS - Static distance
@@ -11993,6 +12272,30 @@ class Aggregator:
             
         weights = create_dynamic_weights(available_timeframes)
         
+        # 🎯 CRITICAL: CHECK TREND DIRECTION FIRST before signal generation
+        # This determines which logic to use: SIDEWAY or TREND
+        market_trend_direction = None
+        market_sideway_range = None
+        use_sideway_logic = False
+        
+        try:
+            sr_file = f"trendline_sr/{self.symbol}_H1_trendline_sr.json"
+            if os.path.exists(sr_file):
+                with open(sr_file, 'r', encoding='utf-8') as f:
+                    sr_data = json.load(f)
+                    market_trend_direction = sr_data.get('trend_direction', '')
+                    market_sideway_range = sr_data.get('sideway_range')
+                    
+                    if market_trend_direction == "Sideway" and market_sideway_range:
+                        use_sideway_logic = True
+                        print(f"🎯 MARKET TYPE: SIDEWAY (Range: {market_sideway_range.get('range_low', 0):.2f} - {market_sideway_range.get('range_high', 0):.2f})")
+                        print(f"   Current position: {market_sideway_range.get('current_position_pct', 50):.1f}% of range")
+                    else:
+                        print(f"🎯 MARKET TYPE: TREND ({market_trend_direction})")
+        except Exception as e:
+            logger.warning(f"Could not determine market type: {e}")
+            print(f"🎯 MARKET TYPE: TREND (default - no sideway data available)")
+        
         # Primary signal components (Pattern-based decision makers)
         pattern_bull = 0.0; pattern_bear = 0.0
         candle_bull = 0.0; candle_bear = 0.0
@@ -12129,7 +12432,8 @@ class Aggregator:
                 print(f"DEBUG: No candlestick patterns for {tf} or not a list")
 
             # 2. PRICE PATTERNS - TREND CONFIRMATION (Weight: 1.5 * timeframe_weight) 
-            if d.price_patterns and isinstance(d.price_patterns, list):
+            # 🎯 CHECK WHITELIST: Only process price patterns if enabled in indicator_whitelist.json
+            if _use('patterns') and d.price_patterns and isinstance(d.price_patterns, list):
                 print(f"DEBUG: Processing {len(d.price_patterns)} price patterns for {tf} (TREND CONFIRMATION)")
                 for pattern in d.price_patterns:
                     if isinstance(pattern, dict):
@@ -12156,6 +12460,8 @@ class Aggregator:
                                 print(f"DEBUG: Trend Pattern signal '{signal}' not recognized as bull/bear")
                         else:
                             print(f"DEBUG: Trend Pattern confidence {confidence} too low (threshold 0.6)")
+            elif not _use('patterns'):
+                print(f"DEBUG: Price patterns disabled in whitelist - skipping {tf} patterns")
             else:
                 print(f"DEBUG: No price patterns for {tf} or not a list")
 
@@ -12182,16 +12488,45 @@ class Aggregator:
                         contributor_detail.append((f"📉Trend[{tf}]", "SELL", trend_weight))
                 
                 # Breakout analysis (high importance but capped)
+                # 🎯 CRITICAL: Ignore weak/false breakouts - they mislead in sideway markets
                 if 'break' in breakout_summary:
-                    breakout_weight = w * 1.0  # Reduced from 1.5
-                    if 'break up' in breakout_summary or 'breakout up' in breakout_summary:
-                        trend_bull += breakout_weight
-                        contributors += 1
-                        contributor_detail.append((f"🚀Breakout[{tf}]", "BUY", breakout_weight))
-                    elif 'break down' in breakout_summary or 'breakout down' in breakout_summary or 'reversal' in breakout_summary:
-                        trend_bear += breakout_weight
-                        contributors += 1
-                        contributor_detail.append((f"💥Breakout[{tf}]", "SELL", breakout_weight))
+                    # Skip false/weak breakouts
+                    if 'false breakout' in breakout_summary or 'wick only' in breakout_summary:
+                        # False breakout detected - IGNORE completely
+                        pass
+                    elif 'weak breakout' in breakout_summary and 'low volume' in breakout_summary:
+                        # Weak + low volume breakout - significantly reduced weight
+                        breakout_weight = w * 0.3  # Very low confidence
+                        if 'break up' in breakout_summary or 'breakout up' in breakout_summary:
+                            trend_bull += breakout_weight
+                            contributors += 1
+                            contributor_detail.append((f"⚠️WeakBO[{tf}]", "BUY", breakout_weight))
+                        elif 'break down' in breakout_summary or 'breakout down' in breakout_summary:
+                            trend_bear += breakout_weight
+                            contributors += 1
+                            contributor_detail.append((f"⚠️WeakBO[{tf}]", "SELL", breakout_weight))
+                    elif 'strong breakout' in breakout_summary:
+                        # Strong confirmed breakout
+                        breakout_weight = w * 1.5  # High confidence
+                        if 'break up' in breakout_summary or 'breakout up' in breakout_summary:
+                            trend_bull += breakout_weight
+                            contributors += 1
+                            contributor_detail.append((f"🚀Breakout[{tf}]", "BUY", breakout_weight))
+                        elif 'break down' in breakout_summary or 'breakout down' in breakout_summary:
+                            trend_bear += breakout_weight
+                            contributors += 1
+                            contributor_detail.append((f"💥Breakout[{tf}]", "SELL", breakout_weight))
+                    else:
+                        # Normal breakout (with volume confirmation but maybe in sideway)
+                        breakout_weight = w * 0.8  # Moderate weight
+                        if 'break up' in breakout_summary or 'breakout up' in breakout_summary:
+                            trend_bull += breakout_weight
+                            contributors += 1
+                            contributor_detail.append((f"📈Breakout[{tf}]", "BUY", breakout_weight))
+                        elif 'break down' in breakout_summary or 'breakout down' in breakout_summary or 'reversal' in breakout_summary:
+                            trend_bear += breakout_weight
+                            contributors += 1
+                            contributor_detail.append((f"📉Breakout[{tf}]", "SELL", breakout_weight))
 
             # ========== SECONDARY SOURCES (CONFIDENCE MODIFIERS) ==========
             
@@ -12298,43 +12633,84 @@ class Aggregator:
         print(f"  Confidence modifier: {indicator_confidence_boost:.2f}")
         print(f"  Total contributors: {contributors}")
         
-        # Determine base signal from patterns
-        if abs(primary_net) < primary_thresh or primary_thresh == 0:
-            # Not enough pattern conviction or no patterns at all
-            base_signal = 'NEUTRAL'
-            print(f"  Base signal: NEUTRAL (insufficient pattern conviction)")
-        elif primary_net > 0:
-            base_signal = 'BUY'
-            print(f"  Base signal: BUY (pattern conviction)")
-        else:
-            base_signal = 'SELL'
-            print(f"  Base signal: SELL (pattern conviction)")
-        
-        # Apply confidence modifiers to determine final signal
-        if base_signal == 'NEUTRAL':
-            # For neutral base, indicators can tip the scale only if they're very strong
-            strong_indicator_thresh = total_potential_primary * 0.10  # Lowered from 0.25 to make indicator override easier
-            if indicator_confidence_boost > strong_indicator_thresh:
+        # 🎯 DETERMINE SIGNAL BASED ON MARKET TYPE
+        if use_sideway_logic and market_sideway_range:
+            # ========== SIDEWAY LOGIC: Signal based on position in range ==========
+            current_position_pct = market_sideway_range.get('current_position_pct', 50)
+            range_low = market_sideway_range.get('range_low', 0)
+            range_high = market_sideway_range.get('range_high', 0)
+            
+            print(f"📊 SIDEWAY SIGNAL GENERATION:")
+            print(f"   Position: {current_position_pct:.1f}% (Range: {range_low:.2f} - {range_high:.2f})")
+            
+            # Sideway trading rules: buy support, sell resistance
+            if current_position_pct <= 35:
+                # Near support (0-35%) - BUY zone
+                base_signal = 'BUY'
                 final_sig = 'BUY'
-                print(f"  Final: BUY (strong indicator override)")
-            elif indicator_confidence_boost < -strong_indicator_thresh:
+                print(f"   Signal: BUY (near support zone)")
+            elif current_position_pct >= 65:
+                # Near resistance (65-100%) - SELL zone
+                base_signal = 'SELL'
                 final_sig = 'SELL'
-                print(f"  Final: SELL (strong indicator override)")
+                print(f"   Signal: SELL (near resistance zone)")
             else:
+                # Middle of range (35-65%) - NEUTRAL zone
+                base_signal = 'NEUTRAL'
                 final_sig = 'NEUTRAL'
-                print(f"  Final: NEUTRAL (no strong override)")
+                print(f"   Signal: NEUTRAL (mid-range, no clear edge)")
         else:
-            # For directional base signal, check if indicators strongly contradict
-            contradiction_thresh = total_potential_primary * 0.3
-            if base_signal == 'BUY' and indicator_confidence_boost < -contradiction_thresh:
-                final_sig = 'NEUTRAL'  # Contradicted by indicators
-                print(f"  Final: NEUTRAL (indicators contradict BUY pattern)")
-            elif base_signal == 'SELL' and indicator_confidence_boost > contradiction_thresh:
-                final_sig = 'NEUTRAL'  # Contradicted by indicators
-                print(f"  Final: NEUTRAL (indicators contradict SELL pattern)")
+            # ========== TREND LOGIC: Signal based on patterns/indicators ==========
+            # Determine base signal from patterns
+            if abs(primary_net) < primary_thresh or primary_thresh == 0:
+                # Not enough pattern conviction or no patterns at all
+                base_signal = 'NEUTRAL'
+                print(f"  Base signal: NEUTRAL (insufficient pattern conviction)")
+            elif primary_net > 0:
+                base_signal = 'BUY'
+                print(f"  Base signal: BUY (pattern conviction)")
             else:
-                final_sig = base_signal  # Patterns dominate
-                print(f"  Final: {final_sig} (pattern-driven, indicators align)")
+                base_signal = 'SELL'
+                print(f"  Base signal: SELL (pattern conviction)")
+            
+            # Apply confidence modifiers to determine final signal
+            if base_signal == 'NEUTRAL':
+                # For neutral base, indicators can tip the scale only if they're very strong
+                strong_indicator_thresh = total_potential_primary * 0.10  # Lowered from 0.25 to make indicator override easier
+                if indicator_confidence_boost > strong_indicator_thresh:
+                    final_sig = 'BUY'
+                    print(f"  Final: BUY (strong indicator override)")
+                elif indicator_confidence_boost < -strong_indicator_thresh:
+                    final_sig = 'SELL'
+                    print(f"  Final: SELL (strong indicator override)")
+                else:
+                    final_sig = 'NEUTRAL'
+                    print(f"  Final: NEUTRAL (no strong override)")
+            else:
+                # For directional base signal, check if indicators strongly contradict
+                # REVISED: Use a more nuanced approach - strong patterns override weak indicator contradictions
+                pattern_strength_ratio = abs(primary_net) / max(total_potential_primary, 1e-6)
+                contradiction_thresh = total_potential_primary * 0.3
+                
+                if base_signal == 'BUY' and indicator_confidence_boost < -contradiction_thresh:
+                    # Only override if pattern conviction is weak (< 30% relative strength)
+                    if pattern_strength_ratio < 0.3:
+                        final_sig = 'NEUTRAL'  # Contradicted by indicators AND weak pattern
+                        print(f"  Final: NEUTRAL (weak pattern {pattern_strength_ratio:.1%}, strong indicator contradiction)")
+                    else:
+                        final_sig = base_signal  # Strong pattern overrides contradiction
+                        print(f"  Final: {final_sig} (strong pattern {pattern_strength_ratio:.1%} overrides indicator contradiction)")
+                elif base_signal == 'SELL' and indicator_confidence_boost > contradiction_thresh:
+                    # Only override if pattern conviction is weak (< 30% relative strength)
+                    if pattern_strength_ratio < 0.3:
+                        final_sig = 'NEUTRAL'  # Contradicted by indicators AND weak pattern
+                        print(f"  Final: NEUTRAL (weak pattern {pattern_strength_ratio:.1%}, strong indicator contradiction)")
+                    else:
+                        final_sig = base_signal  # Strong pattern overrides contradiction
+                        print(f"  Final: {final_sig} (strong pattern {pattern_strength_ratio:.1%} overrides indicator contradiction)")
+                else:
+                    final_sig = base_signal  # Patterns dominate
+                    print(f"  Final: {final_sig} (pattern-driven, indicators align)")
 
         # ========== ENHANCED CONFIDENCE CALCULATION ==========
         
@@ -12358,9 +12734,17 @@ class Aggregator:
         # Final confidence calculation
         base_confidence = pattern_confidence + indicator_boost + coverage_bonus
         
-        # Penalty for conflicting signals
+        # Penalty for conflicting signals (reduced if pattern is strong)
         if final_sig == 'NEUTRAL' and base_signal != 'NEUTRAL':
-            base_confidence *= 0.7  # Reduce confidence for contradicted patterns
+            pattern_strength_ratio = abs(primary_net) / max(total_potential_primary, 1e-6)
+            if pattern_strength_ratio >= 0.3:
+                # Strong pattern that was overridden by indicators - mild penalty only
+                base_confidence *= 0.85  
+                print(f"    (Strong pattern {pattern_strength_ratio:.1%} override: mild penalty 0.85x)")
+            else:
+                # Weak pattern contradicted by indicators - significant penalty
+                base_confidence *= 0.7
+                print(f"    (Weak pattern {pattern_strength_ratio:.1%} contradiction: penalty 0.7x)")
         
         confidence = max(25.0, min(95.0, base_confidence))
         
@@ -12369,6 +12753,81 @@ class Aggregator:
         print(f"    Indicator boost: {indicator_boost:.1f}%") 
         print(f"    Coverage bonus: {coverage_bonus:.1f}%")
         print(f"    Final confidence: {confidence:.1f}%")
+        
+        # 📰 NEWS PENALTY: Apply penalty for recently released news
+        news_penalty_data = self._calculate_news_penalty()
+        news_penalty = news_penalty_data.get('penalty', 0.0)
+        news_penalty_data['base_confidence'] = confidence  # Store for reporting
+        
+        if news_penalty > 0:
+            confidence_before_news = confidence
+            confidence = max(25.0, confidence - news_penalty)
+            news_penalty_data['adjusted_confidence'] = confidence
+            print(f"    📰 News penalty: -{news_penalty:.1f}% (from {confidence_before_news:.1f}% to {confidence:.1f}%)")
+            for event in news_penalty_data.get('news_events', []):
+                print(f"       • {event['currency']} {event['impact']}: {event['event']} (Actual: {event['actual']})")
+
+        # 🤖 AI/ML PREDICTION INTEGRATION
+        ml_prediction_data = {'enabled': False, 'signal': None, 'confidence': 0, 'probabilities': {}}
+        if ML_AVAILABLE:
+            try:
+                ml_predictor = get_ml_predictor()
+                if ml_predictor.enabled and ml_predictor.is_loaded:
+                    # Prepare data for ML prediction
+                    ml_data = {
+                        'indicators': {
+                            'M15': raw_tf_data.get('M15', {}).indicators if 'M15' in raw_tf_data else {},
+                            'H1': raw_tf_data.get('H1', {}).indicators if 'H1' in raw_tf_data else {}
+                        },
+                        'patterns': {
+                            'candle_patterns': [],
+                            'price_patterns': []
+                        },
+                        'trendline_sr': {
+                            'supports': support_levels,
+                            'resistances': resistance_levels,
+                            'trend': trend_direction
+                        },
+                        'news': news_penalty_data.get('news_events', [])
+                    }
+                    
+                    # Get ML prediction
+                    ml_signal, ml_conf, ml_proba = ml_predictor.predict(ml_data)
+                    
+                    # Combine with rule-based signal
+                    rule_signal = final_sig
+                    rule_confidence = confidence
+                    
+                    combined_sig, combined_conf = ml_predictor.combine_signals(
+                        rule_signal, rule_confidence,
+                        ml_signal, ml_conf
+                    )
+                    
+                    # Store ML data for reporting
+                    ml_prediction_data = {
+                        'enabled': True,
+                        'signal': ml_signal,
+                        'confidence': round(ml_conf, 2),
+                        'probabilities': {k: round(v, 4) for k, v in ml_proba.items()},
+                        'rule_signal': rule_signal,
+                        'rule_confidence': round(rule_confidence, 2),
+                        'combined_signal': combined_sig,
+                        'combined_confidence': round(combined_conf, 2),
+                        'ml_weight': ml_predictor.ml_weight
+                    }
+                    
+                    # Apply ML combination
+                    final_sig = combined_sig
+                    confidence = combined_conf
+                    
+                    print(f"  🤖 AI/ML Prediction:")
+                    print(f"    ML Signal: {ml_signal} ({ml_conf:.1f}%)")
+                    print(f"    Rule Signal: {rule_signal} ({rule_confidence:.1f}%)")
+                    print(f"    Combined: {final_sig} ({confidence:.1f}%) [ML weight: {ml_predictor.ml_weight:.0%}]")
+                    print(f"    Probabilities: BUY={ml_proba.get('BUY', 0):.1%}, SELL={ml_proba.get('SELL', 0):.1%}, HOLD={ml_proba.get('HOLD', 0):.1%}")
+            except Exception as e:
+                logger.warning(f"🤖 ML prediction failed: {e}")
+                ml_prediction_data['error'] = str(e)
 
         # Calculate smart entry using new intelligent logic
         # PRIORITY 1: Use live price from self.current_price (if set from MT5)
@@ -12441,23 +12900,62 @@ class Aggregator:
         sl = tp = None
         if isinstance(entry, (int, float)) and final_sig in ('BUY', 'SELL'):
             
-            # 🎯 CALCULATE SL/TP USING RISK SETTINGS FROM GUI
-            # Create signal data stub for potential signal-based SL/TP
-            signal_data_stub = {
-                'signal': final_sig,
-                'confidence': confidence,
-                'stoploss': None,  # Will be filled if signal provides SL/TP
-                'takeprofit': None
-            }
-            
-            sl, tp = self._calculate_sl_tp_from_risk_settings(
-                entry_price=entry,
-                signal=final_sig,
-                atr=atr,
-                support_levels=support_levels,
-                resistance_levels=resistance_levels,
-                signal_data=signal_data_stub
-            )
+            # 🎯 SIDEWAY LOGIC: Force use S/R zones for SL/TP (ignore risk_settings)
+            if use_sideway_logic and market_sideway_range:
+                logger.info(f"🎯 SIDEWAY SL/TP: Using sideway_range S/R zones (ignoring risk_settings sltp_mode)")
+                
+                # Extract support/resistance from sideway_range (use zone centers)
+                support_zone = market_sideway_range.get('support_zone', {})
+                resistance_zone = market_sideway_range.get('resistance_zone', {})
+                
+                sideway_support = support_zone.get('center') if support_zone else market_sideway_range.get('range_low')
+                sideway_resistance = resistance_zone.get('center') if resistance_zone else market_sideway_range.get('range_high')
+                
+                if sideway_support and sideway_resistance:
+                    # Use sideway range zones instead of generic S/R levels
+                    logger.info(f"📊 Sideway zones - Support: {sideway_support:.2f}, Resistance: {sideway_resistance:.2f}")
+                    
+                    sl, tp = self._calculate_support_resistance_sl_tp(
+                        entry_price=entry,
+                        signal=final_sig,
+                        support_levels=[sideway_support],
+                        resistance_levels=[sideway_resistance],
+                        atr=atr
+                    )
+                else:
+                    logger.warning(f"⚠️ No sideway_range zones found, using generic S/R levels")
+                    sl, tp = self._calculate_support_resistance_sl_tp(
+                        entry_price=entry,
+                        signal=final_sig,
+                        support_levels=support_levels,
+                        resistance_levels=resistance_levels,
+                        atr=atr
+                    )
+                
+                if not sl or not tp:
+                    # Fallback if S/R calculation fails
+                    logger.warning(f"⚠️ SIDEWAY S/R calculation failed, using ATR fallback")
+                    sl, tp = self._calculate_atr_fallback_sl_tp(entry, final_sig, atr)
+            else:
+                # 🎯 TREND LOGIC: Use risk_settings from GUI
+                logger.info(f"🎯 TREND SL/TP: Using risk_settings sltp_mode")
+                
+                # Create signal data stub for potential signal-based SL/TP
+                signal_data_stub = {
+                    'signal': final_sig,
+                    'confidence': confidence,
+                    'stoploss': None,  # Will be filled if signal provides SL/TP
+                    'takeprofit': None
+                }
+                
+                sl, tp = self._calculate_sl_tp_from_risk_settings(
+                    entry_price=entry,
+                    signal=final_sig,
+                    atr=atr,
+                    support_levels=support_levels,
+                    resistance_levels=resistance_levels,
+                    signal_data=signal_data_stub
+                )
             
             # Check if DCA is enabled to adjust S/L calculation
             enable_dca = self.dca_settings.get('enable_dca', False)
@@ -12766,26 +13264,40 @@ class Aggregator:
                         if signal_conflicts_with_positions:
                             logger.warning(f"🚫 DIRECTION CONFLICT: {self.symbol} has {existing_direction} positions but signal is {final_sig}")
                             logger.warning(f"🛑 BLOCKING: No new {final_sig} entries until all {existing_direction} positions are closed")
-                            logger.info(f"✅ ALLOWING: {existing_direction} DCA activities still permitted for existing positions")
                             
-                            # 🎯 SMART POLICY: Block opposite entries but allow same-direction DCA
-                            # - NO new entries in opposite direction  
-                            # - YES DCA activities for existing position direction
-                            # - System maintains existing positions while blocking conflicts
+                            # 🎯 ENHANCED POLICY: Check if DCA should be blocked on opposite signal
+                            # Get setting from risk_settings - default to TRUE (block DCA on opposite signal)
+                            block_dca_on_opposite = self.dca_settings.get('block_dca_on_opposite_signal', True)
+                            opposite_signal_strong = confidence >= 70.0  # High confidence opposite signal
                             
-                            risk_aware_actions = []  # Block new entries, but DCA will be handled below
+                            if block_dca_on_opposite or opposite_signal_strong:
+                                # 🚨 BLOCK ALL DCA when opposite signal exists (safer approach)
+                                if opposite_signal_strong:
+                                    logger.warning(f"🚨 STRONG OPPOSITE SIGNAL: {final_sig} with {confidence:.1f}% confidence")
+                                else:
+                                    logger.warning(f"⚠️ OPPOSITE SIGNAL DETECTED: {final_sig} with {confidence:.1f}% confidence")
+                                logger.warning(f"🛑 BLOCKING DCA: Opposite signal detected - existing {existing_direction} positions at risk")
+                                logger.info(f"💡 RECOMMENDATION: Close {existing_direction} positions manually or wait for signal to change")
+                                logger.info(f"📊 Market suggests {final_sig} movement - DCA into {existing_direction} is risky")
+                                risk_aware_actions = []  # Block everything including DCA
+                            else:
+                                # ⚠️ WEAK OPPOSITE SIGNAL + block_dca_on_opposite=False: Allow same-direction DCA with caution
+                                logger.info(f"⚠️ Weak opposite signal ({confidence:.1f}%) - allowing cautious {existing_direction} DCA")
+                                logger.info(f"✅ ALLOWING: {existing_direction} DCA activities for existing positions")
+                                
+                                risk_aware_actions = []  # Block new entries, but DCA allowed below
+                                
+                                # 🎯 PRIORITY: Same-direction DCA actions (if enabled and conditions met)
+                                if dca_enabled and dca_confidence_ok:
+                                    # Generate DCA for EXISTING position direction (not signal direction)
+                                    dca_action = self._generate_single_dca_action(
+                                        existing_direction, entry, sl, tp, confidence, market_context, atr, existing_positions
+                                    )
+                                    if dca_action:
+                                        risk_aware_actions.append(dca_action)
+                                        logger.info(f"✅ Added same-direction DCA action for existing {existing_direction} positions")
                             
-                            # 🎯 PRIORITY: Same-direction DCA actions (if enabled and conditions met)
-                            if dca_enabled and dca_confidence_ok:
-                                # Generate DCA for EXISTING position direction (not signal direction)
-                                dca_action = self._generate_single_dca_action(
-                                    existing_direction, entry, sl, tp, confidence, market_context, atr, existing_positions
-                                )
-                                if dca_action:
-                                    risk_aware_actions.append(dca_action)
-                                    logger.info(f"✅ Added same-direction DCA action for existing {existing_direction} positions")
-                            
-                            logger.info(f"� SOLUTION: Manually close {existing_direction} positions or wait for S/L to clear {self.symbol}")
+                            logger.info(f"🔧 SOLUTION: Manually close {existing_direction} positions or wait for S/L to trigger")
                             logger.info(f"💡 THEN: System will allow {final_sig} entries when no conflicting positions remain")
                         else:
                             logger.info(f"📊 Existing {len(existing_positions)} positions for {self.symbol} ({existing_direction}) - signal {final_sig} compatible")
@@ -12865,11 +13377,45 @@ class Aggregator:
             logger.error(f"Error generating risk-aware actions: {e}")
 
         logger.debug(f"About to return result for {self.symbol}")
+        
+        # Determine logic type based on market volatility
+        market_volatility = self._get_market_volatility('H1')
+        trend_direction = market_volatility.get('trend_direction', '')
+        
+        # Load sideway_range directly from trendline_sr file (not included in _get_market_volatility)
+        sideway_range = None
+        try:
+            sr_file = f"trendline_sr/{self.symbol}_H1_trendline_sr.json"
+            if os.path.exists(sr_file):
+                with open(sr_file, 'r', encoding='utf-8') as f:
+                    sr_data = json.load(f)
+                    sideway_range = sr_data.get('sideway_range')
+        except Exception as e:
+            logger.warning(f"Could not load sideway_range: {e}")
+        
+        is_sideway = trend_direction == "Sideway" and sideway_range is not None
+        logic_type = "SIDEWAY" if is_sideway else "TREND"
+        
+        # Build sideway info if applicable
+        sideway_info = {}
+        if is_sideway and sideway_range:
+            sideway_info = {
+                'trend_direction': trend_direction,
+                'range_low': sideway_range.get('range_low', 0),
+                'range_high': sideway_range.get('range_high', 0),
+                'range_width_pct': sideway_range.get('range_width_pct', 0),
+                'current_position_pct': sideway_range.get('current_position_pct', 50),
+                'support_zone': sideway_range.get('support_zone', {}),
+                'resistance_zone': sideway_range.get('resistance_zone', {})
+            }
+        
         result = {
             'symbol': self.symbol,
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'timeframes': tfs_present,
             'available_timeframes': selected_timeframes,  # Add selected/available timeframes for Report
+            'logic_type': logic_type,  # NEW: SIDEWAY or TREND
+            'sideway_info': sideway_info,  # NEW: Sideway market details
             'final_signal': { 'signal': final_sig, 'confidence': round(confidence,2) },
             'primary_scores': {
                 'pattern_bull': round(primary_bull, 3),
@@ -12882,12 +13428,16 @@ class Aggregator:
             },
             'confidence_modifier': round(indicator_confidence_boost, 3),
             'base_signal': base_signal,
+            'base_confidence': round(news_penalty_data.get('base_confidence', confidence), 2),  # Before news penalty
+            'news_penalty': round(news_penalty, 2),  # News penalty applied
+            'news_events': news_penalty_data.get('news_events', []),  # Recent news affecting signal
             'contributors': contributors,
             'contributor_detail': [ {'factor': f, 'direction': d, 'weight': round(wt,3)} for (f,d,wt) in contributor_detail ],
             'trade_idea': trade_idea,
             'debug_context': context,
             'dca_sl_adjustments': dca_sl_adjustments,  # NEW: S/L adjustment actions for existing positions
-            'risk_aware_actions': risk_aware_actions  # NEW: Enhanced risk-aware trading actions
+            'risk_aware_actions': risk_aware_actions,  # NEW: Enhanced risk-aware trading actions
+            'ml_prediction': ml_prediction_data  # 🤖 AI/ML prediction data
         }
         
         # Add DCA service note if applicable
@@ -13143,7 +13693,7 @@ class Aggregator:
         """Fallback basic primary entry"""
         # Calculate volume from risk settings, handle None SL
         if sl is None:
-            calculated_volume = self.risk_settings.get('fixed_volume_lots', 0.03)
+            calculated_volume = self.risk_settings.get('fixed_volume_lots', self.risk_settings.get('default_volume_lots', 0.1))
         else:
             calculated_volume = self._calculate_volume_from_risk_settings(entry, sl, "NEW_ENTRY")
         
@@ -13166,50 +13716,98 @@ class Aggregator:
 
     def _trigger_fibonacci_dca_service(self, existing_positions):
         """
-        🎯 Trigger dca_service.py for Fibonacci DCA management
+        🎯 DIRECTLY place Fibonacci DCA pending orders using dca_service module
         
-        This function notifies the running dca_service.py process that there are positions
-        requiring Fibonacci DCA management. The service will:
-        1. Calculate Fibonacci levels for existing positions
-        2. Place pending orders at appropriate Fibonacci distances
-        3. Monitor and execute DCA when price hits levels
+        This function now DIRECTLY calls dca_service to place pending orders,
+        instead of just creating a trigger file and waiting for a separate service.
         """
         try:
-            import subprocess
-            import threading
+            from dca_service import FibonacciDCAService
             
-            # Get position info for dca_service
             position_symbols = [pos.get('symbol', 'UNKNOWN') for pos in existing_positions]
-            logger.info(f"🔔 Notifying dca_service.py about positions: {position_symbols}")
+            logger.info(f"📐 Processing Fibonacci DCA for positions: {position_symbols}")
             
-            # Create a trigger file that dca_service.py can monitor
-            trigger_file = "dca_locks/fibonacci_trigger.json"
-            os.makedirs(os.path.dirname(trigger_file), exist_ok=True)
+            # Create DCA service instance
+            dca_service = FibonacciDCAService()
             
-            trigger_data = {
-                "timestamp": datetime.now().isoformat(),
-                "positions_count": len(existing_positions),
-                "symbols": position_symbols,
-                "trigger_source": "comprehensive_aggregator",
-                "dca_mode": "fibonacci"
-            }
+            # Check if DCA is enabled and in Fibonacci mode
+            if not dca_service.is_dca_enabled():
+                logger.info("⏸️ DCA is disabled in settings")
+                return False
             
-            with open(trigger_file, 'w', encoding='utf-8') as f:
-                json.dump(trigger_data, f, indent=2)
+            if not dca_service.is_fibonacci_mode():
+                logger.info("⏸️ Not in Fibonacci DCA mode")
+                return False
+            
+            execution_mode = dca_service.get_execution_mode()
+            logger.info(f"📐 Fibonacci DCA Execution Mode: {execution_mode}")
+            
+            # Initialize MT5 for order placement
+            if not dca_service.initialize_mt5():
+                logger.error("❌ Cannot initialize MT5 for DCA")
+                return False
+            
+            orders_placed = 0
+            
+            # Get current positions from service (uses MT5 directly)
+            positions = dca_service.get_current_positions()
+            if not positions:
+                logger.info("📊 No entry positions found for DCA")
+                return True
+            
+            for position in positions:
+                symbol = position['symbol']
                 
-            logger.info(f"✅ Fibonacci DCA trigger created: {trigger_file}")
-            logger.info(f"📐 dca_service.py will process Fibonacci levels for {len(existing_positions)} positions")
+                # Calculate Fibonacci DCA levels
+                dca_levels = dca_service.calculate_fibonacci_dca_levels(position)
+                if not dca_levels:
+                    logger.debug(f"📐 No DCA levels for {symbol}")
+                    continue
+                
+                max_dca = self.risk_settings.get('max_dca_levels', 4)
+                
+                for dca_level in dca_levels[:max_dca]:
+                    level = dca_level['level']
+                    
+                    # Check if order already exists
+                    if dca_service.check_existing_dca_orders(symbol, level):
+                        logger.debug(f"📋 DCA{level} already exists for {symbol}")
+                        continue
+                    
+                    # Process based on execution mode
+                    if "Pending" in execution_mode or "Đặt Lệnh Chờ" in execution_mode:
+                        # Place pending limit order
+                        if dca_service.execute_pending_dca(position, dca_level):
+                            orders_placed += 1
+                            logger.info(f"✅ Placed pending DCA{level} for {symbol}")
+                    
+                    elif "Market" in execution_mode or "Chạm Mức" in execution_mode:
+                        # Market mode: only execute if should_trigger
+                        if dca_level.get('should_trigger', False):
+                            if dca_service.execute_market_dca(position, dca_level):
+                                orders_placed += 1
+                                logger.info(f"✅ Executed market DCA{level} for {symbol}")
+            
+            if orders_placed > 0:
+                logger.info(f"📐 Fibonacci DCA: Placed {orders_placed} orders")
+            else:
+                logger.info(f"📐 Fibonacci DCA: No new orders needed")
             
             return True
             
+        except ImportError as e:
+            logger.error(f"❌ Cannot import dca_service: {e}")
+            return False
         except Exception as e:
-            logger.error(f"❌ Error triggering Fibonacci DCA service: {e}")
+            logger.error(f"❌ Error in Fibonacci DCA: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return False
 
     def _generate_single_dca_action(self, signal, entry, sl, tp, confidence, market_context, atr, existing_positions):
         """Generate single DCA action for existing positions"""
         try:
-            # 🚨 FIXED: Check for opposite signal confidence before DCA
+            # 🚨 ENHANCED: Check for opposite signal confidence before DCA
             if existing_positions:
                 first_pos = existing_positions[0]
                 position_direction = 'BUY' if first_pos.get('type') == 0 else 'SELL'
@@ -13220,8 +13818,10 @@ class Aggregator:
                     (position_direction == 'SELL' and signal == 'BUY')
                 )
                 
-                if is_opposite_signal and confidence >= 0.75:  # 75%+ opposite signal
-                    logger.warning(f"🚫 DCA BLOCKED: Opposite signal {signal} with {confidence*100:.1f}% confidence vs {position_direction} positions")
+                # 🎯 STRICTER THRESHOLD: Block DCA when opposite signal ≥70% (previously 75%)
+                if is_opposite_signal and confidence >= 70.0:  # 70%+ opposite signal
+                    logger.warning(f"🚫 DCA BLOCKED: Opposite signal {signal} with {confidence:.1f}% confidence vs {position_direction} positions")
+                    logger.warning(f"📊 Market shows strong {signal} movement - avoid adding to losing {position_direction} positions")
                     return None
             
             # Determine next DCA level based on existing DCA positions only
@@ -13278,16 +13878,15 @@ class Aggregator:
             pip_value = self._get_pip_value(self.symbol)
             dca_mode = self.risk_settings.get('dca_mode', 'fixed_pips')
             
-            # 🔥 FIBONACCI DCA MODE: Delegate to dca_service.py
-            if dca_mode in ['fibonacci', 'fibo_levels', 'Fibonacci']:
-                logger.info(f"📐 Fibonacci DCA Mode detected - delegating to dca_service.py")
-                logger.info(f"🎯 DCA Service will calculate Fibonacci levels and place pending orders")
+            # 🔥 FIBONACCI DCA MODE: Process directly with dca_service module
+            if dca_mode in ['fibonacci', 'fibo_levels', 'Fibonacci', 'Mức Fibonacci', 'Mức Fibo'] or 'fibo' in dca_mode.lower():
+                logger.info(f"📐 Fibonacci DCA Mode detected - processing directly")
                 
-                # Trigger dca_service.py to handle Fibonacci DCA
+                # DIRECTLY place pending orders using dca_service module
                 self._trigger_fibonacci_dca_service(existing_positions)
                 
-                # Return None để comprehensive_aggregator không tự tạo DCA
-                # dca_service.py sẽ handle tất cả Fibonacci DCA logic
+                # Return None để comprehensive_aggregator không tự tạo DCA action
+                # Fibonacci DCA đã được xử lý trực tiếp
                 return None
             
             # 🎯 NON-FIBONACCI MODES: Use comprehensive DCA distance calculation
@@ -13337,7 +13936,7 @@ class Aggregator:
                 return None
                 
             # Calculate DCA volume - Use proper base volume from settings
-            base_volume = self.risk_settings.get('fixed_volume_lots', 0.15)  # Use same as entry volume
+            base_volume = self.risk_settings.get('fixed_volume_lots', self.risk_settings.get('default_volume_lots', 0.1))
             dca_multiplier = self.risk_settings.get('dca_volume_multiplier', 1.5)
             dca_volume = base_volume * (dca_multiplier ** next_level)  # Level 1 = base × 1.5^1
             
@@ -13916,7 +14515,7 @@ class Aggregator:
             # Calculate volume from risk settings, handle None SL
             if sl is None:
                 # Use default volume if no SL available for risk calculation
-                base_volume = self.risk_settings.get('fixed_volume_lots', 0.03)
+                base_volume = self.risk_settings.get('fixed_volume_lots', self.risk_settings.get('default_volume_lots', 0.1))
             else:
                 base_volume = self._calculate_volume_from_risk_settings(entry, sl, "NEW_ENTRY")
             
@@ -14097,34 +14696,27 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--no-history", action="store_true", help="Disable auto-save trading history completely")
     args = parser.parse_args(argv)
     
-    # 🛡️ Load risk settings from JSON and override args defaults
-    try:
-        import json  # Ensure json is available in main scope
-        risk_settings_path = os.path.join(os.path.dirname(__file__), 'risk_management', 'risk_settings.json')
-        if os.path.exists(risk_settings_path):
-            with open(risk_settings_path, 'r', encoding='utf-8') as f:
-                risk_settings = json.load(f)
-            
-            # Override args with risk_settings values if they are not null or "OFF"
-            max_risk_val = risk_settings.get('max_risk_percent')
-            if max_risk_val is not None and max_risk_val != "OFF":
-                args.max_risk_per_trade = max_risk_val
-            else:
-                args.max_risk_per_trade = None  # Mark as disabled
-                
-            max_total_risk_val = risk_settings.get('max_total_risk')
-            if max_total_risk_val is not None and max_total_risk_val != "OFF":
-                args.max_total_risk = max_total_risk_val
-            else:
-                args.max_total_risk = None  # Mark as disabled
-                
-            max_drawdown_val = risk_settings.get('max_drawdown_percent')
-            if max_drawdown_val is not None and max_drawdown_val != "OFF":
-                args.max_drawdown = max_drawdown_val
-            else:
-                args.max_drawdown = None  # Mark as disabled
-    except Exception as e:
-        logger.warning(f"⚠️ Could not load risk settings: {e}")
+    # 🛡️ Load risk settings using GLOBAL SINGLETON and override args defaults
+    risk_settings = get_global_risk_settings()
+    
+    # Override args with risk_settings values if they are not null or "OFF"
+    max_risk_val = risk_settings.get('max_risk_percent')
+    if max_risk_val is not None and max_risk_val != "OFF":
+        args.max_risk_per_trade = max_risk_val
+    else:
+        args.max_risk_per_trade = None  # Mark as disabled
+        
+    max_total_risk_val = risk_settings.get('max_total_risk')
+    if max_total_risk_val is not None and max_total_risk_val != "OFF":
+        args.max_total_risk = max_total_risk_val
+    else:
+        args.max_total_risk = None  # Mark as disabled
+        
+    max_drawdown_val = risk_settings.get('max_drawdown_percent')
+    if max_drawdown_val is not None and max_drawdown_val != "OFF":
+        args.max_drawdown = max_drawdown_val
+    else:
+        args.max_drawdown = None  # Mark as disabled
     
     # 🛡️ Display risk management settings if verbose
     if args.verbose:
@@ -14220,7 +14812,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                         'envelopes':'envelopes','momentum':'momentum','momentum/cycle':'momentum',
                         'fibonacci':'fibonacci',
                         'psar':'psar',
-                        'pattern':'patterns','patterns':'patterns','price patterns':'patterns','price pattern':'patterns'
+                        'candlestick':'candlestick',
+                        'pattern':'patterns','patterns':'patterns','price patterns':'patterns','price pattern':'patterns','price_patterns':'patterns'
                     }
                     cleaned = []  # Use list to preserve order
                     import re as _re
@@ -14232,7 +14825,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                         # Keep supported tokens. Accept generic MA patterns: ema|sma|wma|tema + digits
                         if key in {
                             'rsi','macd','adx','stochrsi','stochastic','atr','donchian',
-                            'bollinger','keltner','ichimoku','cci','williamsr','roc','obv','chaikin','eom','mfi','force','trix','dpo','mass','vortex','kst','ultimate','envelopes','momentum','psar','fibonacci'
+                            'bollinger','keltner','ichimoku','cci','williamsr','roc','obv','chaikin','eom','mfi','force','trix','dpo','mass','vortex','kst','ultimate','envelopes','momentum','psar','fibonacci',
+                            'patterns','candlestick'  # Add pattern indicators
                         }:
                             if key not in cleaned:  # Avoid duplicates
                                 cleaned.append(key)
@@ -14307,6 +14901,19 @@ def main(argv: Optional[List[str]] = None) -> int:
         + ", ".join(symbols[:20])
         + (" ..." if len(symbols) > 20 else "")
     )
+
+    # 🔧 NEW: Update selected_symbols_count in risk_settings for volume calculation
+    try:
+        risk_settings_path = "risk_management/risk_settings.json"
+        if os.path.exists(risk_settings_path):
+            with open(risk_settings_path, 'r', encoding='utf-8') as f:
+                risk_settings = json.load(f)
+            risk_settings['selected_symbols_count'] = len(symbols)
+            with open(risk_settings_path, 'w', encoding='utf-8') as f:
+                json.dump(risk_settings, f, indent=2, ensure_ascii=False)
+            logger.info(f"📊 Updated selected_symbols_count = {len(symbols)} for risk allocation")
+    except Exception as e:
+        logger.warning(f"⚠️ Could not update selected_symbols_count: {e}")
 
     ok = 0
     run_ts = ts_now()
@@ -14393,6 +15000,21 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "symbol": result.get("symbol"),
                 "timestamp": result.get("timestamp"),
                 "final_signal": fi,
+                "logic_type": result.get("logic_type", "TREND"),  # NEW: Show which logic was used
+                "entry_price": idea.get("entry") if idea else None,
+                "stoploss": idea.get("sl") if idea else None,
+                "takeprofit": idea.get("tp") if idea else None,
+                "sideway_info": result.get("sideway_info", {}),  # NEW: Sideway market details
+                "timeframe_data": {  # NEW: Contributor details per timeframe
+                    "selected_timeframes": result.get("available_timeframes", []),
+                    "contributors": result.get("contributors", 0),
+                    "contributor_details": result.get("contributor_detail", [])
+                },
+                "signal_breakdown": {  # NEW: Signal strength breakdown
+                    "primary_scores": result.get("primary_scores", {}),
+                    "confidence_modifier": result.get("confidence_modifier", 0.0),
+                    "base_signal": result.get("base_signal", "NEUTRAL")
+                },
                 "risk_aware_actions": [
                     {
                         'action_type': action.get('action_type', 'unknown'),
@@ -14532,13 +15154,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             # Calculate overall risk metrics
             risk_metrics = calculate_risk_metrics(scan, acct.get('positions', []))
             
-            # Load risk settings for enhanced decision logic
-            try:
-                import json
-                with open('risk_management/risk_settings.json', 'r', encoding='utf-8') as f:
-                    decision_risk_settings = json.load(f)
-            except Exception:
-                decision_risk_settings = {}
+            # 🔄 USE GLOBAL RISK SETTINGS SINGLETON (already loaded at startup)
+            decision_risk_settings = get_global_risk_settings()
             
             # Build advanced per-position actions using enhanced decision logic
             def _norm_symbol(s: str) -> str:
@@ -14707,14 +15324,14 @@ def main(argv: Optional[List[str]] = None) -> int:
                     direction = a.get('direction', '')
                     
                     # Vietnamese action line with detailed position info
-                    line_vi = f"• {a['symbol']} {direction} Vol:{volume}"
+                    line_vi = f"• {a['symbol']} {direction} KL:{volume}"
                     if entry_price and current_price:
-                        line_vi += f" | Entry:{entry_price:.2f} -> Current:{current_price:.2f}"
-                    line_vi += f" | P&L: {profit:.0f}$ ({a.get('pct_equity', 0):+.2f}%)"
+                        line_vi += f" | Giá vào:{entry_price:.2f} -> Hiện tại:{current_price:.2f}"
+                    line_vi += f" | L/L: {profit:.0f}$ ({a.get('pct_equity', 0):+.2f}%)"
                     line_vi += f" | [{a['priority_score']}] -> {a['primary_action']}"
                     line_vi += f" | {a['rationale']}"
                     line_vi += f" | Rủi ro: {a.get('position_risk_pct', 0):.1f}%"
-                    line_vi += f" | Signal: {a.get('current_signal', 'NEUTRAL')}"
+                    line_vi += f" | Tín hiệu: {a.get('current_signal', 'NEUTRAL')}"
                     
                     # English action line with detailed position info
                     line_en = f"• {a['symbol']} {direction} Vol:{volume}"
@@ -14806,7 +15423,29 @@ def main(argv: Optional[List[str]] = None) -> int:
                         
                         # Icons & Emojis preservation
                         'pips': 'pips',
-                        'đóng/đảo chiều': 'close/reverse'
+                        'đóng/đảo chiều': 'close/reverse',
+                        
+                        # 🔧 NEW: Recently added Vietnamese rationales
+                        'chưa đủ điều kiện điều chỉnh SL': 'not enough criteria to adjust SL',
+                        'chờ thị trường hồi phục': 'waiting for market recovery',
+                        'Dời S/L về hòa vốn': 'Move S/L to breakeven',
+                        'trong khoảng': 'in range',
+                        'Lợi nhuận': 'Profit',
+                        'GIỮ KHẨN CẤP': 'EMERGENCY HOLD',
+                        'ngăn dời SL về hòa vốn trên vị thế lỗ': 'prevented move_sl_to_be on losing position',
+                        'ngăn trailing stop trên vị thế lỗ': 'prevented trailing on losing position',
+                        'kích hoạt trailing stop dựa trên biến động thị trường': 'activating volatility-based trailing stop',
+                        'Lãi cao': 'High profit',
+                        'pips dương nhưng lợi nhuận âm': 'positive pips but negative profit',
+                        'pips dương nhưng vốn âm': 'positive pips but negative equity',
+                        'Lỗ': 'Loss',
+                        'hòa vốn': 'breakeven',
+                        'đóng tất cả': 'close all',
+                        'đóng lệnh': 'close order',
+                        'đóng toàn bộ': 'close all',
+                        'Đóng tất cả': 'Close all',
+                        'Đóng toàn bộ': 'Close all',
+                        'drawdown': 'drawdown',
                     }
                     for vi_text, en_text in translations.items():
                         rationale_en = rationale_en.replace(vi_text, en_text)
@@ -15109,14 +15748,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         logger.info("🔄 DCA opportunities handled by comprehensive analysis - skipping independent detection")
         
-        # Load risk settings for reporting only
-        risk_settings_path = 'risk_management/risk_settings.json'
-        dca_enabled = False
-        
-        if os.path.exists(risk_settings_path):
-            with open(risk_settings_path, 'r', encoding='utf-8') as f:
-                risk_settings = json.load(f)
-                dca_enabled = risk_settings.get('enable_dca', False)
+        # 🔄 USE GLOBAL RISK SETTINGS
+        risk_settings = get_global_risk_settings()
+        dca_enabled = risk_settings.get('enable_dca', False)
                 
         if dca_enabled:
             logger.info("✅ DCA is enabled - opportunities managed by comprehensive analysis above")
@@ -15304,144 +15938,74 @@ def _get_pip_value_static(entry_price: float) -> float:
 
 
 # ========================================
-# 🚫 TRADING HISTORY DISABLED TEMPORARILY  
+# ✅ TRADING HISTORY - DELEGATED TO MANAGER
 # ========================================
-# Functions moved to trading_history_manager.py to avoid auto trading interference
+# Functions delegated to trading_history_manager.py for better separation
 
-def save_trading_history(closed_positions: List[Dict], final_actions: List[Dict] = None, 
-                        symbol: str = None, quick_mode: bool = True) -> None:
+def save_trading_history(closed_positions: List[Dict] = None, final_actions: List[Dict] = None, 
+                        symbol: str = None, quick_mode: bool = True, days_back: int = 7) -> bool:
     """
-    🚫 DISABLED - Trading history functions moved to trading_history_manager.py
-    This function is disabled to prevent interference with auto trading system.
+    💾 Lưu lịch sử giao dịch - Delegate to trading_history_manager
+    
+    Args:
+        closed_positions: Danh sách lệnh đã đóng (nếu None, sẽ tự lấy từ MT5)
+        final_actions: Danh sách hành động cuối cùng
+        symbol: Symbol cụ thể (tùy chọn)
+        quick_mode: Chế độ nhanh
+        days_back: Số ngày quay lại
+        
+    Returns:
+        True nếu lưu thành công
     """
-    # DISABLED: Original function moved to trading_history_manager.py
-    # Uncomment below if you need trading history back:
-    # from trading_history_manager import save_trading_history as _save_trading_history  
-    # return _save_trading_history(closed_positions, final_actions, symbol, quick_mode)
-    return  # Do nothing - auto trading safety
+    try:
+        from trading_history_manager import save_trading_history as _save_trading_history
+        return _save_trading_history(
+            closed_positions=closed_positions,
+            final_actions=final_actions,
+            symbol=symbol,
+            quick_mode=quick_mode,
+            days_back=days_back
+        )
+    except ImportError as e:
+        logger.warning(f"⚠️ trading_history_manager not found: {e}")
+        return False
+    except Exception as e:
+        logger.error(f"❌ Lỗi save_trading_history: {e}")
+        return False
 
 
 # ========================================
-# 🚫 GET_MT5_CLOSED_POSITIONS DISABLED TOO
+# ✅ GET_MT5_CLOSED_POSITIONS - DELEGATED
 # ========================================
 
 def get_mt5_closed_positions(symbol: str = None, days_back: int = 7, auto_trading_safe: bool = True, 
-                           quick_mode: bool = True, timeout_seconds: float = 3.0) -> List[Dict]:
+                           quick_mode: bool = True, timeout_seconds: float = 5.0) -> List[Dict]:
     """
-    🚫 DISABLED - Trading history functions moved to trading_history_manager.py  
-    This function is disabled to prevent interference with auto trading system.
-    """
-    # DISABLED: Original function moved to trading_history_manager.py
-    # Uncomment below if you need trading history back:
-    # from trading_history_manager import get_mt5_closed_positions as _get_mt5_closed_positions
-    # return _get_mt5_closed_positions(symbol, days_back, auto_trading_safe, quick_mode, timeout_seconds)
-    return []  # Return empty list - auto trading safety
-
-
-# Để tôi đọc tiếp để tìm hàm get_mt5_closed_positions gốc
-
-# ========================================
-
-# END OF DISABLED FUNCTIONS SECTION
-    """
-    ⚡ SIÊU TỐI ỐI - Lấy lệnh đã đóng từ MT5 với timeout và kiểm soát an toàn
+    📊 Lấy lệnh đã đóng từ MT5 - Delegate to trading_history_manager
     
     Args:
         symbol: Symbol cụ thể (tùy chọn)
-        days_back: Số ngày quay lại (mặc định 7, quick_mode giảm xuống 2)
+        days_back: Số ngày quay lại
         auto_trading_safe: Nếu True, sẽ tránh xung đột với auto trading
-        quick_mode: Chế độ nhanh - ít dữ liệu hơn
-        timeout_seconds: Timeout tối đa (mặc định 3 giây)
-    
+        quick_mode: Chế độ nhanh
+        timeout_seconds: Timeout tối đa
+        
     Returns:
-        List các position đã đóng (rỗng nếu timeout)
+        List các position đã đóng
     """
     try:
-        import time
-        start_time = time.time()
-        
-        import MetaTrader5 as mt5
-        from datetime import datetime, timedelta
-        
-        # ⚡ QUICK MODE - giảm days_back để nhanh hơn
-        if quick_mode:
-            days_back = min(days_back, 2)  # Tối đa 2 ngày trong quick mode
-        
-        # Auto trading safety check
-        if auto_trading_safe:
-            # Kiểm tra nếu có MT5 connection khác đang chạy
-            try:
-                if mt5.initialize():
-                    account_info = mt5.account_info()
-                    if account_info is None:
-                        logger.debug("MT5 không sẵn sàng cho history query")
-                        mt5.shutdown()
-                        return []
-                else:
-                    logger.debug("Không thể kết nối MT5 cho history query")
-                    return []
-            except Exception:
-                logger.debug("MT5 đang bận, bỏ qua history query")
-                return []
-        else:
-            if not mt5.initialize():
-                logger.error("❌ Không thể khởi tạo MT5")
-                return []
-        
-        # Thời gian tìm kiếm (giới hạn để tăng tốc)
-        end_time = datetime.now()
-        start_time = end_time - timedelta(days=min(days_back, 7))  # Tối đa 7 ngày cho auto trading
-        
-        # Lấy lịch sử giao dịch với timeout ngắn
-        try:
-            if symbol:
-                history = mt5.history_deals_get(start_time, end_time, group=f"*{symbol}*")
-            else:
-                history = mt5.history_deals_get(start_time, end_time)
-            
-            if history is None:
-                logger.debug("⚠️ Không có lịch sử giao dịch hoặc timeout")
-                mt5.shutdown()
-                return []
-            
-            # Giới hạn số lượng để tránh lag
-            max_deals = 100 if auto_trading_safe else 1000
-            history = history[-max_deals:] if len(history) > max_deals else history
-            
-        except Exception as query_error:
-            logger.debug(f"Lỗi query MT5 history: {query_error}")
-            mt5.shutdown()
-            return []
-        
-        # Chuyển đổi nhanh sang dict và lọc các lệnh đóng
-        closed_positions = []
-        for deal in history:
-            try:
-                deal_dict = deal._asdict()
-                # Chỉ lấy các deal out (đóng lệnh)
-                if deal_dict.get('entry') == 1:  # 1 = DEAL_ENTRY_OUT (đóng lệnh)
-                    closed_positions.append(deal_dict)
-            except Exception:
-                continue  # Bỏ qua deal lỗi
-        
-        mt5.shutdown()
-        
-        if not auto_trading_safe:  # Chỉ log khi không phải auto trading mode
-            logger.info(f"📊 Tìm thấy {len(closed_positions)} lệnh đã đóng trong {min(days_back, 7)} ngày")
-        
-        return closed_positions
-        
+        from trading_history_manager import get_mt5_closed_positions as _get_mt5_closed_positions
+        return _get_mt5_closed_positions(
+            symbol=symbol,
+            days_back=days_back,
+            auto_trading_safe=auto_trading_safe,
+            quick_mode=quick_mode
+        )
+    except ImportError as e:
+        logger.warning(f"⚠️ trading_history_manager not found: {e}")
+        return []
     except Exception as e:
-        # Đảm bảo shutdown MT5 kể cả khi có lỗi
-        try:
-            mt5.shutdown()
-        except:
-            pass
-        
-        if not auto_trading_safe:
-            logger.error(f"❌ Lỗi lấy lịch sử MT5: {e}")
-        else:
-            logger.debug(f"MT5 history query failed (auto-trading mode): {e}")
+        logger.error(f"❌ Lỗi get_mt5_closed_positions: {e}")
         return []
 
 

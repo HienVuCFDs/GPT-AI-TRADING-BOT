@@ -1,0 +1,173 @@
+{% extends 'admin/base_dashboard.html' %}
+
+{% block title %}Users - License Server{% endblock %}
+{% block page_title %}<span data-i18n="users_management">Users Management</span>{% endblock %}
+
+{% block content %}
+<!-- Filters -->
+<div class="card-custom mb-4">
+    <div class="card-body-custom">
+        <form method="get" class="row g-3 align-items-end">
+            <div class="col-md-4">
+                <label class="form-label small text-muted" data-i18n="search">Search</label>
+                <input type="text" name="search" class="form-control search-box" 
+                       data-i18n-placeholder="search_placeholder" placeholder="Username, email..." value="{{ search }}">
+            </div>
+            <div class="col-md-6">
+                <label class="form-label small text-muted" data-i18n="filter">Filter</label>
+                <div class="btn-group">
+                    <a href="?search={{ search }}" class="filter-btn {% if filter_type == 'all' %}active{% endif %}" data-i18n="all">All</a>
+                    <a href="?search={{ search }}&filter=active" class="filter-btn {% if filter_type == 'active' %}active{% endif %}" data-i18n="active">Active</a>
+                    <a href="?search={{ search }}&filter=expired" class="filter-btn {% if filter_type == 'expired' %}active{% endif %}" data-i18n="expired">Expired</a>
+                    <a href="?search={{ search }}&filter=trial" class="filter-btn {% if filter_type == 'trial' %}active{% endif %}" data-i18n="trial">Trial</a>
+                    <a href="?search={{ search }}&filter=paid" class="filter-btn {% if filter_type == 'paid' %}active{% endif %}" data-i18n="paid">Paid</a>
+                </div>
+            </div>
+            <div class="col-md-2">
+                <button type="submit" class="btn btn-primary-custom w-100">
+                    <i class="bi bi-search me-1"></i> <span data-i18n="search">Search</span>
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Results -->
+<div class="card-custom">
+    <div class="card-header-custom">
+        <h5><i class="bi bi-people me-2"></i><span data-i18n="users">Users</span> ({{ total_count }})</h5>
+        <a href="{% url 'add_user' %}" class="btn btn-sm btn-primary-custom">
+            <i class="bi bi-plus-lg me-1"></i> <span data-i18n="add_user">Add User</span>
+        </a>
+    </div>
+    <div class="card-body-custom p-0">
+        <table class="table table-custom">
+            <thead>
+                <tr>
+                    <th data-i18n="user">User</th>
+                    <th data-i18n="contact">Contact</th>
+                    <th data-i18n="license">License</th>
+                    <th data-i18n="status">Status</th>
+                    <th data-i18n="devices">Devices</th>
+                    <th data-i18n="joined">Joined</th>
+                    <th data-i18n="actions">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for user in users %}
+                <tr>
+                    <td>
+                        <div class="d-flex align-items-center gap-2">
+                            <div class="user-avatar" style="width:36px;height:36px;font-size:0.875rem;">
+                                {{ user.username.0|upper }}
+                            </div>
+                            <div>
+                                <strong>{{ user.username }}</strong>
+                                {% if user.is_staff %}
+                                <span class="badge bg-dark ms-1" data-i18n="staff">Staff</span>
+                                {% endif %}
+                                <div class="small text-muted">
+                                    {% if user.first_name or user.last_name %}
+                                        {{ user.first_name }} {{ user.last_name }}
+                                    {% else %}
+                                        <span class="text-muted fst-italic">-</span>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </div>
+                    </td>
+                    <td>
+                        <div>{{ user.email }}</div>
+                        {% if user.profile and user.profile.phone %}
+                        <div class="small text-muted">
+                            <i class="bi bi-phone me-1"></i>{{ user.profile.phone }}
+                        </div>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% with license=user.licenses.first %}
+                        {% if license %}
+                        <code title="{{ license.license_key }}">{{ license.license_key|truncatechars:16 }}</code>
+                        <div class="small text-muted">{{ license.license_type|upper }}</div>
+                        {% else %}
+                        <span class="badge bg-warning text-dark">
+                            <i class="bi bi-exclamation-triangle me-1"></i>Chưa cấp
+                        </span>
+                        {% endif %}
+                        {% endwith %}
+                    </td>
+                    <td>
+                        {% with license=user.licenses.first %}
+                        {% if license %}
+                            {% if license.status == 'active' %}
+                            <span class="badge badge-active" data-i18n="active">Active</span>
+                            <div class="small text-muted">{{ license.days_remaining }} <span data-i18n="days_left_label">days left</span></div>
+                            {% elif license.status == 'expired' %}
+                            <span class="badge badge-expired" data-i18n="expired">Expired</span>
+                            {% elif license.status == 'suspended' %}
+                            <span class="badge badge-suspended" data-i18n="suspended">Suspended</span>
+                            {% else %}
+                            <span class="badge bg-secondary">{{ license.status }}</span>
+                            {% endif %}
+                        {% else %}
+                        <span class="badge bg-secondary">Chờ duyệt</span>
+                        {% endif %}
+                        {% endwith %}
+                    </td>
+                    <td>
+                        {% with license=user.licenses.first %}
+                        {% if license %}
+                        {{ license.devices.filter.is_active|length|default:0 }}/{{ license.max_devices }}
+                        {% else %}
+                        -
+                        {% endif %}
+                        {% endwith %}
+                    </td>
+                    <td>
+                        {{ user.date_joined|date:"d/m/Y" }}
+                        <div class="small text-muted">{{ user.date_joined|time:"H:i" }}</div>
+                    </td>
+                    <td>
+                        <div class="dropdown">
+                            <button class="btn btn-sm btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" data-i18n="actions">
+                                Actions
+                            </button>
+                            <ul class="dropdown-menu dropdown-menu-end">
+                                <li><a class="dropdown-item" href="{% url 'edit_user' user.id %}">
+                                    <i class="bi bi-pencil me-2"></i> Sửa User
+                                </a></li>
+                                {% with license=user.licenses.first %}
+                                {% if license %}
+                                <li><a class="dropdown-item" href="{% url 'edit_license' license.id %}">
+                                    <i class="bi bi-key me-2"></i> Sửa License
+                                </a></li>
+                                <li><a class="dropdown-item text-success" href="{% url 'license_action' license.id 'extend' %}">
+                                    <i class="bi bi-calendar-plus me-2"></i> Gia hạn +30 ngày
+                                </a></li>
+                                {% else %}
+                                <li><a class="dropdown-item text-primary" href="{% url 'add_license' %}?user_id={{ user.id }}">
+                                    <i class="bi bi-key-fill me-2"></i> <strong>Cấp License</strong>
+                                </a></li>
+                                {% endif %}
+                                {% endwith %}
+                                <li><hr class="dropdown-divider"></li>
+                                <li><a class="dropdown-item text-danger" href="{% url 'delete_user' user.id %}">
+                                    <i class="bi bi-trash me-2"></i> Xóa
+                                </a></li>
+                            </ul>
+                        </div>
+                    </td>
+                </tr>
+                {% empty %}
+                <tr>
+                    <td colspan="7" class="text-center py-5 text-muted">
+                        <i class="bi bi-inbox display-4 d-block mb-3"></i>
+                        <span data-i18n="no_users_found">No users found</span>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

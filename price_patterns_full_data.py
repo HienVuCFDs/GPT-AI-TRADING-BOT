@@ -3648,8 +3648,8 @@ def cleanup_pattern_price_data(max_age_hours: int = 48, keep_latest: int = 10) -
         'cleanup_time': datetime.now().isoformat()
     }
     
-    # Directories to clean
-    directories = [OUTPUT_FOLDER, 'analysis_output', 'pattern_signals']
+    # Directories to clean - REMOVED pattern_signals (managed by pattern_detector.py)
+    directories = [OUTPUT_FOLDER, 'analysis_output']
     
     for directory in directories:
         if not os.path.exists(directory):

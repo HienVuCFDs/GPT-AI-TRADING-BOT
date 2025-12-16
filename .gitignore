@@ -1,61 +1,74 @@
-# Python cache
+# Python
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+pip-log.txt
+pip-delete-this-directory.txt
 
-# Logs 
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Large ML Models & Training Data
+Mistral-7B-Instruct-v0.1/
+ai_models/saved/
+ai_models/training/checkpoints/
+ai_models/training/data/
+ai_models/training/pending/
+ai_server/saved_models/
+ai_server/models/trained/
+ai_server/models/xgboost_model/trained/
+
+# Logs & Temp
 logs/
 *.log
+.cache/
 
-# Cache and temporary files
+# Local config
+.env
+.env.local
+
+# App specific
+updates/
+app_backup/
+current_version.txt
+releases/
+db.sqlite3
 cache/
-*.tmp
-*.temp
+temp/
+
+# Trading Bot specific
+trading_history/
+account_scans/
+analysis_results/
+indicator_output/
+news_output/
+pattern_price/
+pattern_signals/
+trendline_sr/
+dca_locks/
+local_models/
 
 # Debug files
 debug_*.txt
+*.tmp
 
-# Analysis results (temporary and dynamic data)
-analysis_results/*_20*.txt
-analysis_results/*_20*.json
-analysis_results/account_positions_actions*.json
-analysis_results/account_positions_actions*.txt
-
-# Dynamic data files (updated by bot)
-data/*.json
-indicator_output/*.json
-pattern_price/*.json
-pattern_signals/*.json
-trendline_sr/*.json
-
-# Account scans (sensitive and dynamic)
-account_scans/*.json
-
-# News output (temporary) 
-news_output/news_forexfactory_*.json
-news_output/recent_news_*.json
-
-# Pattern output (temporary data)
-pattern_price/*_20*.json
-pattern_signals/*_20*.json
-
-# Backup files
-*_backup.py
-*.backup_*
-backups/
-
-# User config (contains sensitive data)
-user_config.pkl
-.env
-
-# Large model files (optional - uncomment if you don't want to track)
-# Mistral-7B-Instruct-v0.1/
-
-# OS files
-.DS_Store
+# OS
 Thumbs.db
-
-# IDE files
-.vscode/settings.json
-.idea/
+.DS_Store

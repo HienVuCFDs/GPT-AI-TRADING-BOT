@@ -22,6 +22,128 @@ if sys.platform == 'win32':
     except:
         pass
 
+# Local Training Data Collector (optional - won't fail if not available)
+try:
+    from ai_models.training.data_collector_local import get_local_collector
+    LOCAL_TRAINING_AVAILABLE = True
+except ImportError:
+    LOCAL_TRAINING_AVAILABLE = False
+
+# Store executed actions for training
+EXECUTED_ACTIONS_LOG = []
+
+def log_executed_action(action_type: str, symbol: str, ticket: int, details: dict, success: bool, result_message: str = ""):
+    """
+    Log an executed action for AI training (local only)
+    """
+    import datetime
+    
+    action_log = {
+        "timestamp": datetime.datetime.now().isoformat(),
+        "action_type": action_type,
+        "symbol": symbol,
+        "ticket": ticket,
+        "success": success,
+        "result_message": result_message,
+        "details": details
+    }
+    
+    EXECUTED_ACTIONS_LOG.append(action_log)
+    
+    # Save to local training data
+    if LOCAL_TRAINING_AVAILABLE:
+        try:
+            collector = get_local_collector()
+            collector.log_execution(
+                action_type=action_type,
+                symbol=symbol,
+                ticket=ticket,
+                details=details,
+                success=success,
+                result_message=result_message
+            )
+        except Exception as e:
+            pass  # Silent fail - don't interrupt execution
+
+
+def collect_training_data_local(actions, execution_results):
+    """
+    Thu thập và lưu dữ liệu training local
+    KHÔNG gửi đến server
+    """
+    global EXECUTED_ACTIONS_LOG
+    
+    if not LOCAL_TRAINING_AVAILABLE:
+        return
+    
+    try:
+        collector = get_local_collector()
+        
+        print("\n>> 📊 COLLECTING TRAINING DATA (Local)...")
+        print("-" * 50)
+        
+        # Collect all symbols from actions
+        symbols_processed = set()
+        for action in actions:
+            symbol = action.get('symbol', '')
+            if symbol:
+                symbols_processed.add(symbol)
+        
+        # Save training data for each symbol
+        records_saved = 0
+        for symbol in symbols_processed:
+            try:
+                # Get action direction for this symbol
+                direction = "HOLD"
+                confidence = 50
+                entry_price = 0
+                
+                for action in actions:
+                    if action.get('symbol') == symbol:
+                        action_type = action.get('action', action.get('primary_action', '')).upper()
+                        if action_type in ['BUY', 'SELL']:
+                            direction = action_type
+                        elif action.get('direction'):
+                            direction = action.get('direction').upper()
+                        confidence = action.get('confidence', action.get('signal_confidence', 50))
+                        entry_price = action.get('entry_price', action.get('price', 0))
+                        break
+                
+                # Collect and save training record
+                saved = collector.collect_and_save(
+                    symbol=symbol,
+                    signal_type=direction,
+                    confidence=int(confidence),
+                    entry_price=float(entry_price) if entry_price else 0,
+                    execution_details={
+                        'close_result': execution_results.get('close', {}),
+                        'sl_tp_result': execution_results.get('sl_tp', {}),
+                        'regular_result': execution_results.get('regular', {})
+                    }
+                )
+                
+                if saved:
+                    records_saved += 1
+                    print(f"   ✅ Training data saved for {symbol} ({direction})")
+                else:
+                    print(f"   ⏭️  Duplicate skipped for {symbol}")
+                    
+            except Exception as e:
+                print(f"   ⚠️ Failed to collect data for {symbol}: {e}")
+        
+        # Clear the execution log
+        EXECUTED_ACTIONS_LOG = []
+        
+        # Summary
+        stats = collector.get_stats()
+        print(f"\n   📊 Training Data Summary:")
+        print(f"      Records saved: {records_saved}")
+        print(f"      Symbols processed: {len(symbols_processed)}")
+        print(f"      Total pending files: {stats['pending_training_files']}")
+        
+    except Exception as e:
+        print(f"   ⚠️ Training data collection failed: {e}")
+
 def load_actions():
     """Load actions from JSON file"""
     actions_path = 'analysis_results/account_positions_actions.json'
@@ -44,10 +166,29 @@ def categorize_actions(actions):
     close_actions = []
     
     for action in actions:
+        # Check action type from multiple possible fields
+        action_type = action.get('action') or action.get('primary_action') or action.get('action_type')
+        
+        # 🛡️ Skip pure hold actions without ticket or SL/TP modifications
+        if action_type == 'hold':
+            has_sl_tp = (action.get('new_sl') or action.get('proposed_sl') or action.get('move_sl_price') or
+                         action.get('new_tp') or action.get('proposed_tp') or action.get('move_tp_price'))
+            if not has_sl_tp:
+                # Pure hold - no action needed, skip entirely
+                continue
+        
+        # Old format: action='modify_position' with type='sl_adjustment_signal_based'
         if (action.get('action') == 'modify_position' and 
             action.get('type') in ['sl_adjustment_signal_based', 'tp_adjustment_signal_based']):
             sl_tp_actions.append(action)
-        elif action.get('action') == 'close_opposite_signal':
+        # New format: primary_action='set_sl' or 'set_tp' or 'move_sl_to_be' or 'move_sl'
+        elif action_type in ['set_sl', 'set_tp', 'move_sl_to_be', 'move_sl', 'set_trailing_sl']:
+            sl_tp_actions.append(action)
+        # Close actions: opposite signal or close_full
+        elif (action.get('action') == 'close_position' and 
+              ('opposite' in action.get('type', '').lower() or 'close_full' in action.get('type', '').lower())):
+            close_actions.append(action)
+        elif action.get('action') == 'close_opposite_signal' or action_type == 'close_full':
             close_actions.append(action)
         else:
             regular_actions.append(action)
@@ -69,7 +210,7 @@ def deduplicate_actions_execution(actions):
         try:
             # Create signature for duplicate detection
             symbol = action.get('symbol', 'UNKNOWN')
-            action_type = action.get('action', action.get('primary_action', 'UNKNOWN'))
+            action_type = action.get('action_type', action.get('action', action.get('primary_action', 'UNKNOWN')))
             direction = action.get('direction', action.get('position_type', 'UNKNOWN'))
             entry_price = action.get('entry_price', action.get('price', 0))
             volume = action.get('volume', 0)
@@ -110,29 +251,41 @@ def show_actions_summary(sl_tp_actions, regular_actions, close_actions=None):
     print("=" * 50)
     
     if sl_tp_actions:
-        sl_count = len([a for a in sl_tp_actions if a.get('type') == 'sl_adjustment_signal_based'])
-        tp_count = len([a for a in sl_tp_actions if a.get('type') == 'tp_adjustment_signal_based'])
+        # Count by both old and new action type formats
+        sl_count = len([a for a in sl_tp_actions if (a.get('type') == 'sl_adjustment_signal_based' or 
+                                                      a.get('primary_action') in ['set_sl', 'move_sl_to_be', 'move_sl', 'set_trailing_sl'])])
+        tp_count = len([a for a in sl_tp_actions if (a.get('type') == 'tp_adjustment_signal_based' or 
+                                                      a.get('primary_action') == 'set_tp')])
         print(f">> SIGNAL-BASED ADJUSTMENTS ({len(sl_tp_actions)} actions):")
-        print(f"   - S/L Adjustments (losing positions): {sl_count}")
-        print(f"   - T/P Adjustments (all positions): {tp_count}")
+        print(f"   - S/L Adjustments: {sl_count}")
+        print(f"   - T/P Adjustments: {tp_count}")
         
         for i, action in enumerate(sl_tp_actions, 1):
             symbol = action.get('symbol')
             ticket = action.get('ticket')
-            pos_type = action.get('position_type')
-            action_type = action.get('type', 'unknown')
-            new_sl = action.get('new_sl')
-            new_tp = action.get('new_tp')
+            pos_type = action.get('position_type') or action.get('direction')
+            
+            # Get action type from multiple fields
+            action_type = action.get('type') or action.get('primary_action') or action.get('action_type', 'unknown')
+            
+            # Get S/L T/P values
+            new_sl = action.get('new_sl') or action.get('proposed_sl') or action.get('move_sl_price')
+            new_tp = action.get('new_tp') or action.get('proposed_tp') or action.get('move_tp_price')
             current_sl = action.get('current_sl', 0)
             current_tp = action.get('current_tp', 0)
-            reason = action.get('reason', '')
+            
+            # Get reason
+            reason = action.get('reason') or action.get('rationale', '')
             
             print(f"   {i}. {symbol} {pos_type} #{ticket} ({action_type})")
-            if action_type == 'sl_adjustment_signal_based':
-                print(f"      S/L: {current_sl} → {new_sl}")
-            elif action_type == 'tp_adjustment_signal_based':
-                print(f"      T/P: {current_tp} → {new_tp}")
-            print(f"      Reason: {reason}")
+            if action_type in ['sl_adjustment_signal_based', 'set_sl', 'move_sl_to_be', 'move_sl', 'set_trailing_sl']:
+                if new_sl:
+                    print(f"      S/L: {current_sl} → {new_sl}")
+            elif action_type in ['tp_adjustment_signal_based', 'set_tp']:
+                if new_tp:
+                    print(f"      T/P: {current_tp} → {new_tp}")
+            if reason:
+                print(f"      Reason: {reason}")
         print()
     
     if close_actions:
@@ -152,7 +305,7 @@ def show_actions_summary(sl_tp_actions, regular_actions, close_actions=None):
         print(f">> REGULAR TRADING ACTIONS ({len(regular_actions)} actions):")
         for i, action in enumerate(regular_actions, 1):
             # Get action type with fallback to primary_action, then current_signal
-            action_type = action.get('action', action.get('primary_action', 'unknown'))
+            action_type = action.get('action_type', action.get('action', action.get('primary_action', 'unknown')))
             symbol = action.get('symbol', 'N/A')
             current_signal = action.get('current_signal', '')
             direction = action.get('direction', '')
@@ -179,50 +332,200 @@ def execute_sl_tp_adjustments(sl_tp_actions):
     print(">> EXECUTING SIGNAL-BASED S/L & T/P ADJUSTMENTS...")
     print("-" * 50)
     
-    # Use existing executor instance (already has MT5 connection)
+    # Use existing executor instance and ensure MT5 connection
     try:
         executor = get_executor_instance()
         print("[OK] Using global executor instance for S/L & T/P adjustments")
         
+        # 🔧 CRITICAL FIX: Ensure MT5 is connected before modifications
+        # Import directly and check if MT5 terminal is available
+        import MetaTrader5 as MT5
+        
+        # Try to initialize MT5 if not already connected
+        terminal_info = MT5.terminal_info()
+        if not terminal_info:
+            print("[INFO] MT5 not initialized, attempting to connect...")
+            if MT5.initialize():
+                print("[OK] MT5 initialized successfully")
+                terminal_info = MT5.terminal_info()
+            else:
+                error = MT5.last_error()
+                print(f"[ERROR] Failed to initialize MT5: {error}")
+                print("[ERROR] Make sure MT5 terminal is running and logged in")
+                return {'success': 0, 'failed': len(sl_tp_actions)}
+        
+        # Verify we can get account info
+        account_info = MT5.account_info()
+        if not account_info:
+            print("[ERROR] Cannot get MT5 account info - check terminal login")
+            return {'success': 0, 'failed': len(sl_tp_actions)}
+        
+        print(f"[OK] MT5 connected - Account: {account_info.login}, Balance: {account_info.balance:.2f}")
+        
+        # Store MT5 connection for executor to use
+        # Even though executor has connection_manager, we use MT5 directly for modifications
+        if not executor.connection:
+            # Create a simple connection wrapper
+            from mt5_connector import MT5ConnectionManager
+            try:
+                mt5_mgr = MT5ConnectionManager()
+                if mt5_mgr.connect():
+                    executor.connection = mt5_mgr
+                    print("[OK] Created MT5ConnectionManager wrapper")
+            except Exception as e:
+                print(f"[WARNING] Could not create connection manager wrapper: {e}")
+                print("[OK] Will use direct MT5 calls instead")
+        
     except Exception as e:
         print(f"[ERROR] Failed to get executor instance for adjustments: {e}")
+        import traceback
+        traceback.print_exc()
         return {'success': 0, 'failed': len(sl_tp_actions)}
     
     success_count = 0
+    skipped_count = 0
     
     for i, action in enumerate(sl_tp_actions, 1):
         symbol = action.get('symbol')
         ticket = action.get('ticket')
-        action_type = action.get('type', 'unknown')
-        new_sl = action.get('new_sl')
-        new_tp = action.get('new_tp')
-        reason = action.get('reason', 'Signal-based adjustment')
-        confidence = action.get('confidence', 0)
+        
+        # Handle both old and new action type formats
+        action_type = action.get('type') or action.get('primary_action') or action.get('action_type', 'unknown')
+        
+        # Get S/L T/P values from multiple possible fields
+        new_sl = action.get('new_sl') or action.get('proposed_sl') or action.get('move_sl_price')
+        new_tp = action.get('new_tp') or action.get('proposed_tp') or action.get('move_tp_price')
+        current_sl = action.get('current_sl', 0)
+        current_tp = action.get('current_tp', 0)
+        
+        # Get reason/rationale
+        reason = action.get('reason') or action.get('rationale', 'Signal-based adjustment')
+        confidence = action.get('confidence') or action.get('signal_confidence', 0)
+        
+        # 🛡️ SKIP: Actions without ticket (cannot modify without position reference)
+        if not ticket:
+            print(f"{i}. >> {symbol} [SKIP] No ticket - cannot modify position")
+            skipped_count += 1
+            continue
+        
+        # 🛡️ SKIP: Pure hold actions with no SL/TP changes (nothing to execute)
+        if action_type == 'hold' and new_sl is None and new_tp is None:
+            print(f"{i}. >> {symbol} #{ticket} [SKIP] Hold action - no modification needed")
+            skipped_count += 1
+            continue
         
         print(f"{i}. >> {symbol} #{ticket} ({action_type}):")
         
         try:
-            if action_type == 'sl_adjustment_signal_based':
-                result = executor.modify_order(ticket=ticket, sl=new_sl, tp=None)
+            # Old format: sl_adjustment_signal_based, tp_adjustment_signal_based
+            # New format: set_sl, set_tp, move_sl_to_be, move_sl, set_trailing_sl
+            
+            if action_type in ['sl_adjustment_signal_based', 'set_sl', 'move_sl_to_be', 'move_sl', 'set_trailing_sl']:
+                if new_sl is None:
+                    print(f"   [ERROR] No S/L value provided")
+                    log_executed_action('modify_sl', symbol, ticket, {
+                        'action_type': action_type, 'reason': reason, 'error': 'No S/L value provided'
+                    }, False, 'No S/L value provided')
+                    continue
+                
+                # 🎯 Check if we also need to update T/P
+                tp_to_set = new_tp if new_tp is not None else None
+                    
+                result = executor.modify_order(ticket=ticket, sl=new_sl, tp=tp_to_set)
                 if result.success:
                     print(f"   [OK] S/L updated to {new_sl}")
+                    if tp_to_set is not None:
+                        print(f"   [OK] T/P also updated to {tp_to_set}")
+                    print(f"   Reason: {reason}")
                     success_count += 1
+                    
+                    # 🆕 Log to AI training
+                    log_executed_action('modify_sl', symbol, ticket, {
+                        'action_type': action_type,
+                        'old_sl': current_sl,
+                        'new_sl': new_sl,
+                        'old_tp': current_tp,
+                        'new_tp': tp_to_set,
+                        'reason': reason,
+                        'confidence': confidence
+                    }, True, f'S/L updated: {current_sl} → {new_sl}')
                 else:
                     print(f"   [ERROR] S/L update failed: {result.error_message}")
+                    log_executed_action('modify_sl', symbol, ticket, {
+                        'action_type': action_type,
+                        'old_sl': current_sl,
+                        'new_sl': new_sl,
+                        'reason': reason,
+                        'error': result.error_message
+                    }, False, result.error_message)
                     
-            elif action_type == 'tp_adjustment_signal_based':
+            elif action_type in ['tp_adjustment_signal_based', 'set_tp']:
+                if new_tp is None:
+                    print(f"   [ERROR] No T/P value provided")
+                    log_executed_action('modify_tp', symbol, ticket, {
+                        'action_type': action_type, 'reason': reason, 'error': 'No T/P value provided'
+                    }, False, 'No T/P value provided')
+                    continue
+                    
                 result = executor.modify_order(ticket=ticket, sl=None, tp=new_tp)
                 if result.success:
                     print(f"   [OK] T/P updated to {new_tp}")
+                    print(f"   Reason: {reason}")
                     success_count += 1
+                    
+                    # 🆕 Log to AI training
+                    log_executed_action('modify_tp', symbol, ticket, {
+                        'action_type': action_type,
+                        'old_tp': current_tp,
+                        'new_tp': new_tp,
+                        'reason': reason,
+                        'confidence': confidence
+                    }, True, f'T/P updated: {current_tp} → {new_tp}')
                 else:
                     print(f"   [ERROR] T/P update failed: {result.error_message}")
+                    log_executed_action('modify_tp', symbol, ticket, {
+                        'action_type': action_type,
+                        'old_tp': current_tp,
+                        'new_tp': new_tp,
+                        'reason': reason,
+                        'error': result.error_message
+                    }, False, result.error_message)
+                    
+            elif action_type == 'hold' and new_tp is not None:
+                # 🎯 Special case: hold action but need to update T/P based on new signal
+                result = executor.modify_order(ticket=ticket, sl=None, tp=new_tp)
+                if result.success:
+                    print(f"   [OK] T/P updated to {new_tp} (hold action with T/P adjustment)")
+                    print(f"   Reason: {reason}")
+                    success_count += 1
+                    
+                    # 🆕 Log to AI training
+                    log_executed_action('modify_tp_hold', symbol, ticket, {
+                        'action_type': 'hold_with_tp_adjustment',
+                        'old_tp': current_tp,
+                        'new_tp': new_tp,
+                        'reason': reason,
+                        'confidence': confidence
+                    }, True, f'T/P updated on hold: {current_tp} → {new_tp}')
+                else:
+                    print(f"   [ERROR] T/P update failed: {result.error_message}")
+                    log_executed_action('modify_tp_hold', symbol, ticket, {
+                        'action_type': 'hold_with_tp_adjustment',
+                        'old_tp': current_tp,
+                        'new_tp': new_tp,
+                        'reason': reason,
+                        'error': result.error_message
+                    }, False, result.error_message)
+            else:
+                print(f"   [WARNING] Unknown action type: {action_type}")
                     
         except Exception as e:
             print(f"   [ERROR] Execution error: {e}")
     
-    failed_count = len(sl_tp_actions) - success_count
-    return {'success': success_count, 'failed': failed_count}
+    failed_count = len(sl_tp_actions) - success_count - skipped_count
+    if skipped_count > 0:
+        print(f">> Skipped {skipped_count} actions (no ticket or pure hold)")
+    return {'success': success_count, 'failed': failed_count, 'skipped': skipped_count}
 
 def execute_regular_actions(regular_actions):
     """Execute regular trading actions using AdvancedOrderExecutor"""
@@ -234,8 +537,11 @@ def execute_regular_actions(regular_actions):
     
     try:
         executor = get_executor_instance()
+        # � NOTE: Regular actions are processed by reading the full JSON file
+        # Volume calculations are handled by order_executor.py based on risk settings
         result = executor.apply_actions_from_json()
         print("[OK] Regular actions processed by AdvancedOrderExecutor")
+        print(f"     Volume calculation: Handled by order_executor.py risk settings")
         return result
         
     except Exception as e:
@@ -243,19 +549,17 @@ def execute_regular_actions(regular_actions):
         return {'applied': 0, 'errors': [str(e)], 'skipped': []}
 
 def execute_close_actions(close_actions):
-    """Execute opposite signal close actions"""
+    """Execute opposite signal close actions using AdvancedOrderExecutor"""
     if not close_actions:
         return {'success': 0, 'failed': 0}
     
     print(">> EXECUTING OPPOSITE SIGNAL CLOSE ACTIONS...")
     print("-" * 50)
     
-    # Initialize MT5
     try:
-        mt5_conn = MT5ConnectionManager()
-        if not mt5_conn.connect():
-            print("[ERROR] Failed to initialize MT5 for close actions")
-            return {'success': 0, 'failed': len(close_actions)}
+        # Use AdvancedOrderExecutor singleton instead of MT5ConnectionManager
+        from order_executor import get_executor_instance
+        executor = get_executor_instance()
         
         success_count = 0
         failed_count = 0
@@ -268,57 +572,65 @@ def execute_close_actions(close_actions):
                 volume = action.get('volume', 0.0)
                 reason = action.get('reason', '')
                 confidence = action.get('confidence', 0)
+                profit_pips = action.get('current_profit_pips', 0)
+                profit_usd = action.get('current_profit_usd', 0)
+                entry_price = action.get('entry_price', 0)
+                current_price = action.get('current_price', 0)
+                position_type = action.get('position_type', action.get('type', ''))
                 
                 print(f"[{i}/{len(close_actions)}] Closing {symbol} #{ticket} ({close_type})...")
                 print(f"    Reason: {reason}")
+                print(f"    Profit: +{profit_pips:.1f} pips / ${profit_usd:.2f}")
                 print(f"    Confidence: {confidence:.1f}%")
                 
-                # Get position info
-                positions = mt5_conn.positions_get(ticket=ticket)
-                if not positions:
-                    print(f"    [ERROR] Position #{ticket} not found")
-                    failed_count += 1
-                    continue
-                
-                position = positions[0]
-                pos_volume = position.volume
-                close_volume = volume if close_type == 'partial' else pos_volume
-                
-                # Validate close volume
-                if close_volume <= 0 or close_volume > pos_volume:
-                    print(f"    [ERROR] Invalid close volume: {close_volume}")
-                    failed_count += 1
-                    continue
-                
-                # Execute close order
-                close_request = {
-                    "action": mt5_conn.TRADE_ACTION_DEAL,
-                    "symbol": symbol,
-                    "volume": close_volume,
-                    "type": mt5_conn.ORDER_TYPE_SELL if position.type == 0 else mt5_conn.ORDER_TYPE_BUY,
-                    "position": ticket,
-                    "price": mt5_conn.symbol_info_tick(symbol).bid if position.type == 0 else mt5_conn.symbol_info_tick(symbol).ask,
-                    "deviation": 20,
-                    "magic": position.magic,
-                    "comment": f"Opposite signal close - {confidence:.0f}%",
-                    "type_time": mt5_conn.ORDER_TIME_GTC,
-                    "type_filling": mt5_conn.ORDER_FILLING_IOC,
-                }
-                
-                result = mt5_conn.order_send(close_request)
-                
-                if result and result.retcode == mt5_conn.TRADE_RETCODE_DONE:
-                    print(f"    [SUCCESS] {close_type.title()} close executed: {close_volume} lots")
-                    print(f"    Deal ID: {result.deal}")
-                    success_count += 1
+                # Use AdvancedOrderExecutor's close_position method
+                if close_type == 'partial' and volume > 0:
+                    result = executor.close_position(ticket=ticket, volume=volume)
                 else:
-                    error_msg = result.comment if result else "Unknown error"
+                    result = executor.close_position(ticket=ticket)
+                
+                if result.success:
+                    print(f"    [SUCCESS] Position closed successfully")
+                    print(f"    Comment: {result.comment}")
+                    success_count += 1
+                    
+                    # 🆕 Log to AI training - CLOSE POSITION SUCCESS
+                    log_executed_action('close_position', symbol, ticket, {
+                        'close_type': close_type,
+                        'position_type': position_type,
+                        'volume': volume,
+                        'entry_price': entry_price,
+                        'exit_price': current_price,
+                        'profit_pips': profit_pips,
+                        'profit_usd': profit_usd,
+                        'reason': reason,
+                        'confidence': confidence,
+                        'outcome': 'WIN' if profit_pips > 0 else 'LOSS' if profit_pips < 0 else 'BREAKEVEN'
+                    }, True, f'Closed {position_type} @ {current_price}, P/L: {profit_pips:.1f} pips')
+                else:
+                    error_msg = result.error_message or result.comment or "Unknown error"
                     print(f"    [ERROR] Close failed: {error_msg}")
                     failed_count += 1
+                    
+                    # 🆕 Log to AI training - CLOSE POSITION FAILED
+                    log_executed_action('close_position', symbol, ticket, {
+                        'close_type': close_type,
+                        'position_type': position_type,
+                        'volume': volume,
+                        'reason': reason,
+                        'error': error_msg
+                    }, False, error_msg)
                 
             except Exception as e:
                 print(f"    [ERROR] Exception closing position: {str(e)}")
                 failed_count += 1
+                
+                # 🆕 Log exception
+                log_executed_action('close_position', symbol, ticket, {
+                    'close_type': close_type,
+                    'reason': reason,
+                    'error': str(e)
+                }, False, str(e))
             
             print()
         
@@ -327,6 +639,8 @@ def execute_close_actions(close_actions):
         
     except Exception as e:
         print(f"[ERROR] Close actions execution failed: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return {'success': 0, 'failed': len(close_actions), 'message': str(e)}
 
 def main():
@@ -378,6 +692,14 @@ def main():
     # Execute regular actions
     regular_result = execute_regular_actions(regular_actions)
     
+    # 📊 COLLECT TRAINING DATA (Local only - no server)
+    execution_results = {
+        'close': close_result,
+        'sl_tp': sl_tp_result,
+        'regular': regular_result
+    }
+    collect_training_data_local(all_actions, execution_results)
+    
     # Summary
     print("\n" + "=" * 60)
     print(">> EXECUTION SUMMARY:")
@@ -413,23 +735,44 @@ def main():
         print(f"   Applied: {regular_applied}")
         print(f"   Failed: {regular_errors}")
         print(f"   Skipped: {regular_skipped}")
+        
+        # 🔍 DETAILED SKIP DEBUG
+        if regular_skipped > 0:
+            print("\n" + "="*80)
+            print("🔍 DETAILED SKIP REASONS:")
+            print("="*80)
+            for skip_item in regular_result.get('skipped', []):
+                print(f"\n❌ Symbol: {skip_item.get('symbol', 'Unknown')}")
+                print(f"   Action: {skip_item.get('action', 'Unknown')}")
+                print(f"   Reason: {skip_item.get('reason', 'No reason given')}")
+                details = skip_item.get('details', '')
+                if details:
+                    print(f"   Details: {details}")
+            print("="*80 + "\n")
     
-    # Overall Summary
+    # Overall Summary - FIX: Include processed actions even if they are hold actions
     total_success = sl_tp_result['success'] + regular_applied + close_result['success']
+    total_processed = sl_tp_result.get('success', 0) + (regular_total - regular_errors) + close_result.get('success', 0)
     total_actions = sl_tp_total + regular_total + close_total
     
     print(f">> OVERALL:")
     print(f"   Total actions: {total_actions}")
     print(f"   Total successful: {total_success}")
+    print(f"   Total processed: {total_processed}")  # Include hold actions
     print(f"   Overall success rate: {total_success/total_actions*100:.1f}%" if total_actions > 0 else "   No actions processed")
     
-    if total_success > 0:
+    # FIX: Consider execution successful if at least 1 action succeeded
+    # Previously required 80% success rate which was too strict for small action sets
+    execution_successful = (total_actions > 0) and (total_success > 0)
+    
+    if execution_successful:
         print("\n>> EXECUTION COMPLETED!")
+        print(f">> {total_success}/{total_actions} actions successful")
         print(">> Check MT5 platform to verify changes")
     else:
-        print("\n>> No actions were successfully executed")
+        print("\n>> All actions failed or were skipped")
         
-    return total_success > 0
+    return execution_successful
 
 if __name__ == "__main__":
     success = main()

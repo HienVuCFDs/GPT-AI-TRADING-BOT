@@ -1,0 +1,555 @@
+{
+    "Crypto Price Action": {
+        "timestamp": "2025-11-30T20:32:34.481857",
+        "version": "4.0",
+        "tabs": {
+            "risk_management": {
+                "min_lot_spin": 0.01,
+                "fixed_volume_spin": 0.1,
+                "default_volume_spin": 0.1,
+                "default_sl_spin": 2.5,
+                "default_tp_spin": 1.5,
+                "breakeven_min_spin": 70.0,
+                "breakeven_max_spin": 100.0,
+                "trailing_activation_spin": 150.0,
+                "trailing_min_spin": 70.0,
+                "trailing_max_spin": 100.0,
+                "max_positions_spin": 40,
+                "max_positions_per_symbol_spin": 5,
+                "max_correlation_spin": 0.7,
+                "start_hour_spin": 0,
+                "end_hour_spin": 23,
+                "spread_multiplier_spin": 3.0,
+                "max_slippage_spin": 10,
+                "max_dca_levels_spin": 4,
+                "dca_multiplier_spin": 1.5,
+                "dca_atr_period_spin": 14,
+                "dca_atr_mult_spin": 0.85,
+                "dca_base_distance_spin": 50.0,
+                "dca_min_drawdown_spin": 1.0,
+                "dca_avg_sl_profit_spin": 10.0,
+                "volume_mode_combo": "Khối lượng mặc định",
+                "volume_mode_combo_idx": 2,
+                "sltp_mode_combo": "Bội số ATR",
+                "sltp_mode_combo_idx": 1,
+                "max_risk_combo": "OFF",
+                "max_risk_combo_idx": 0,
+                "max_drawdown_combo": "OFF",
+                "max_drawdown_combo_idx": 0,
+                "daily_loss_combo": "OFF",
+                "daily_loss_combo_idx": 0,
+                "max_lot_combo": "10.0",
+                "max_lot_combo_idx": 5,
+                "min_rr_combo": "OFF",
+                "min_rr_combo_idx": 0,
+                "avoid_news_combo": "OFF",
+                "avoid_news_combo_idx": 0,
+                "emergency_dd_combo": "OFF",
+                "emergency_dd_combo_idx": 0,
+                "dca_mode_combo": "Bội số ATR",
+                "dca_mode_combo_idx": 0,
+                "dca_fibo_start_combo": "23.6%",
+                "dca_fibo_start_combo_idx": 0,
+                "dca_fibo_exec_combo": "Chạm Mức (Market)",
+                "dca_fibo_exec_combo_idx": 0,
+                "dca_sl_mode_combo": "SL trung bình",
+                "dca_sl_mode_combo_idx": 1,
+                "trailing_volatility_cb": false,
+                "enable_dca_check": true,
+                "auto_reduce_check": false,
+                "symbol_exposure": {
+                    "BNBUSD_m": 2.0,
+                    "LTCUSD_m": 2.0,
+                    "BTCUSD_m": 2.0,
+                    "ETHUSD_m": 2.0,
+                    "SOLUSD_m": 2.0
+                },
+                "symbol_multipliers": {
+                    "BNBUSD_m": 1.0,
+                    "LTCUSD_m": 1.0,
+                    "BTCUSD_m": 1.0,
+                    "ETHUSD_m": 1.0,
+                    "SOLUSD_m": 1.0
+                }
+            },
+            "market": {
+                "checked_symbols": [
+                    "BNBUSD_m",
+                    "LTCUSD_m",
+                    "BTCUSD_m",
+                    "ETHUSD_m",
+                    "SOLUSD_m"
+                ],
+                "timeframes": {
+                    "M1": {
+                        "enabled": false,
+                        "candles": 500
+                    },
+                    "M5": {
+                        "enabled": false,
+                        "candles": 500
+                    },
+                    "M15": {
+                        "enabled": true,
+                        "candles": 500
+                    },
+                    "M30": {
+                        "enabled": true,
+                        "candles": 500
+                    },
+                    "H1": {
+                        "enabled": true,
+                        "candles": 300
+                    },
+                    "H4": {
+                        "enabled": false,
+                        "candles": 500
+                    },
+                    "D1": {
+                        "enabled": false,
+                        "candles": 500
+                    },
+                    "W1": {
+                        "enabled": false,
+                        "candles": 500
+                    },
+                    "MN1": {
+                        "enabled": false,
+                        "candles": 500
+                    }
+                },
+                "chart_symbol": "BNBUSD_m",
+                "chart_timeframe": "M15"
+            },
+            "indicators": {
+                "indicator_rows": [
+                    {
+                        "name": "MA",
+                        "label": "Moving Average",
+                        "params": {
+                            "period": 10,
+                            "ma_type": "EMA"
+                        }
+                    },
+                    {
+                        "name": "MA",
+                        "label": "Moving Average",
+                        "params": {
+                            "period": 20,
+                            "ma_type": "EMA"
+                        }
+                    },
+                    {
+                        "name": "MA",
+                        "label": "Moving Average",
+                        "params": {
+                            "period": 50,
+                            "ma_type": "EMA"
+                        }
+                    },
+                    {
+                        "name": "MA",
+                        "label": "Moving Average",
+                        "params": {
+                            "period": 100,
+                            "ma_type": "EMA"
+                        }
+                    },
+                    {
+                        "name": "MA",
+                        "label": "Moving Average",
+                        "params": {
+                            "period": 200,
+                            "ma_type": "EMA"
+                        }
+                    },
+                    {
+                        "name": "MACD",
+                        "label": "MACD",
+                        "params": {
+                            "fast": 12,
+                            "slow": 26,
+                            "signal": 9
+                        }
+                    },
+                    {
+                        "name": "RSI",
+                        "label": "RSI",
+                        "params": {
+                            "period": 14
+                        }
+                    },
+                    {
+                        "name": "Stochastic",
+                        "label": "Stochastic",
+                        "params": {
+                            "period": 14,
+                            "smooth": 3
+                        }
+                    },
+                    {
+                        "name": "Bollinger Bands",
+                        "label": "Bollinger Bands",
+                        "params": {
+                            "window": 20,
+                            "dev": 2
+                        }
+                    },
+                    {
+                        "name": "ATR",
+                        "label": "ATR",
+                        "params": {
+                            "period": 14
+                        }
+                    },
+                    {
+                        "name": "ADX",
+                        "label": "ADX",
+                        "params": {
+                            "period": 14
+                        }
+                    },
+                    {
+                        "name": "Donchian",
+                        "label": "Donchian Channel",
+                        "params": {
+                            "window": 20
+                        }
+                    },
+                    {
+                        "name": "Fibonacci",
+                        "label": "Fibonacci",
+                        "params": {
+                            "lookback": 100
+                        }
+                    },
+                    {
+                        "name": "Ichimoku",
+                        "label": "Ichimoku",
+                        "params": {
+                            "tenkan": 9,
+                            "kijun": 26,
+                            "senkou": 52
+                        }
+                    },
+                    {
+                        "name": "Chaikin",
+                        "label": "Chaikin Money Flow",
+                        "params": {
+                            "period": 20
+                        }
+                    }
+                ]
+            },
+            "pattern": {
+                "enabled": true,
+                "min_confidence": 0.3
+            },
+            "price_pattern": {
+                "enabled": false,
+                "min_confidence": 0.3,
+                "max_age": 90
+            },
+            "trend": {
+                "enabled": true
+            },
+            "news": {
+                "use_economic_calendar": false,
+                "currencies": {
+                    "USD": false,
+                    "EUR": false,
+                    "JPY": false,
+                    "GBP": false,
+                    "AUD": false,
+                    "CAD": false,
+                    "CHF": false,
+                    "NZD": false
+                },
+                "impacts": {
+                    "1": false,
+                    "2": false,
+                    "3": false
+                }
+            },
+            "signal": {}
+        }
+    },
+    "Tổng Hợp Price Action DCA": {
+        "timestamp": "2025-12-01T23:18:35.570538",
+        "version": "4.0",
+        "tabs": {
+            "risk_management": {
+                "min_lot_spin": 0.01,
+                "fixed_volume_spin": 0.1,
+                "default_volume_spin": 0.1,
+                "default_sl_spin": 2.5,
+                "default_tp_spin": 1.5,
+                "breakeven_min_spin": 70.0,
+                "breakeven_max_spin": 100.0,
+                "trailing_activation_spin": 150.0,
+                "trailing_min_spin": 70.0,
+                "trailing_max_spin": 100.0,
+                "max_positions_spin": 40,
+                "max_positions_per_symbol_spin": 5,
+                "max_correlation_spin": 0.7,
+                "start_hour_spin": 0,
+                "end_hour_spin": 23,
+                "spread_multiplier_spin": 3.0,
+                "max_slippage_spin": 10,
+                "max_dca_levels_spin": 4,
+                "dca_multiplier_spin": 1.5,
+                "dca_atr_period_spin": 14,
+                "dca_atr_mult_spin": 1.5,
+                "dca_base_distance_spin": 50.0,
+                "dca_min_drawdown_spin": 1.0,
+                "dca_avg_sl_profit_spin": 10.0,
+                "volume_mode_combo": "Khối lượng mặc định",
+                "volume_mode_combo_idx": 2,
+                "sltp_mode_combo": "Bội số ATR",
+                "sltp_mode_combo_idx": 1,
+                "max_risk_combo": "OFF",
+                "max_risk_combo_idx": 0,
+                "max_drawdown_combo": "OFF",
+                "max_drawdown_combo_idx": 0,
+                "daily_loss_combo": "OFF",
+                "daily_loss_combo_idx": 0,
+                "max_lot_combo": "10.0",
+                "max_lot_combo_idx": 5,
+                "min_rr_combo": "OFF",
+                "min_rr_combo_idx": 0,
+                "avoid_news_combo": "OFF",
+                "avoid_news_combo_idx": 0,
+                "emergency_dd_combo": "10.0",
+                "emergency_dd_combo_idx": 3,
+                "dca_mode_combo": "Pips cố định",
+                "dca_mode_combo_idx": 1,
+                "dca_fibo_start_combo": "23.6%",
+                "dca_fibo_start_combo_idx": 0,
+                "dca_fibo_exec_combo": "Chạm Mức (Market)",
+                "dca_fibo_exec_combo_idx": 0,
+                "dca_sl_mode_combo": "SL trung bình",
+                "dca_sl_mode_combo_idx": 1,
+                "trailing_volatility_cb": false,
+                "enable_dca_check": true,
+                "auto_reduce_check": false,
+                "symbol_exposure": {
+                    "EURUSD.": 2.0,
+                    "XAUUSD.": 2.0,
+                    "GBPUSD.": 2.0,
+                    "BNBUSD_m": 2.0,
+                    "SOLUSD_m": 2.0,
+                    "LTCUSD_m": 2.0
+                },
+                "symbol_multipliers": {
+                    "EURUSD.": 1.0,
+                    "XAUUSD.": 1.0,
+                    "GBPUSD.": 1.0,
+                    "BNBUSD_m": 1.0,
+                    "SOLUSD_m": 1.0,
+                    "LTCUSD_m": 1.0
+                }
+            },
+            "market": {
+                "checked_symbols": [
+                    "EURUSD.",
+                    "XAUUSD.",
+                    "GBPUSD.",
+                    "BNBUSD_m",
+                    "SOLUSD_m",
+                    "LTCUSD_m"
+                ],
+                "timeframes": {
+                    "M1": {
+                        "enabled": false,
+                        "candles": 500
+                    },
+                    "M5": {
+                        "enabled": false,
+                        "candles": 500
+                    },
+                    "M15": {
+                        "enabled": true,
+                        "candles": 500
+                    },
+                    "M30": {
+                        "enabled": true,
+                        "candles": 500
+                    },
+                    "H1": {
+                        "enabled": true,
+                        "candles": 300
+                    },
+                    "H4": {
+                        "enabled": false,
+                        "candles": 500
+                    },
+                    "D1": {
+                        "enabled": false,
+                        "candles": 500
+                    },
+                    "W1": {
+                        "enabled": false,
+                        "candles": 500
+                    },
+                    "MN1": {
+                        "enabled": false,
+                        "candles": 500
+                    }
+                },
+                "chart_symbol": "XAUUSD.",
+                "chart_timeframe": "M15"
+            },
+            "indicators": {
+                "indicator_rows": [
+                    {
+                        "name": "MA",
+                        "label": "Moving Average",
+                        "params": {
+                            "period": 10,
+                            "ma_type": "EMA"
+                        }
+                    },
+                    {
+                        "name": "MA",
+                        "label": "Moving Average",
+                        "params": {
+                            "period": 20,
+                            "ma_type": "EMA"
+                        }
+                    },
+                    {
+                        "name": "MA",
+                        "label": "Moving Average",
+                        "params": {
+                            "period": 50,
+                            "ma_type": "EMA"
+                        }
+                    },
+                    {
+                        "name": "MA",
+                        "label": "Moving Average",
+                        "params": {
+                            "period": 100,
+                            "ma_type": "EMA"
+                        }
+                    },
+                    {
+                        "name": "MA",
+                        "label": "Moving Average",
+                        "params": {
+                            "period": 200,
+                            "ma_type": "EMA"
+                        }
+                    },
+                    {
+                        "name": "MACD",
+                        "label": "MACD",
+                        "params": {
+                            "fast": 12,
+                            "slow": 26,
+                            "signal": 9
+                        }
+                    },
+                    {
+                        "name": "RSI",
+                        "label": "RSI",
+                        "params": {
+                            "period": 14
+                        }
+                    },
+                    {
+                        "name": "Stochastic",
+                        "label": "Stochastic",
+                        "params": {
+                            "period": 14,
+                            "smooth": 3
+                        }
+                    },
+                    {
+                        "name": "Bollinger Bands",
+                        "label": "Bollinger Bands",
+                        "params": {
+                            "window": 20,
+                            "dev": 2
+                        }
+                    },
+                    {
+                        "name": "ATR",
+                        "label": "ATR",
+                        "params": {
+                            "period": 14
+                        }
+                    },
+                    {
+                        "name": "ADX",
+                        "label": "ADX",
+                        "params": {
+                            "period": 14
+                        }
+                    },
+                    {
+                        "name": "Donchian",
+                        "label": "Donchian Channel",
+                        "params": {
+                            "window": 20
+                        }
+                    },
+                    {
+                        "name": "Fibonacci",
+                        "label": "Fibonacci",
+                        "params": {
+                            "lookback": 100
+                        }
+                    },
+                    {
+                        "name": "Ichimoku",
+                        "label": "Ichimoku",
+                        "params": {
+                            "tenkan": 9,
+                            "kijun": 26,
+                            "senkou": 52
+                        }
+                    },
+                    {
+                        "name": "Chaikin",
+                        "label": "Chaikin Money Flow",
+                        "params": {
+                            "period": 20
+                        }
+                    }
+                ]
+            },
+            "pattern": {
+                "enabled": true,
+                "min_confidence": 0.3
+            },
+            "price_pattern": {
+                "enabled": false,
+                "min_confidence": 0.3,
+                "max_age": 90
+            },
+            "trend": {
+                "enabled": true
+            },
+            "news": {
+                "use_economic_calendar": true,
+                "currencies": {
+                    "USD": true,
+                    "EUR": true,
+                    "JPY": false,
+                    "GBP": true,
+                    "AUD": false,
+                    "CAD": true,
+                    "CHF": false,
+                    "NZD": false
+                },
+                "impacts": {
+                    "1": true,
+                    "2": true,
+                    "3": true
+                }
+            },
+            "signal": {}
+        }
+    }
+}

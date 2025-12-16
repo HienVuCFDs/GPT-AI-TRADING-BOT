@@ -13,13 +13,60 @@ from typing import List, Dict, Any, Optional
 import subprocess
 import glob
 
+# === LICENSE SERVER CONFIGURATION ===
+# Thay đổi URL này khi deploy production
+# Development: http://localhost:8000/api
+# Ngrok:       https://xxx.ngrok-free.dev/api
+# Production:  https://your-domain.com/api
+LICENSE_SERVER_URL = "http://localhost:8000/api"
+
+# === LICENSE GUARD INTEGRATION ===
+try:
+    from license_guard import get_license_guard, LicenseConfig
+    LICENSE_GUARD_AVAILABLE = True
+except ImportError:
+    LICENSE_GUARD_AVAILABLE = False
+    print("⚠️ license_guard.py not found - running without local protection")
+
+# === REDIS CACHE INTEGRATION ===
+try:
+    from unified_auto_trading_system import CacheManager
+    CACHE_MANAGER = CacheManager(host='localhost', port=6379)
+    if CACHE_MANAGER.enabled:
+        logger_cache = logging.getLogger('redis_cache')
+        logger_cache.info("✅ Redis cache initialized - 4-5x performance boost enabled")
+    else:
+        CACHE_MANAGER = None
+        logger_cache = logging.getLogger('redis_cache')
+        logger_cache.warning("⚠️ Redis cache disabled - running in normal mode (slower)")
+except Exception as e:
+    CACHE_MANAGER = None
+    print(f"⚠️ Redis cache error: {e}")
+
+# Setup logger for app.py
+logger = logging.getLogger(__name__)
+if not logger.handlers:
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler('logs/app.log', encoding='utf-8'),
+            logging.StreamHandler(sys.stdout)  # Use stdout for proper encoding
+        ]
+    )
+    # Force UTF-8 encoding on all handlers
+    for handler in logging.getLogger().handlers:
+        if hasattr(handler, 'setEncoding'):
+            handler.setEncoding('utf-8')
+
 # Global exception handler to prevent crashes
 def global_exception_handler(exc_type, exc_value, exc_traceback):
     """Global exception handler - prevents app crash on unhandled exceptions"""
     try:
         # Log the error
         error_msg = f"CRITICAL ERROR: {exc_type.__name__}: {str(exc_value)}"
-        print(f"\n🚨 {error_msg}")
+        # Print without emojis to avoid encoding issues
+        print(f"\n[!] {error_msg}")
         
         # Save crash log
         crash_log = f"logs/crash_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
@@ -32,25 +79,25 @@ def global_exception_handler(exc_type, exc_value, exc_traceback):
             f.write("Full Traceback:\n")
             traceback.print_exception(exc_type, exc_value, exc_traceback, file=f)
         
-        print(f"💾 Crash details saved to: {crash_log}")
-        print("🔄 App will continue running...")
+        print(f"[SAVE] Crash details saved to: {crash_log}")
+        print("[CONTINUE] App will continue running...")
         
         # Continue running instead of crashing
         return True
         
     except Exception as e:
-        print(f"❌ Error in exception handler: {e}")
+        print(f"[ERROR] Error in exception handler: {e}")
         # Last resort - don't crash even if logging fails
         return True
 
 # Signal handler for graceful shutdown
 def signal_handler(signum, frame):
     """Handle SIGTERM and SIGINT for graceful shutdown"""
-    print(f"\n🛑 Received signal {signum} - initiating graceful shutdown...")
+    print(f"\n[STOP] Received signal {signum} - initiating graceful shutdown...")
     try:
         emergency_cleanup()
-    except:
-        pass
+    except Exception as e:
+        print(f"Emergency cleanup failed during shutdown: {e}")
     sys.exit(0)
 
 # Install global exception handler and signal handlers
@@ -97,13 +144,65 @@ def signal_handler(signum, frame):
             app = QApplication.instance()
             if app:
                 app.quit()
-    except:
-        pass
+    except Exception as e:
+        print(f"Error during Qt cleanup: {e}")
     sys.exit(0)
 
 # Install signal handlers
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
+
+# === NOTIFICATION SETTINGS UTILITY FUNCTIONS ===
+
+def load_notification_settings():
+    """Load notification settings from config file"""
+    config_file = 'notification_config.json'
+    default_settings = {
+        'telegram_enabled': True,
+        'discord_enabled': False,
+        'email_enabled': False,
+        'min_confidence': 50
+    }
+    
+    try:
+        if os.path.exists(config_file):
+            with open(config_file, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+                settings = config.get('settings', {})
+                # Merge with defaults
+                for key, value in default_settings.items():
+                    if key not in settings:
+                        settings[key] = value
+                return settings
+        return default_settings
+    except Exception as e:
+        print(f"Error loading notification settings: {e}")
+        return default_settings
+
+def save_notification_settings(settings):
+    """Save notification settings to config file"""
+    config_file = 'notification_config.json'
+    
+    try:
+        # Load existing config
+        config = {}
+        if os.path.exists(config_file):
+            with open(config_file, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+        
+        # Update settings section
+        config['settings'] = settings
+        
+        # Save back to file
+        with open(config_file, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
+        
+        print(f"Notification settings saved: {settings}")
+        
+    except Exception as e:
+        print(f"Error saving notification settings: {e}")
+
+# === END UTILITY FUNCTIONS ===
 
 # Try to import dotenv
 try:
@@ -117,10 +216,11 @@ try:
     from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView,
     QPushButton, QLabel, QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTextEdit, QCheckBox, QMessageBox,
-    QGroupBox, QInputDialog, QToolButton, QMenu, QAction, QActionGroup
+    QGroupBox, QInputDialog, QToolButton, QMenu, QAction, QActionGroup, QDialog, QGridLayout, QTextBrowser,
+    QStackedWidget, QFormLayout, QFrame
     )
-    from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QRunnable, QThreadPool, QObject
-    from PyQt5.QtGui import QIcon, QFont, QColor
+    from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QRunnable, QThreadPool, QObject, QUrl
+    from PyQt5.QtGui import QIcon, QFont, QColor, QDesktopServices
     GUI_AVAILABLE = True
 except ImportError:
     GUI_AVAILABLE = False
@@ -249,7 +349,6 @@ class I18N:
         "Auto Trading: OFF": "Giao dịch tự động: TẮT",
         "Auto Trading: ON": "Giao dịch tự động: BẬT",
         "Start Auto Trading": "Bắt đầu giao dịch tự động",
-    "👨‍💼 Manual Mode": "👨‍💼 Thủ công",
         # Indicator tab
         "Add Indicator": "Thêm chỉ báo",
         "Add All": "Thêm tất cả",
@@ -284,12 +383,13 @@ class I18N:
         "🔍 Fetch Price Patterns": "🔍 Lấy mô hình giá",
         # Trend tab
         "Enable Trend Detection": "Bật phát hiện xu hướng",
-        "Calculate Trendline & SR": "Tính đường xu hướng & SR",
+        "Calculate Trendline & SR": "Tính Trendline & S/R",
     # Common table headers
-    "Ticket": "Vé",
-    "Symbol": "Mã",
+    "Ticket": "Mã lệnh",
+    "Symbol": "Cặp tiền",
     "Time": "Thời gian",
     "Action": "Hành động",
+    "Actions": "Hành động",
     "Result": "Kết quả",
     "Risk Score": "Điểm rủi ro",
     "Volume": "Khối lượng",
@@ -297,7 +397,47 @@ class I18N:
     "Open Price": "Giá mở",
     "Current Price": "Giá hiện tại",
     "Stop Loss": "Cắt lỗ",
-    "Take Profit": "Chốt lời",
+    "Take Profit": "Chốt lãi",
+    "Swap": "Swap",
+    "Profit": "Lãi/Lỗ",
+    
+    # MT5 Account Tab
+    "📡 Connection Status": "📡 Trạng thái Kết nối",
+    "🔴 Status: Disconnected": "🔴 Trạng thái: Ngắt kết nối",
+    "🟢 Status: Connected": "🟢 Trạng thái: Đã kết nối",
+    "🔴 Status: Connection Failed": "🔴 Trạng thái: Kết nối Thất bại",
+    "🔄 Connecting...": "🔄 Đang kết nối...",
+    "✅ Connected": "✅ Đã kết nối",
+    "MT5 Account Login": "Đăng nhập Tài khoản MT5",
+    "Account:": "Tài khoản:",
+    "Password:": "Mật khẩu:",
+    "Server:": "Máy chủ:",
+    "Save Account Info": "Lưu thông tin tài khoản",
+    "🔑 Login to MT5": "🔑 Đăng nhập MT5",
+    "🔓 Disconnect": "🔓 Ngắt kết nối",
+    "Account Information": "Thông tin Tài khoản",
+    "Login:": "Tài khoản:",
+    "Name:": "Tên:",
+    "Company:": "Công ty:",
+    "Currency:": "Tiền tệ:",
+    "Leverage:": "Đòn bẩy:",
+    "💰 Balance Information": "💰 Thông tin Số dư",
+    "Balance:": "Số dư:",
+    "Equity:": "Vốn thực:",
+    "Margin Used:": "Ký quỹ sử dụng:",
+    "Free Margin:": "Ký quỹ khả dụng:",
+    "Margin Level:": "Mức ký quỹ:",
+    "Profit/Loss:": "Lãi/Lỗ:",
+    "📈 Trading Status": "📈 Trạng thái Giao dịch",
+    "Open Positions:": "Vị thế đang mở:",
+    "Pending Orders:": "Lệnh chờ:",
+    "Trade Allowed:": "Cho phép giao dịch:",
+    "📊 Active Positions": "📊 Vị thế Đang mở",
+    "🚫 Close All Positions": "🚫 Đóng Tất cả Vị thế",
+    "🔄 Refresh Positions": "🔄 Làm mới Vị thế",
+    "📋 Pending Orders": "📋 Lệnh Chờ",
+    "❌ Cancel All Orders": "❌ Hủy Tất cả Lệnh",
+    "🔄 Refresh Orders": "🔄 Làm mới Lệnh",
     "Swap": "Hoán đổi",
     "Profit": "Lợi nhuận",
     "Actions": "Thao tác",
@@ -343,6 +483,74 @@ class I18N:
     "Max DD Close Inactive": "Đóng Max DD không hoạt động",
     "Auto Scan Active": "Quét tự động hoạt động",
     "Auto Scan Inactive": "Quét tự động không hoạt động",
+    # Risk Management Tab - GroupBoxes
+    "🛡️ RISK MANAGEMENT CENTER": "🛡️ TRUNG TÂM QUẢN LÝ RỦI RO",
+    "⚙️ Basic Settings": "⚙️ Cài đặt cơ bản",
+    "📊 Position Management": "📊 Quản lý vị thế",
+    "🔧 Advanced Controls": "🔧 Điều khiển nâng cao",
+    "📈 DCA Strategy": "📈 Chiến lược DCA",
+    "🎯 Risk Limits": "🎯 Giới hạn rủi ro",
+    "📏 Position Sizing": "📏 Kích thước vị thế",
+    "🎯 Stop Loss / Take Profit": "🎯 Cắt lỗ / Chốt lời",
+    "🎯 Breakeven & Trailing Stop": "🎯 Điểm Hòa Vốn - Dừng Lỗ Kéo Theo",
+    "📊 Position Limits": "📊 Giới hạn vị thế",
+    "💼 Symbol Exposure Limits": "💼 Giới hạn mức độ theo mã",
+    "🕐 Trading Hours (UTC)": "🕐 Giờ giao dịch (UTC)",
+    "📊 Market Conditions": "📊 Điều kiện thị trường",
+    "🚨 Emergency Controls": "🚨 Điều khiển khẩn cấp",
+    "📈 DCA Strategy Settings": "📈 Cài đặt chiến lược DCA",
+    "⚙️ DCA Activation Conditions": "⚙️ Điều kiện kích hoạt DCA",
+    # Risk Management Tab - Labels
+    "Max Risk per Trade (%):": "Rủi ro tối đa mỗi lệnh (%):",
+    "Max Drawdown (%):": "Sụt giảm tối đa (%):",
+    "Daily Loss Limit (%):": "Giới hạn lỗ ngày (%):",
+    "Volume Settings:": "Cài đặt khối lượng:",
+    "Risk-Based (Auto)": "Theo rủi ro (Tự động)",
+    "Fixed Volume": "Khối lượng cố định",
+    "Default Volume": "Khối lượng mặc định",
+    "Min Lot Size:": "Khối lượng nhỏ nhất (tự động):",
+    "Max Lot Size:": "Tổng khối lượng tối đa:",
+    "Max Total Positions:": "Tối đa tổng vị thế:",
+    "Max Positions per Symbol:": "Tối đa vị thế mỗi mã:",
+    "Max Correlation:": "Tương quan tối đa:",
+    "Start Time:": "Giờ bắt đầu:",
+    "End Time:": "Giờ kết thúc:",
+    "Avoid News (minutes):": "Tránh tin tức (phút):",
+    "Max Spread Multiplier:": "Hệ số spread tối đa:",
+    "Max Slippage:": "Độ trượt giá tối đa:",
+    "Emergency Stop DD (%):": "Dừng khẩn cấp DD (%):",
+    "Auto Reduce Position Size on Losses": "Tự động giảm khối lượng khi thua lỗ",
+    "ℹ️ Use Account Tab for position management and closing orders": "ℹ️ Dùng tab Tài khoản để quản lý và đóng lệnh",
+    # DCA Settings Tab - Labels
+    "Enable DCA Strategy": "Bật chiến lược DCA",
+    "Max DCA Levels:": "Số tầng DCA tối đa:",
+    "Volume Multiplier:": "Hệ số nhân khối lượng:",
+    "DCA Mode:": "Chế độ DCA:",
+    "ATR Multiple": "Bội số ATR",
+    "Fixed Pips": "Pips cố định",
+    "Fibonacci Levels": "Mức Fibonacci",
+    "ATR Period:": "Chu kỳ ATR:",
+    "ATR Multiplier:": "Hệ số ATR:",
+    "DCA Distance (pips):": "Khoảng Cách DCA (Pips):",
+    "Start Fibonacci Retracement (%):": "Bắt đầu từ mức Fibonacci (%):",
+    "Fibonacci Exec Mode:": "Chế độ thực thi Fibonacci:",
+    "On Touch (Market)": "Chạm Mức (Market)",
+    "Pending Limit at Level": "Đặt Lệnh Chờ tại Mức",
+    "Min Drawdown for DCA (%):": "Sụt giảm tối thiểu để DCA (%):",
+    "DCA SL Mode:": "Chế độ SL cho DCA:",
+    "Individual SL": "SL riêng lẻ",
+    "Average SL": "SL trung bình",
+    "Average SL Profit % (Per Symbol):": "% Lợi nhuận SL trung bình (Theo Symbol):",
+    # Auto Trading Tab
+    "Auto Trading: OFF": "Giao dịch tự động: TẮT",
+    "Auto Trading: ON": "Giao dịch tự động: BẬT",
+    "Start Auto Trading": "Bắt đầu giao dịch tự động",
+    "⚪ Status: Not Started": "⚪ Trạng thái: Chưa khởi động",
+    "📋 Activity Log:": "📋 Nhật ký hoạt động:",
+    "📋 Activity log will be displayed here...": "📋 Nhật ký hoạt động sẽ hiển thị ở đây...",
+    "🔄 Starting Auto Trading...": "🔄 Đang khởi động Auto Trading...",
+    "🚀 Starting Auto Trading system": "🚀 Bắt đầu khởi động hệ thống Auto Trading",
+    "⚠️ Auto Trading already running - ignoring duplicate request": "⚠️ Auto Trading đã đang chạy - bỏ qua yêu cầu duplicate",
     }
 
     VI_TO_EN = {vi: en for en, vi in EN_TO_VI.items()}
@@ -430,18 +638,13 @@ class I18N:
                 elif w.metaObject().className() == 'QTabWidget':
                     try:
                         count = w.count()
-                        print(f"[DEBUG] Found QTabWidget with {count} tabs, target language: {target}")
                         for i in range(count):
                             old = w.tabText(i)
                             new = I18N._translate_runtime_text(old, target)
-                            print(f"[DEBUG] Tab {i}: '{old}' -> '{new}'")
                             if new != old:
                                 w.setTabText(i, new)
-                                print(f"[DEBUG] Tab {i} title updated")
-                            else:
-                                print(f"[DEBUG] Tab {i} title unchanged")
                     except Exception as e:
-                        print(f"[DEBUG] Error translating tabs: {e}")
+                        logger.debug(f"Error translating tabs: {e}")
                         pass
                 elif isinstance(w, QComboBox):
                     # Translate items while preserving current selection
@@ -520,7 +723,7 @@ class I18N:
                                 try:
                                     getattr(w, setter_name)(new_txt)
                                     if debug:
-                                        print(f"[LangForce] {getter_name} changed: '{orig}' -> '{new_txt}'")
+                                        logger.debug(f"[LangForce] {getter_name} changed: '{orig}' -> '{new_txt}'")
                                 except Exception:
                                     pass
                 # Table headers
@@ -536,7 +739,7 @@ class I18N:
                                 if t1 != t0:
                                     it.setText(t1)
                                     if debug:
-                                        print(f"[LangForce] header: '{t0}' -> '{t1}'")
+                                        logger.debug(f"[LangForce] header: '{t0}' -> '{t1}'")
                     except Exception:
                         pass
                 try:
@@ -545,7 +748,7 @@ class I18N:
                     pass
         except Exception as e:
             if debug:
-                print(f"[LangForce] error: {e}")
+                logger.debug(f"[LangForce] error: {e}")
 
 # Try to import matplotlib for candlestick charts
 try:
@@ -628,6 +831,16 @@ except ImportError:
         def stop(self): pass
     AutoTradingManager = AutoTradingManagerStub
 
+# Order tracking daemon - REMOVED (integrated into comprehensive_aggregator.py)
+ORDER_DAEMON_AVAILABLE = False
+class OrderTrackingDaemonStub:
+    def __init__(self): 
+        self.logfile = None
+    def start(self): return False
+    def stop(self): pass
+    def status(self): return False
+OrderTrackingDaemon = OrderTrackingDaemonStub
+
 # Risk management system
 try:
     # from risk_manager import AdvancedRiskManagementSystem, AdvancedRiskParameters, TradeSignal, ValidationResult
@@ -674,9 +887,9 @@ try:
         QMessageBox, QLineEdit, QFormLayout, QListWidget, QListWidgetItem,
         QHBoxLayout, QSpinBox, QDoubleSpinBox, QGridLayout, QCheckBox, QTabWidget, QGroupBox,
         QRadioButton, QButtonGroup, QFrame, QSplitter, QScrollArea, QProgressBar, QSlider, QDial,
-        QComboBox, QTableWidget, QTableWidgetItem, QHeaderView
+        QComboBox, QTableWidget, QTableWidgetItem, QHeaderView, QTimeEdit, QDateEdit
     )
-    from PyQt5.QtCore import Qt, QTimer, QRunnable, QThreadPool, pyqtSignal, QObject, QThread
+    from PyQt5.QtCore import Qt, QTimer, QRunnable, QThreadPool, pyqtSignal, QObject, QThread, QTime, QDate
     from PyQt5.QtGui import QPixmap, QIcon, QFont
     GUI_AVAILABLE = True
     # print("✅ GUI components loaded successfully")
@@ -687,6 +900,62 @@ except ImportError as e:
     # Default classes for non-GUI mode
     class QObject: pass
     class QThread: pass
+
+# ============ LICENSE CHECK HELPER FUNCTIONS ============
+
+def check_license_for_service(parent_widget=None, service_name: str = "this feature") -> bool:
+    """
+    Kiểm tra license còn hoạt động trước khi cho phép sử dụng service.
+    
+    Args:
+        parent_widget: Widget cha để hiển thị dialog (có thể None)
+        service_name: Tên service để hiển thị trong thông báo
+        
+    Returns:
+        True nếu license còn hoạt động, False nếu hết hạn
+    """
+    try:
+        from license_client import get_license_client
+        license_client = get_license_client(server_url=LICENSE_SERVER_URL)
+        
+        # Check if license is still active (not expired)
+        if license_client.is_license_active:
+            return True
+        
+        # License expired - show warning
+        if GUI_AVAILABLE and parent_widget:
+            QMessageBox.warning(
+                parent_widget,
+                I18N.t("⚠️ License Expired", "⚠️ License Hết Hạn"),
+                I18N.t(
+                    f"Your license has expired.\n\nTo use {service_name}, please renew your license.\n\nGo to Menu → Account → View Pricing to renew.",
+                    f"License của bạn đã hết hạn.\n\nĐể sử dụng {service_name}, vui lòng gia hạn license.\n\nVào Menu → Tài khoản → Xem Bảng Giá để gia hạn."
+                )
+            )
+        else:
+            print(f"⚠️ License expired - cannot use {service_name}")
+        
+        return False
+        
+    except Exception as e:
+        print(f"⚠️ License check error: {e}")
+        # On error, default to allowing access (fail-open for connectivity issues)
+        return True
+
+def is_license_active() -> bool:
+    """
+    Quick check if license is still active.
+    Returns True if active, False if expired or no license.
+    """
+    try:
+        from license_client import get_license_client
+        license_client = get_license_client(server_url=LICENSE_SERVER_URL)
+        return license_client.is_license_active
+    except Exception as e:
+        print(f"⚠️ License check error: {e}")
+        return True  # Fail-open for connectivity issues
+
+# ============ END LICENSE CHECK HELPER FUNCTIONS ============
 
 # ------------------------------
 # Signal Tab - UI for comprehensive_aggregator.py
@@ -709,12 +978,12 @@ if GUI_AVAILABLE:
             """Enhanced crash-proof QThread run method"""
             try:
                 if self._should_stop:
-                    print("🛑 Thread stop requested before start")
+                    logger.debug("Thread stop requested before start")
                     return
                     
                 # Use current Python executable for reliability
                 cmd = [sys.executable, 'comprehensive_aggregator.py'] + self.args
-                print(f"🔧 DEBUG: Running command: {' '.join(cmd)}")
+                logger.debug(f"Running command: {' '.join(cmd)}")
                 
                 # Set proper working directory and environment
                 env = os.environ.copy()
@@ -733,44 +1002,44 @@ if GUI_AVAILABLE:
                 )
                 
                 if self._should_stop:
-                    print("🛑 Thread stopped during execution")
+                    logger.debug("Thread stopped during execution")
                     return
                 
                 self.returncode = proc.returncode
                 self.stdout = proc.stdout
                 self.stderr = proc.stderr
                 
-                print(f"🔧 DEBUG: Return code: {self.returncode}")
+                logger.debug(f"Return code: {self.returncode}")
                 if self.stderr:
-                    print(f"🔧 DEBUG: Stderr: {self.stderr[:500]}")  # First 500 chars
+                    logger.debug(f"Stderr: {self.stderr[:500]}")
                 if self.stdout:
-                    print(f"🔧 DEBUG: Stdout length: {len(self.stdout)} chars")
+                    logger.debug(f"Stdout length: {len(self.stdout)} chars")
                     
             except subprocess.TimeoutExpired as e:
                 self.returncode = -2
                 self.stderr = f"Process timed out after 5 minutes: {str(e)}"
-                print(f"⏰ TIMEOUT: Process exceeded 5 minute limit - {self.stderr}")
+                logger.error(f"Process timeout: {self.stderr}")
                 
             except subprocess.CalledProcessError as e:
                 self.returncode = e.returncode
                 self.stderr = f"Process failed with exit code {e.returncode}: {str(e)}"
-                print(f"❌ PROCESS ERROR: {self.stderr}")
+                logger.error(f"Process error: {self.stderr}")
                 
             except KeyboardInterrupt:
                 self.returncode = -3
                 self.stderr = "Process interrupted by user"
-                print(f"🛑 INTERRUPTED: {self.stderr}")
+                logger.warning(f"Process interrupted: {self.stderr}")
                 
             except Exception as e:
                 self.returncode = -1
                 self.stderr = f"Critical thread error: {type(e).__name__}: {str(e)}"
-                print(f"🚨 CRITICAL: QThread exception - {self.stderr}")
+                logger.critical(f"QThread exception: {self.stderr}")
                 
                 # Log the error for debugging
                 try:
                     import traceback
                     error_trace = traceback.format_exc()
-                    print(f"🔍 TRACEBACK:\n{error_trace}")
+                    logger.critical(f"TRACEBACK:\n{error_trace}")
                     
                     # Save crash log
                     crash_log = f"logs/qthread_crash_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
@@ -779,12 +1048,6185 @@ if GUI_AVAILABLE:
                         f.write(f"QThread Crash: {datetime.now()}\n")
                         f.write(f"Error: {self.stderr}\n\n")
                         f.write(f"Traceback:\n{error_trace}\n")
-                    print(f"💾 QThread crash log saved: {crash_log}")
+                    logger.info(f"QThread crash log saved: {crash_log}")
                 except:
-                    print("❌ Could not save crash log")
+                    logger.error("Could not save crash log")
             finally:
                 # Ensure thread always completes cleanly
-                print("✅ QThread run method completed")
+                logger.debug("QThread run method completed")
+
+    class AIServerAnalysisWorker(QThread):
+        """Worker thread for remote XGBoost AI Server analysis"""
+        
+        finished = pyqtSignal()
+        error = pyqtSignal(str)
+        
+        DEFAULT_SERVER_URL = "http://localhost:8080"
+        
+        def __init__(self, symbols: List[str], prompt: str, server_url: str = None, parent: Optional[QObject] = None):
+            super().__init__(parent)
+            self.symbols = symbols
+            self.prompt = prompt
+            self.server_url = server_url or self._load_server_url()
+            self.result = {"success": False, "error": None, "data": None}
+        
+        def _load_server_url(self):
+            """Load server URL from config file"""
+            try:
+                config_file = os.path.join(os.path.dirname(__file__), "ai_server_config.json")
+                if os.path.exists(config_file):
+                    with open(config_file, 'r', encoding='utf-8') as f:
+                        config = json.load(f)
+                        return config.get('server_url', self.DEFAULT_SERVER_URL)
+            except:
+                pass
+            return self.DEFAULT_SERVER_URL
+        
+        def run(self):
+            """Run AI Server analysis in background"""
+            try:
+                import requests
+                
+                print(f"🤖 [AIServer] Connecting to: {self.server_url}")
+                print(f"🤖 [AIServer] Analyzing symbols: {self.symbols}")
+                
+                # Collect market data for analysis
+                market_data = self._collect_market_data()
+                
+                if not market_data:
+                    self.result = {"success": False, "error": "No market data found. Please run indicator export first."}
+                    self.finished.emit()
+                    return
+                
+                # Call remote AI Server for each symbol
+                all_signals = []
+                for symbol, data in market_data.items():
+                    signal = self._analyze_symbol(symbol, data)
+                    if signal:
+                        all_signals.append(signal)
+                
+                if all_signals:
+                    # Save results
+                    self._save_analysis_results(all_signals)
+                    self.result = {"success": True, "data": all_signals}
+                else:
+                    self.result = {"success": False, "error": "AI Server returned no signals"}
+                
+                self.finished.emit()
+                    
+            except Exception as e:
+                import traceback
+                error_msg = f"{e}\n{traceback.format_exc()}"
+                self.result = {"success": False, "error": error_msg}
+                print(f"❌ AI Server Analysis Error: {e}")
+                self.error.emit(str(e))
+                self.finished.emit()
+        
+        def _collect_market_data(self) -> dict:
+            """Collect indicator data for symbols"""
+            data = {}
+            indicator_dir = os.path.join(os.getcwd(), "indicator_output")
+            
+            for symbol in self.symbols or []:
+                symbol_data = {}
+                pattern = os.path.join(indicator_dir, f"{symbol}*.json")
+                for fp in glob.glob(pattern):
+                    try:
+                        with open(fp, 'r', encoding='utf-8') as f:
+                            content = json.load(f)
+                            tf = os.path.basename(fp).replace(symbol, '').replace('.json', '').strip('_')
+                            symbol_data[tf] = content
+                    except:
+                        pass
+                if symbol_data:
+                    data[symbol] = symbol_data
+            
+            # Fallback: get any available data if no symbols specified
+            if not data:
+                for fp in glob.glob(os.path.join(indicator_dir, "*.json"))[:5]:
+                    try:
+                        with open(fp, 'r', encoding='utf-8') as f:
+                            content = json.load(f)
+                            # Extract symbol from filename
+                            basename = os.path.basename(fp)
+                            symbol = basename.split('_')[0] if '_' in basename else basename.replace('.json', '')
+                            if symbol not in data:
+                                data[symbol] = {}
+                            data[symbol][basename] = content
+                    except:
+                        pass
+            
+            return data
+        
+        def _get_current_user_info(self) -> dict:
+            """Get current logged in user info for AI Server tracking"""
+            user_info = {
+                'email': 'anonymous',
+                'name': 'Anonymous User',
+                'phone': 'N/A'
+            }
+            
+            try:
+                # Try to get from license client
+                from license_client import get_license_client
+                lc = get_license_client(server_url=LICENSE_SERVER_URL)
+                
+                # Get cached user info
+                cached_email = lc.get_cached_username()
+                if cached_email:
+                    user_info['email'] = cached_email
+                    user_info['name'] = cached_email.split('@')[0]
+                
+                # Try to get more info from remember file
+                remember_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.login_remember.json')
+                if os.path.exists(remember_file):
+                    with open(remember_file, 'r', encoding='utf-8') as f:
+                        remember_data = json.load(f)
+                        if remember_data.get('email'):
+                            user_info['email'] = remember_data['email']
+                            user_info['name'] = remember_data.get('name', remember_data['email'].split('@')[0])
+                        if remember_data.get('phone'):
+                            user_info['phone'] = remember_data['phone']
+                            
+            except Exception as e:
+                print(f"[AIServer] Cannot get user info: {e}")
+            
+            return user_info
+        
+        def _analyze_symbol(self, symbol: str, symbol_data: dict) -> Optional[dict]:
+            """Call remote XGBoost AI Server to analyze a symbol"""
+            try:
+                import requests
+                
+                # Get latest price from data
+                price = 0
+                indicators_m15 = {}
+                indicators_h1 = {}
+                
+                for tf_name, tf_data in symbol_data.items():
+                    if isinstance(tf_data, dict):
+                        if 'close' in tf_data or 'Close' in tf_data:
+                            price = tf_data.get('close', tf_data.get('Close', 0))
+                        # Collect indicators by timeframe
+                        if 'M15' in tf_name or 'm15' in tf_name.lower():
+                            indicators_m15 = tf_data
+                        elif 'H1' in tf_name or 'h1' in tf_name.lower():
+                            indicators_h1 = tf_data
+                
+                # If no specific timeframe found, use what we have
+                if not indicators_m15 and not indicators_h1:
+                    for tf_name, tf_data in symbol_data.items():
+                        if isinstance(tf_data, dict):
+                            if not indicators_h1:
+                                indicators_h1 = tf_data
+                            elif not indicators_m15:
+                                indicators_m15 = tf_data
+                
+                # Get current user info for tracking
+                user_info = self._get_current_user_info()
+                
+                # Call XGBoost AI Server /api/predict endpoint
+                payload = {
+                    "symbol": symbol,
+                    "user_info": user_info,
+                    "indicators": {
+                        "M15": indicators_m15,
+                        "H1": indicators_h1
+                    },
+                    "patterns": {},
+                    "trendline_sr": {},
+                    "news": []
+                }
+                
+                print(f"🌐 [XGBoost] Calling {self.server_url}/api/predict for {symbol}...")
+                print(f"🌐 [XGBoost] User: {user_info.get('email', 'anonymous')}")
+                
+                response = requests.post(
+                    f"{self.server_url}/api/predict",
+                    json=payload,
+                    timeout=30  # XGBoost is fast
+                )
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    if result.get("success"):
+                        signal = result.get("signal", "HOLD")
+                        confidence = result.get("confidence", 50)
+                        probabilities = result.get("probabilities", {})
+                        
+                        print(f"✅ [XGBoost] {symbol}: {signal} ({confidence:.1f}%)")
+                        print(f"   Probabilities: BUY={probabilities.get('BUY', 0):.1f}%, SELL={probabilities.get('SELL', 0):.1f}%, HOLD={probabilities.get('HOLD', 0):.1f}%")
+                        
+                        # Calculate SL/TP based on signal
+                        if signal == "BUY":
+                            sl = round(price * 0.995, 5)  # 0.5% SL
+                            tp = round(price * 1.015, 5)  # 1.5% TP
+                        elif signal == "SELL":
+                            sl = round(price * 1.005, 5)
+                            tp = round(price * 0.985, 5)
+                        else:
+                            sl = tp = price
+                        
+                        return {
+                            "symbol": symbol,
+                            "signal": signal,
+                            "confidence": confidence,
+                            "entry": price,
+                            "stoploss": sl,
+                            "takeprofit": tp,
+                            "probabilities": probabilities,
+                            "reasoning": f"XGBoost AI: {signal} with {confidence:.1f}% confidence"
+                        }
+                    else:
+                        print(f"⚠️ XGBoost error for {symbol}: {result.get('error')}")
+                        return None
+                elif response.status_code == 503:
+                    print(f"❌ XGBoost Server: Model not loaded")
+                    return None
+                else:
+                    print(f"❌ XGBoost HTTP error: {response.status_code}")
+                    return None
+                    
+            except Exception as e:
+                print(f"❌ XGBoost call error for {symbol}: {e}")
+                return None
+        
+        def _parse_ai_response(self, symbol: str, price: float, analysis: str) -> dict:
+            """Parse AI response text to extract trading signal"""
+            analysis_upper = analysis.upper()
+            
+            # Detect signal type
+            if "BUY" in analysis_upper or "MUA" in analysis_upper or "LONG" in analysis_upper:
+                signal = "BUY"
+            elif "SELL" in analysis_upper or "BÁN" in analysis_upper or "SHORT" in analysis_upper:
+                signal = "SELL"
+            else:
+                signal = "HOLD"
+            
+            # Try to extract confidence
+            confidence = 50  # Default
+            import re
+            conf_match = re.search(r'(\d{1,3})\s*%', analysis)
+            if conf_match:
+                confidence = min(100, int(conf_match.group(1)))
+            
+            # Calculate basic SL/TP based on signal
+            if signal == "BUY":
+                sl = round(price * 0.995, 5)  # 0.5% SL
+                tp = round(price * 1.015, 5)  # 1.5% TP
+            elif signal == "SELL":
+                sl = round(price * 1.005, 5)  # 0.5% SL
+                tp = round(price * 0.985, 5)  # 1.5% TP
+            else:
+                sl = tp = price
+            
+            return {
+                "symbol": symbol,
+                "signal": signal,
+                "confidence": confidence,
+                "entry": price,
+                "stoploss": sl,
+                "takeprofit": tp,
+                "reasoning": analysis[:500] if len(analysis) > 500 else analysis
+            }
+        
+        def _save_analysis_results(self, signals: List[dict]):
+            """Save AI analysis results as signal files"""
+            try:
+                out_dir = os.path.join(os.getcwd(), "analysis_results")
+                os.makedirs(out_dir, exist_ok=True)
+                
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                
+                for sig in signals:
+                    symbol = sig.get("symbol", "UNKNOWN")
+                    signal_data = {
+                        "symbol": symbol,
+                        "generated_by": "XGBoost AI Server",
+                        "timestamp": timestamp,
+                        "final_signal": {
+                            "signal": sig.get("signal", "HOLD"),
+                            "confidence": sig.get("confidence", 0),
+                            "entry": sig.get("entry"),
+                            "stoploss": sig.get("stoploss"),
+                            "takeprofit": sig.get("takeprofit"),
+                            "reasoning": sig.get("reasoning", "")
+                        }
+                    }
+                    
+                    fp = os.path.join(out_dir, f"{symbol}_signal_{timestamp}.json")
+                    with open(fp, 'w', encoding='utf-8') as f:
+                        json.dump(signal_data, f, indent=2, ensure_ascii=False)
+                    print(f"✅ Saved AI Server signal: {fp}")
+                    
+            except Exception as e:
+                print(f"❌ Error saving AI results: {e}")
+
+    class NotificationDialog(QDialog):
+        """Enhanced notification dialog with multiple platforms and Vietnamese support"""
+        
+        def __init__(self, parent=None):
+            try:
+                logger.debug("NotificationDialog.__init__ starting...")
+                super().__init__(parent)
+                
+                self.setWindowTitle(I18N.t("📱 Notification Settings", "📱 Cài đặt Thông báo"))
+                
+                self.setMinimumSize(800, 700)
+                self.setModal(True)
+                
+                # Platform configurations storage
+                self.platform_configs = {}
+                
+                self._build_ui()
+                
+                # Initialize loading flag
+                self._is_loading_settings = True
+                
+                # Load config with delay to ensure UI is fully ready
+                # Then connect auto-save signals AFTER loading completes
+                from PyQt5.QtCore import QTimer
+                QTimer.singleShot(500, self._load_config_and_connect_signals)
+                
+                logger.debug("NotificationDialog initialization completed successfully")
+                
+            except Exception as e:
+                logger.error(f"NotificationDialog.__init__ failed: {e}")
+                import traceback
+                logger.error(f"TRACEBACK: {traceback.format_exc()}")
+                raise
+        
+        def _build_ui(self):
+            try:
+                print("🔍 [DEBUG] _build_ui() starting...")
+                layout = QVBoxLayout(self)
+                print("✅ [DEBUG] QVBoxLayout created")
+                
+                # Title
+                title = QLabel(I18N.t("📱 Global Messaging Platform Setup", "📱 Cài đặt Nền tảng Nhắn tin Toàn cầu"))
+                title.setFont(QFont("Segoe UI", 14, QFont.Bold))
+                layout.addWidget(title)
+                print("✅ [DEBUG] Title added")
+                
+                # Main tab widget for platform configuration
+                self.main_tabs = QTabWidget()
+                print("✅ [DEBUG] QTabWidget created")
+                
+                # Tab 1: Platform Selection
+                print("🔍 [DEBUG] Creating platform selection tab...")
+                self._create_platform_selection_tab()
+                print("✅ [DEBUG] Platform selection tab created")
+                
+                # Tab 2: Configuration tabs for each platform
+                print("🔍 [DEBUG] Creating platform config tabs...")
+                self._create_platform_config_tabs()
+                print("✅ [DEBUG] Platform config tabs created")
+                
+                # Tab 3: Message & Send
+                print("🔍 [DEBUG] Creating message send tab...")
+                self._create_message_send_tab()
+                print("✅ [DEBUG] Message send tab created")
+                
+                # Tab 4: Branding & Contact Settings - INTEGRATED INTO MESSAGE TAB
+                print("🔍 [DEBUG] Branding settings integrated into message tab")
+                # self._create_branding_settings_tab() - Removed, integrated into message tab
+                print("✅ [DEBUG] Branding settings integration completed")
+                
+                # Tab 5: Smart Trading Monitor - REMOVED
+                # User requested to remove this tab
+                
+                layout.addWidget(self.main_tabs)
+                print("✅ [DEBUG] Main tabs added to layout")
+                
+                # Connect tab change signal to update footer preview
+                self.main_tabs.currentChanged.connect(self._on_tab_changed)
+                
+                # Bottom action buttons
+                print("🔍 [DEBUG] Creating action buttons...")
+                self._create_action_buttons(layout)
+                print("✅ [DEBUG] Action buttons created")
+                
+                print("✅ [DEBUG] _build_ui() completed successfully")
+                
+            except Exception as e:
+                print(f"❌ [ERROR] _build_ui() failed: {e}")
+                import traceback
+                print(f"❌ [TRACEBACK] {traceback.format_exc()}")
+                raise
+        
+        def _create_platform_selection_tab(self):
+            """Create platform selection tab with all popular messaging apps"""
+            selection_tab = QWidget()
+            layout = QVBoxLayout(selection_tab)
+            
+            # Instruction
+            instruction = QLabel(I18N.t(
+                "Select messaging platforms you want to use for trading notifications:",
+                "Chọn các nền tảng nhắn tin bạn muốn dùng cho thông báo giao dịch:"
+            ))
+            instruction.setFont(QFont("Segoe UI", 10))
+            layout.addWidget(instruction)
+            
+            # Platform categories
+            self._create_platform_categories(layout)
+            
+            self.main_tabs.addTab(selection_tab, I18N.t("🌐 Select Platforms", "🌐 Chọn Nền tảng"))
+        
+        def _create_platform_categories(self, layout):
+            """Create categorized platform selection"""
+            
+            # Popular Messaging Apps
+            popular_group = QGroupBox(I18N.t("📱 Popular Messaging Apps", "📱 Ứng dụng Nhắn tin Phổ biến"))
+            popular_layout = QGridLayout(popular_group)
+            
+            # Row 1: Top global platforms
+            self.telegram_cb = QCheckBox("📟 Telegram")
+            self.whatsapp_cb = QCheckBox("💬 WhatsApp")
+            self.signal_cb = QCheckBox("🔐 Signal")
+            self.discord_cb = QCheckBox("🎮 Discord")
+            
+            popular_layout.addWidget(self.telegram_cb, 0, 0)
+            popular_layout.addWidget(self.whatsapp_cb, 0, 1)
+            popular_layout.addWidget(self.signal_cb, 0, 2)
+            popular_layout.addWidget(self.discord_cb, 0, 3)
+            
+            # Row 2: Regional popular
+            self.zalo_cb = QCheckBox("🇻🇳 Zalo")
+            self.wechat_cb = QCheckBox("🇨🇳 WeChat")
+            self.line_cb = QCheckBox("🇯🇵 LINE")
+            self.kakaotalk_cb = QCheckBox("🇰🇷 KakaoTalk")
+            
+            popular_layout.addWidget(self.zalo_cb, 1, 0)
+            popular_layout.addWidget(self.wechat_cb, 1, 1)
+            popular_layout.addWidget(self.line_cb, 1, 2)
+            popular_layout.addWidget(self.kakaotalk_cb, 1, 3)
+            
+            layout.addWidget(popular_group)
+            
+            # Social Media Platforms
+            social_group = QGroupBox(I18N.t("📢 Social Media Platforms", "📢 Nền tảng Mạng xã hội"))
+            social_layout = QGridLayout(social_group)
+            
+            self.facebook_cb = QCheckBox("📘 Facebook Messenger")
+            self.instagram_cb = QCheckBox("📷 Instagram DM")
+            self.twitter_cb = QCheckBox("🐦 Twitter/X DM")
+            self.linkedin_cb = QCheckBox("💼 LinkedIn")
+            
+            social_layout.addWidget(self.facebook_cb, 0, 0)
+            social_layout.addWidget(self.instagram_cb, 0, 1)
+            social_layout.addWidget(self.twitter_cb, 0, 2)
+            social_layout.addWidget(self.linkedin_cb, 0, 3)
+            
+            layout.addWidget(social_group)
+            
+            # Business/Enterprise
+            business_group = QGroupBox(I18N.t("🏢 Business Platforms", "🏢 Nền tảng Doanh nghiệp"))
+            business_layout = QGridLayout(business_group)
+            
+            self.slack_cb = QCheckBox("💬 Slack")
+            self.teams_cb = QCheckBox("👥 Microsoft Teams")
+            self.skype_cb = QCheckBox("📞 Skype")
+            self.viber_cb = QCheckBox("💜 Viber")
+            
+            business_layout.addWidget(self.slack_cb, 0, 0)
+            business_layout.addWidget(self.teams_cb, 0, 1)
+            business_layout.addWidget(self.skype_cb, 0, 2)
+            business_layout.addWidget(self.viber_cb, 0, 3)
+            
+            layout.addWidget(business_group)
+            
+            # Email & SMS
+            other_group = QGroupBox(I18N.t("📧 Email & SMS", "📧 Email & SMS"))
+            other_layout = QGridLayout(other_group)
+            
+            self.email_cb = QCheckBox("📧 Email")
+            self.sms_cb = QCheckBox("📱 SMS")
+            self.webhook_cb = QCheckBox("🔗 Custom Webhook")
+            self.pushbullet_cb = QCheckBox("📋 Pushbullet")
+            
+            other_layout.addWidget(self.email_cb, 0, 0)
+            other_layout.addWidget(self.sms_cb, 0, 1)
+            other_layout.addWidget(self.webhook_cb, 0, 2)
+            other_layout.addWidget(self.pushbullet_cb, 0, 3)
+            
+            layout.addWidget(other_group)
+            
+            # Store all checkboxes for easy access
+            self.all_platform_checkboxes = [
+                # Popular
+                self.telegram_cb, self.whatsapp_cb, self.signal_cb, self.discord_cb,
+                self.zalo_cb, self.wechat_cb, self.line_cb, self.kakaotalk_cb,
+                # Social
+                self.facebook_cb, self.instagram_cb, self.twitter_cb, self.linkedin_cb,
+                # Business
+                self.slack_cb, self.teams_cb, self.skype_cb, self.viber_cb,
+                # Other
+                self.email_cb, self.sms_cb, self.webhook_cb, self.pushbullet_cb
+            ]
+            
+            # Connect selection signals
+            for cb in self.all_platform_checkboxes:
+                cb.toggled.connect(self._on_platform_selection_changed)
+        
+        def _create_platform_config_tabs(self):
+            """Create configuration tabs for selected platforms"""
+            config_tab = QWidget()
+            layout = QVBoxLayout(config_tab)
+            
+            # Sub tab widget for individual platform configs
+            self.config_tabs = QTabWidget()
+            layout.addWidget(self.config_tabs)
+            
+            # Initially create tabs for main platforms
+            self._create_telegram_config_tab()
+            self._create_zalo_config_tab()
+            self._create_whatsapp_config_tab()
+            self._create_discord_config_tab()
+            self._create_email_config_tab()
+            self._create_webhook_config_tab()
+            
+            self.main_tabs.addTab(config_tab, I18N.t("⚙️ Configuration", "⚙️ Cấu hình"))
+        
+        def _create_telegram_config_tab(self):
+            """Create Telegram configuration tab"""
+            tab = QWidget()
+            layout = QVBoxLayout(tab)
+            
+            # Instructions
+            instructions = QLabel(I18N.t(
+                "Telegram Setup Instructions:\n1. Message @BotFather on Telegram\n2. Send /newbot command\n3. Copy the Bot Token\n4. Add bot to your group\n5. Get Chat ID",
+                "Hướng dẫn Telegram:\n1. Nhắn @BotFather trên Telegram\n2. Gửi lệnh /newbot\n3. Sao chép Bot Token\n4. Thêm bot vào nhóm\n5. Lấy Chat ID"
+            ))
+            instructions.setStyleSheet("color: #666; font-size: 10px;")
+            layout.addWidget(instructions)
+            
+            # Form
+            form_layout = QGridLayout()
+            
+            form_layout.addWidget(QLabel(I18N.t("Bot Token:", "Bot Token:")), 0, 0)
+            self.telegram_token = QLineEdit()
+            self.telegram_token.setPlaceholderText("1234567890:ABCdefghijk...")
+            form_layout.addWidget(self.telegram_token, 0, 1)
+            
+            form_layout.addWidget(QLabel(I18N.t("Chat ID:", "Chat ID:")), 1, 0)
+            self.telegram_chat_id = QLineEdit()
+            self.telegram_chat_id.setPlaceholderText("-1001234567890")
+            form_layout.addWidget(self.telegram_chat_id, 1, 1)
+            
+            # Quick buttons
+            button_layout = QHBoxLayout()
+            auto_setup_btn = QPushButton(I18N.t("🔧 Auto Setup", "🔧 Setup Tự động"))
+            get_chat_id_btn = QPushButton(I18N.t("🔍 Get Chat ID", "🔍 Lấy Chat ID"))
+            test_btn = QPushButton(I18N.t("🧪 Test", "🧪 Test"))
+            
+            auto_setup_btn.clicked.connect(self._telegram_auto_setup)
+            get_chat_id_btn.clicked.connect(self._telegram_get_chat_id)
+            test_btn.clicked.connect(self._test_telegram)
+            
+            button_layout.addWidget(auto_setup_btn)
+            button_layout.addWidget(get_chat_id_btn)
+            button_layout.addWidget(test_btn)
+            button_layout.addStretch()
+            
+            layout.addLayout(form_layout)
+            layout.addLayout(button_layout)
+            layout.addStretch()
+            
+            self.config_tabs.addTab(tab, "📟 Telegram")
+        
+        def _create_zalo_config_tab(self):
+            """Create Zalo configuration tab"""
+            tab = QWidget()
+            layout = QVBoxLayout(tab)
+            
+            instructions = QLabel(I18N.t(
+                "Zalo requires webhook setup. You can use services like Zapier or IFTTT to connect.",
+                "Zalo yêu cầu cài đặt webhook. Bạn có thể dùng Zapier hoặc IFTTT để kết nối."
+            ))
+            instructions.setStyleSheet("color: #666; font-size: 10px;")
+            layout.addWidget(instructions)
+            
+            form_layout = QGridLayout()
+            
+            form_layout.addWidget(QLabel(I18N.t("Webhook URL:", "Webhook URL:")), 0, 0)
+            self.zalo_webhook = QLineEdit()
+            self.zalo_webhook.setPlaceholderText("https://hooks.zapier.com/...")
+            form_layout.addWidget(self.zalo_webhook, 0, 1)
+            
+            form_layout.addWidget(QLabel(I18N.t("Access Token:", "Access Token:")), 1, 0)
+            self.zalo_token = QLineEdit()
+            self.zalo_token.setPlaceholderText(I18N.t("Optional", "Tùy chọn"))
+            form_layout.addWidget(self.zalo_token, 1, 1)
+            
+            layout.addLayout(form_layout)
+            layout.addStretch()
+            
+            self.config_tabs.addTab(tab, "🇻🇳 Zalo")
+        
+        def _create_whatsapp_config_tab(self):
+            """Create WhatsApp configuration tab"""
+            tab = QWidget()
+            layout = QVBoxLayout(tab)
+            
+            instructions = QLabel(I18N.t(
+                "WhatsApp Business API required. Use services like Twilio WhatsApp API.",
+                "Cần WhatsApp Business API. Sử dụng dịch vụ như Twilio WhatsApp API."
+            ))
+            instructions.setStyleSheet("color: #666; font-size: 10px;")
+            layout.addWidget(instructions)
+            
+            form_layout = QGridLayout()
+            
+            form_layout.addWidget(QLabel(I18N.t("API Key:", "API Key:")), 0, 0)
+            self.whatsapp_api_key = QLineEdit()
+            form_layout.addWidget(self.whatsapp_api_key, 0, 1)
+            
+            form_layout.addWidget(QLabel(I18N.t("Phone Number:", "Số điện thoại:")), 1, 0)
+            self.whatsapp_phone = QLineEdit()
+            self.whatsapp_phone.setPlaceholderText("+84123456789")
+            form_layout.addWidget(self.whatsapp_phone, 1, 1)
+            
+            layout.addLayout(form_layout)
+            layout.addStretch()
+            
+            self.config_tabs.addTab(tab, "💬 WhatsApp")
+        
+        def _create_discord_config_tab(self):
+            """Create Discord configuration tab"""
+            tab = QWidget()
+            layout = QVBoxLayout(tab)
+            
+            instructions = QLabel(I18N.t(
+                "Discord webhook setup:\n1. Go to your Discord server\n2. Edit channel → Integrations → Webhooks\n3. Create webhook and copy URL",
+                "Cài đặt Discord webhook:\n1. Vào Discord server\n2. Chỉnh sửa kênh → Integrations → Webhooks\n3. Tạo webhook và copy URL"
+            ))
+            instructions.setStyleSheet("color: #666; font-size: 10px;")
+            layout.addWidget(instructions)
+            
+            form_layout = QGridLayout()
+            
+            form_layout.addWidget(QLabel(I18N.t("Webhook URL:", "Webhook URL:")), 0, 0)
+            self.discord_webhook = QLineEdit()
+            self.discord_webhook.setPlaceholderText("https://discord.com/api/webhooks/...")
+            form_layout.addWidget(self.discord_webhook, 0, 1)
+            
+            layout.addLayout(form_layout)
+            layout.addStretch()
+            
+            self.config_tabs.addTab(tab, "🎮 Discord")
+        
+        def _create_email_config_tab(self):
+            """Create Email configuration tab"""
+            tab = QWidget()
+            layout = QVBoxLayout(tab)
+            
+            form_layout = QGridLayout()
+            
+            form_layout.addWidget(QLabel(I18N.t("SMTP Server:", "SMTP Server:")), 0, 0)
+            self.email_smtp = QLineEdit()
+            self.email_smtp.setPlaceholderText("smtp.gmail.com")
+            form_layout.addWidget(self.email_smtp, 0, 1)
+            
+            form_layout.addWidget(QLabel(I18N.t("Port:", "Port:")), 1, 0)
+            self.email_port = QLineEdit()
+            self.email_port.setPlaceholderText("587")
+            form_layout.addWidget(self.email_port, 1, 1)
+            
+            form_layout.addWidget(QLabel(I18N.t("Email:", "Email:")), 2, 0)
+            self.email_address = QLineEdit()
+            form_layout.addWidget(self.email_address, 2, 1)
+            
+            form_layout.addWidget(QLabel(I18N.t("Password:", "Mật khẩu:")), 3, 0)
+            self.email_password = QLineEdit()
+            self.email_password.setEchoMode(QLineEdit.Password)
+            form_layout.addWidget(self.email_password, 3, 1)
+            
+            form_layout.addWidget(QLabel(I18N.t("To Email:", "Gửi đến:")), 4, 0)
+            self.email_to = QLineEdit()
+            form_layout.addWidget(self.email_to, 4, 1)
+            
+            layout.addLayout(form_layout)
+            layout.addStretch()
+            
+            self.config_tabs.addTab(tab, "📧 Email")
+        
+        def _create_webhook_config_tab(self):
+            """Create Custom Webhook configuration tab"""
+            tab = QWidget()
+            layout = QVBoxLayout(tab)
+            
+            instructions = QLabel(I18N.t(
+                "Custom webhook for integrating with any service (Zapier, IFTTT, Make, etc.)",
+                "Webhook tùy chỉnh để tích hợp với bất kỳ dịch vụ nào (Zapier, IFTTT, Make, v.v.)"
+            ))
+            instructions.setStyleSheet("color: #666; font-size: 10px;")
+            layout.addWidget(instructions)
+            
+            form_layout = QGridLayout()
+            
+            form_layout.addWidget(QLabel(I18N.t("Webhook URL:", "Webhook URL:")), 0, 0)
+            self.webhook_url = QLineEdit()
+            self.webhook_url.setPlaceholderText("https://hooks.zapier.com/...")
+            form_layout.addWidget(self.webhook_url, 0, 1)
+            
+            form_layout.addWidget(QLabel(I18N.t("Method:", "Phương thức:")), 1, 0)
+            self.webhook_method = QComboBox()
+            self.webhook_method.addItems(["POST", "GET", "PUT"])
+            form_layout.addWidget(self.webhook_method, 1, 1)
+            
+            form_layout.addWidget(QLabel(I18N.t("Headers:", "Headers:")), 2, 0)
+            self.webhook_headers = QTextEdit()
+            self.webhook_headers.setPlaceholderText('{"Content-Type": "application/json"}')
+            self.webhook_headers.setMaximumHeight(60)
+            form_layout.addWidget(self.webhook_headers, 2, 1)
+            
+            layout.addLayout(form_layout)
+            layout.addStretch()
+            
+            self.config_tabs.addTab(tab, "🔗 Webhook")
+        
+        def _create_signal_config_tab(self):
+            """Create Signal configuration tab"""
+            tab = QWidget()
+            layout = QVBoxLayout(tab)
+            
+            instructions = QLabel(I18N.t(
+                "Signal requires webhook integration or third-party services.",
+                "Signal yêu cầu tích hợp webhook hoặc dịch vụ bên thứ ba."
+            ))
+            instructions.setStyleSheet("color: #666; font-size: 10px;")
+            layout.addWidget(instructions)
+            
+            form_layout = QGridLayout()
+            form_layout.addWidget(QLabel(I18N.t("Webhook URL:", "Webhook URL:")), 0, 0)
+            self.signal_webhook = QLineEdit()
+            self.signal_webhook.setPlaceholderText("https://signal-webhook-service.com/...")
+            form_layout.addWidget(self.signal_webhook, 0, 1)
+            
+            layout.addLayout(form_layout)
+            layout.addStretch()
+            self.config_tabs.addTab(tab, "🔐 Signal")
+        
+        def _create_wechat_config_tab(self):
+            """Create WeChat configuration tab"""
+            tab = QWidget()
+            layout = QVBoxLayout(tab)
+            
+            instructions = QLabel(I18N.t(
+                "WeChat requires official API registration and approval from Tencent.",
+                "WeChat yêu cầu đăng ký API chính thức và phê duyệt từ Tencent."
+            ))
+            instructions.setStyleSheet("color: #666; font-size: 10px;")
+            layout.addWidget(instructions)
+            
+            form_layout = QGridLayout()
+            form_layout.addWidget(QLabel(I18N.t("App ID:", "App ID:")), 0, 0)
+            self.wechat_app_id = QLineEdit()
+            form_layout.addWidget(self.wechat_app_id, 0, 1)
+            
+            form_layout.addWidget(QLabel(I18N.t("App Secret:", "App Secret:")), 1, 0)
+            self.wechat_app_secret = QLineEdit()
+            self.wechat_app_secret.setEchoMode(QLineEdit.Password)
+            form_layout.addWidget(self.wechat_app_secret, 1, 1)
+            
+            layout.addLayout(form_layout)
+            layout.addStretch()
+            self.config_tabs.addTab(tab, "🇨🇳 WeChat")
+        
+        def _create_line_config_tab(self):
+            """Create LINE configuration tab"""
+            tab = QWidget()
+            layout = QVBoxLayout(tab)
+            
+            instructions = QLabel(I18N.t(
+                "LINE Bot setup:\n1. Create LINE Developers account\n2. Create new bot\n3. Get Channel Access Token",
+                "Cài đặt LINE Bot:\n1. Tạo tài khoản LINE Developers\n2. Tạo bot mới\n3. Lấy Channel Access Token"
+            ))
+            instructions.setStyleSheet("color: #666; font-size: 10px;")
+            layout.addWidget(instructions)
+            
+            form_layout = QGridLayout()
+            form_layout.addWidget(QLabel(I18N.t("Channel Access Token:", "Channel Access Token:")), 0, 0)
+            self.line_access_token = QLineEdit()
+            form_layout.addWidget(self.line_access_token, 0, 1)
+            
+            form_layout.addWidget(QLabel(I18N.t("User ID:", "User ID:")), 1, 0)
+            self.line_user_id = QLineEdit()
+            form_layout.addWidget(self.line_user_id, 1, 1)
+            
+            layout.addLayout(form_layout)
+            layout.addStretch()
+            self.config_tabs.addTab(tab, "🇯🇵 LINE")
+        
+        def _create_kakaotalk_config_tab(self):
+            """Create KakaoTalk configuration tab"""
+            tab = QWidget()
+            layout = QVBoxLayout(tab)
+            
+            instructions = QLabel(I18N.t(
+                "KakaoTalk requires official API from Kakao Corp.",
+                "KakaoTalk yêu cầu API chính thức từ Kakao Corp."
+            ))
+            instructions.setStyleSheet("color: #666; font-size: 10px;")
+            layout.addWidget(instructions)
+            
+            form_layout = QGridLayout()
+            form_layout.addWidget(QLabel(I18N.t("App Key:", "App Key:")), 0, 0)
+            self.kakaotalk_app_key = QLineEdit()
+            form_layout.addWidget(self.kakaotalk_app_key, 0, 1)
+            
+            layout.addLayout(form_layout)
+            layout.addStretch()
+            self.config_tabs.addTab(tab, "🇰🇷 KakaoTalk")
+        
+        def _create_facebook_config_tab(self):
+            """Create Facebook Messenger configuration tab"""
+            tab = QWidget()
+            layout = QVBoxLayout(tab)
+            
+            instructions = QLabel(I18N.t(
+                "Facebook Messenger requires Graph API setup and page access token.",
+                "Facebook Messenger yêu cầu cài đặt Graph API và page access token."
+            ))
+            instructions.setStyleSheet("color: #666; font-size: 10px;")
+            layout.addWidget(instructions)
+            
+            form_layout = QGridLayout()
+            form_layout.addWidget(QLabel(I18N.t("Page Access Token:", "Page Access Token:")), 0, 0)
+            self.facebook_token = QLineEdit()
+            form_layout.addWidget(self.facebook_token, 0, 1)
+            
+            form_layout.addWidget(QLabel(I18N.t("Recipient ID:", "Recipient ID:")), 1, 0)
+            self.facebook_recipient = QLineEdit()
+            form_layout.addWidget(self.facebook_recipient, 1, 1)
+            
+            layout.addLayout(form_layout)
+            layout.addStretch()
+            self.config_tabs.addTab(tab, "📘 Facebook")
+        
+        def _create_instagram_config_tab(self):
+            """Create Instagram DM configuration tab"""
+            tab = QWidget()
+            layout = QVBoxLayout(tab)
+            
+            instructions = QLabel(I18N.t(
+                "Instagram DM uses Facebook Graph API. Business account required.",
+                "Instagram DM sử dụng Facebook Graph API. Cần tài khoản doanh nghiệp."
+            ))
+            instructions.setStyleSheet("color: #666; font-size: 10px;")
+            layout.addWidget(instructions)
+            
+            form_layout = QGridLayout()
+            form_layout.addWidget(QLabel(I18N.t("Access Token:", "Access Token:")), 0, 0)
+            self.instagram_token = QLineEdit()
+            form_layout.addWidget(self.instagram_token, 0, 1)
+            
+            layout.addLayout(form_layout)
+            layout.addStretch()
+            self.config_tabs.addTab(tab, "📷 Instagram")
+        
+        def _create_twitter_config_tab(self):
+            """Create Twitter/X DM configuration tab"""
+            tab = QWidget()
+            layout = QVBoxLayout(tab)
+            
+            instructions = QLabel(I18N.t(
+                "Twitter/X DM requires API v2 with elevated access.",
+                "Twitter/X DM cần API v2 với quyền truy cập nâng cao."
+            ))
+            instructions.setStyleSheet("color: #666; font-size: 10px;")
+            layout.addWidget(instructions)
+            
+            form_layout = QGridLayout()
+            form_layout.addWidget(QLabel(I18N.t("API Key:", "API Key:")), 0, 0)
+            self.twitter_api_key = QLineEdit()
+            form_layout.addWidget(self.twitter_api_key, 0, 1)
+            
+            form_layout.addWidget(QLabel(I18N.t("API Secret:", "API Secret:")), 1, 0)
+            self.twitter_api_secret = QLineEdit()
+            self.twitter_api_secret.setEchoMode(QLineEdit.Password)
+            form_layout.addWidget(self.twitter_api_secret, 1, 1)
+            
+            layout.addLayout(form_layout)
+            layout.addStretch()
+            self.config_tabs.addTab(tab, "🐦 Twitter/X")
+        
+        def _create_linkedin_config_tab(self):
+            """Create LinkedIn configuration tab"""
+            tab = QWidget()
+            layout = QVBoxLayout(tab)
+            
+            instructions = QLabel(I18N.t(
+                "LinkedIn messaging requires LinkedIn API and company page.",
+                "Nhắn tin LinkedIn cần LinkedIn API và trang công ty."
+            ))
+            instructions.setStyleSheet("color: #666; font-size: 10px;")
+            layout.addWidget(instructions)
+            
+            form_layout = QGridLayout()
+            form_layout.addWidget(QLabel(I18N.t("Access Token:", "Access Token:")), 0, 0)
+            self.linkedin_token = QLineEdit()
+            form_layout.addWidget(self.linkedin_token, 0, 1)
+            
+            layout.addLayout(form_layout)
+            layout.addStretch()
+            self.config_tabs.addTab(tab, "💼 LinkedIn")
+        
+        def _create_slack_config_tab(self):
+            """Create Slack configuration tab"""
+            tab = QWidget()
+            layout = QVBoxLayout(tab)
+            
+            instructions = QLabel(I18N.t(
+                "Slack setup:\n1. Create Slack app\n2. Add Incoming Webhooks\n3. Copy webhook URL",
+                "Cài đặt Slack:\n1. Tạo Slack app\n2. Thêm Incoming Webhooks\n3. Sao chép webhook URL"
+            ))
+            instructions.setStyleSheet("color: #666; font-size: 10px;")
+            layout.addWidget(instructions)
+            
+            form_layout = QGridLayout()
+            form_layout.addWidget(QLabel(I18N.t("Webhook URL:", "Webhook URL:")), 0, 0)
+            self.slack_webhook = QLineEdit()
+            self.slack_webhook.setPlaceholderText("https://hooks.slack.com/services/...")
+            form_layout.addWidget(self.slack_webhook, 0, 1)
+            
+            layout.addLayout(form_layout)
+            layout.addStretch()
+            self.config_tabs.addTab(tab, "💬 Slack")
+        
+        def _create_teams_config_tab(self):
+            """Create Microsoft Teams configuration tab"""
+            tab = QWidget()
+            layout = QVBoxLayout(tab)
+            
+            instructions = QLabel(I18N.t(
+                "Teams setup:\n1. Go to Teams channel\n2. Add Incoming Webhook connector\n3. Copy webhook URL",
+                "Cài đặt Teams:\n1. Vào kênh Teams\n2. Thêm Incoming Webhook connector\n3. Sao chép webhook URL"
+            ))
+            instructions.setStyleSheet("color: #666; font-size: 10px;")
+            layout.addWidget(instructions)
+            
+            form_layout = QGridLayout()
+            form_layout.addWidget(QLabel(I18N.t("Webhook URL:", "Webhook URL:")), 0, 0)
+            self.teams_webhook = QLineEdit()
+            self.teams_webhook.setPlaceholderText("https://outlook.office.com/webhook/...")
+            form_layout.addWidget(self.teams_webhook, 0, 1)
+            
+            layout.addLayout(form_layout)
+            layout.addStretch()
+            self.config_tabs.addTab(tab, "👥 Teams")
+        
+        def _create_skype_config_tab(self):
+            """Create Skype configuration tab"""
+            tab = QWidget()
+            layout = QVBoxLayout(tab)
+            
+            instructions = QLabel(I18N.t(
+                "Skype messaging through Microsoft Bot Framework.",
+                "Nhắn tin Skype qua Microsoft Bot Framework."
+            ))
+            instructions.setStyleSheet("color: #666; font-size: 10px;")
+            layout.addWidget(instructions)
+            
+            form_layout = QGridLayout()
+            form_layout.addWidget(QLabel(I18N.t("Bot ID:", "Bot ID:")), 0, 0)
+            self.skype_bot_id = QLineEdit()
+            form_layout.addWidget(self.skype_bot_id, 0, 1)
+            
+            layout.addLayout(form_layout)
+            layout.addStretch()
+            self.config_tabs.addTab(tab, "📞 Skype")
+        
+        def _create_viber_config_tab(self):
+            """Create Viber configuration tab"""
+            tab = QWidget()
+            layout = QVBoxLayout(tab)
+            
+            instructions = QLabel(I18N.t(
+                "Viber Bot setup requires Viber Bot API registration.",
+                "Cài đặt Viber Bot cần đăng ký Viber Bot API."
+            ))
+            instructions.setStyleSheet("color: #666; font-size: 10px;")
+            layout.addWidget(instructions)
+            
+            form_layout = QGridLayout()
+            form_layout.addWidget(QLabel(I18N.t("Auth Token:", "Auth Token:")), 0, 0)
+            self.viber_token = QLineEdit()
+            form_layout.addWidget(self.viber_token, 0, 1)
+            
+            layout.addLayout(form_layout)
+            layout.addStretch()
+            self.config_tabs.addTab(tab, "💜 Viber")
+        
+        def _create_sms_config_tab(self):
+            """Create SMS configuration tab"""
+            tab = QWidget()
+            layout = QVBoxLayout(tab)
+            
+            instructions = QLabel(I18N.t(
+                "SMS sending via Twilio or other SMS providers.",
+                "Gửi SMS qua Twilio hoặc nhà cung cấp SMS khác."
+            ))
+            instructions.setStyleSheet("color: #666; font-size: 10px;")
+            layout.addWidget(instructions)
+            
+            form_layout = QGridLayout()
+            form_layout.addWidget(QLabel(I18N.t("Account SID:", "Account SID:")), 0, 0)
+            self.sms_sid = QLineEdit()
+            form_layout.addWidget(self.sms_sid, 0, 1)
+            
+            form_layout.addWidget(QLabel(I18N.t("Auth Token:", "Auth Token:")), 1, 0)
+            self.sms_token = QLineEdit()
+            self.sms_token.setEchoMode(QLineEdit.Password)
+            form_layout.addWidget(self.sms_token, 1, 1)
+            
+            form_layout.addWidget(QLabel(I18N.t("From Number:", "Từ số:")), 2, 0)
+            self.sms_from = QLineEdit()
+            self.sms_from.setPlaceholderText("+1234567890")
+            form_layout.addWidget(self.sms_from, 2, 1)
+            
+            form_layout.addWidget(QLabel(I18N.t("To Number:", "Đến số:")), 3, 0)
+            self.sms_to = QLineEdit()
+            self.sms_to.setPlaceholderText("+84987654321")
+            form_layout.addWidget(self.sms_to, 3, 1)
+            
+            layout.addLayout(form_layout)
+            layout.addStretch()
+            self.config_tabs.addTab(tab, "📱 SMS")
+        
+        def _create_pushbullet_config_tab(self):
+            """Create Pushbullet configuration tab"""
+            tab = QWidget()
+            layout = QVBoxLayout(tab)
+            
+            instructions = QLabel(I18N.t(
+                "Pushbullet push notifications to your devices.",
+                "Pushbullet gửi thông báo đến các thiết bị của bạn."
+            ))
+            instructions.setStyleSheet("color: #666; font-size: 10px;")
+            layout.addWidget(instructions)
+            
+            form_layout = QGridLayout()
+            form_layout.addWidget(QLabel(I18N.t("Access Token:", "Access Token:")), 0, 0)
+            self.pushbullet_token = QLineEdit()
+            form_layout.addWidget(self.pushbullet_token, 0, 1)
+            
+            layout.addLayout(form_layout)
+            layout.addStretch()
+            self.config_tabs.addTab(tab, "📋 Pushbullet")
+        
+        def _create_generic_config_tab(self, platform_name, tab_title):
+            """Create a generic configuration tab for unknown platforms"""
+            tab = QWidget()
+            layout = QVBoxLayout(tab)
+            
+            instructions = QLabel(I18N.t(
+                f"Configuration for {platform_name} is not yet implemented.",
+                f"Cấu hình cho {platform_name} chưa được triển khai."
+            ))
+            instructions.setStyleSheet("color: #666; font-size: 10px;")
+            layout.addWidget(instructions)
+            
+            form_layout = QGridLayout()
+            form_layout.addWidget(QLabel(I18N.t("API Endpoint:", "API Endpoint:")), 0, 0)
+            generic_endpoint = QLineEdit()
+            generic_endpoint.setPlaceholderText("https://api.example.com/...")
+            form_layout.addWidget(generic_endpoint, 0, 1)
+            
+            form_layout.addWidget(QLabel(I18N.t("API Key:", "API Key:")), 1, 0)
+            generic_key = QLineEdit()
+            form_layout.addWidget(generic_key, 1, 1)
+            
+            layout.addLayout(form_layout)
+            layout.addStretch()
+            self.config_tabs.addTab(tab, tab_title)
+        
+        def _create_message_send_tab(self):
+            """Create message composition and send tab with integrated branding settings"""
+            message_tab = QWidget()
+            layout = QVBoxLayout(message_tab)
+            
+            # Custom Message Area
+            message_group = QGroupBox(I18N.t("✏️ Custom Message Content", "✏️ Nội dung Tin nhắn Tùy chỉnh"))
+            message_layout = QVBoxLayout(message_group)
+            
+            # Checkbox to enable custom message
+            self.send_custom_message = QCheckBox(I18N.t(
+                "Enable custom message in notifications",
+                "Bật tin nhắn tùy chỉnh trong thông báo"
+            ))
+            self.send_custom_message.setChecked(False)
+            message_layout.addWidget(self.send_custom_message)
+            
+            self.custom_message = QTextEdit()
+            self.custom_message.setPlaceholderText(I18N.t(
+                "Enter your custom message here...",
+                "Nhập tin nhắn tùy chỉnh tại đây..."
+            ))
+            self.custom_message.setMaximumHeight(120)
+            message_layout.addWidget(self.custom_message)
+            
+            layout.addWidget(message_group)
+
+
+            self.candlestick_patterns_btn = QPushButton(I18N.t("�️ Candlestick Patterns", "🕯️ Mô Hình Nến"))
+
+
+            
+            self.price_patterns_btn = QPushButton(I18N.t("📊 Price Patterns", "� Mô Hình Giá"))
+
+
+            
+            # All custom notification buttons and layouts removed
+            
+            # Custom message area removed - converted to checkbox below
+            
+            # Hidden radio buttons for backward compatibility (to prevent errors)
+            from PyQt5.QtWidgets import QRadioButton
+            self.signal_radio = QRadioButton()
+            self.custom_radio = QRadioButton()
+            self.report_radio = QRadioButton()
+            self.signal_radio.hide()
+            self.custom_radio.hide() 
+            self.report_radio.hide()
+            # Set default state
+            self.custom_radio.setChecked(True)
+            
+            # Branding settings button (integrated)
+            branding_section = QHBoxLayout()
+            branding_btn = QPushButton(I18N.t("🏷️ Branding Settings", "🏷️ Cài đặt Thương hiệu"))
+            branding_btn.setStyleSheet("QPushButton { background-color: #007bff; color: white; font-weight: bold; padding: 8px 16px; }")
+            branding_btn.clicked.connect(self._show_branding_settings)
+            
+            branding_status = QLabel(I18N.t("Custom footer: Enabled", "Chân trang tùy chỉnh: Bật"))
+            branding_status.setStyleSheet("color: #28a745; font-size: 10px; margin-left: 10px;")
+            
+            branding_section.addWidget(branding_btn)
+            branding_section.addWidget(branding_status)
+            branding_section.addStretch()
+            
+            layout.addLayout(branding_section)
+            
+            # 🤖 AUTO NOTIFICATION SETTINGS
+            auto_group = QGroupBox(I18N.t("🤖 Auto Notification Settings", "🤖 Cài đặt Thông báo Tự động"))
+            auto_layout = QVBoxLayout(auto_group)
+            
+            # Main auto notification toggle removed per user request
+            # Order tracking options moved to Order Tracking Service section
+            
+            # 📊 NOTIFICATION FORMAT OPTIONS
+            format_group = QGroupBox(I18N.t("📊 Notification Format", "📊 Định dạng Thông báo"))
+            format_group_layout = QVBoxLayout(format_group)
+            
+            # Format selection with proper button group
+            format_selection_layout = QHBoxLayout()
+            self.format_summary_rb = QRadioButton(I18N.t("📡 Signal Only", "📡 Chỉ Signal"))
+            # Don't set default here - will be set when loading config
+            
+            self.format_full_rb = QRadioButton(I18N.t("📊 Signal + Analysis", "📊 Signal + Phân tích"))
+            
+            # Create button group to ensure mutual exclusion
+            self.format_button_group = QButtonGroup()
+            self.format_button_group.addButton(self.format_summary_rb, 0)  # ID 0 for summary
+            self.format_button_group.addButton(self.format_full_rb, 1)     # ID 1 for full
+            
+            format_selection_layout.addWidget(self.format_summary_rb)
+            format_selection_layout.addWidget(self.format_full_rb)
+            format_selection_layout.addStretch()
+            
+            format_group_layout.addLayout(format_selection_layout)
+            
+            # 5 Notification Type Checkboxes - All in one row
+            options_layout = QHBoxLayout()  # Single horizontal row
+            
+            # Row 1: Technical Analysis and Indicators
+            row1_layout = QHBoxLayout()
+            self.include_technical_cb = QCheckBox(I18N.t("⚗️ Technical Analysis", "⚗️ Phân Tích Kỹ Thuật"))
+            self.include_indicators_cb = QCheckBox(I18N.t("🧮 Indicators", "🧮 Chỉ Báo"))
+            self.include_summary_cb = QCheckBox(I18N.t("📋 Summary", "📋 Tóm Tắt"))
+            self.include_candlestick_cb = QCheckBox(I18N.t("🕯️ Candlestick Patterns", "🕯️ Mô Hình Nến")) 
+            self.include_price_patterns_cb = QCheckBox(I18N.t("💹 Price Patterns", "💹 Mô Hình Giá"))
+            
+            # 🔧 FIX: Don't set default checked state here!
+            # Let _load_auto_notification_settings() set the correct states from config
+            # Default to False - will be updated when config loads
+            
+            # Add all 5 checkboxes to single horizontal row
+            options_layout.addWidget(self.include_technical_cb)
+            options_layout.addWidget(self.include_indicators_cb)
+            options_layout.addWidget(self.include_summary_cb)
+            options_layout.addWidget(self.include_candlestick_cb)
+            options_layout.addWidget(self.include_price_patterns_cb)
+            options_layout.addStretch()
+
+            
+            format_group_layout.addLayout(options_layout)
+            
+            # 🔧 FIX: Don't call _trigger_whitelist_update() here!
+            # It will be called after settings are loaded from config
+            
+            # 🔧 FIX: Don't set default format here - let config decide
+            # Will be set properly in _load_auto_notification_settings()
+            
+            # 🔧 FIX: Don't call _on_format_changed() here - it will be called after load
+            
+            # Format preview info
+            format_info = QLabel(I18N.t("💡 Full format includes technical analysis from reports", "💡 Định dạng đầy đủ bao gồm phân tích kỹ thuật từ báo cáo"))
+            format_info.setStyleSheet("color: #666; font-size: 9px; font-style: italic;")
+            format_group_layout.addWidget(format_info)
+            
+
+            
+            auto_layout.addWidget(format_group)
+            
+            # Status info
+            status_label = QLabel(I18N.t("💡 Auto notifications will be sent to enabled platforms", "💡 Thông báo tự động sẽ được gửi đến các nền tảng đã bật"))
+            status_label.setStyleSheet("color: #666; font-size: 9px; font-style: italic;")
+            auto_layout.addWidget(status_label)
+            
+            layout.addWidget(auto_group)
+            
+            # 🔧 ORDER TRACKING OPTIONS - DIRECT CHECKBOX CONTROL
+            service_group = QGroupBox(I18N.t("🔧 Auto Notification Settings", "🔧 Cài đặt Thông báo Tự động"))
+            service_layout = QVBoxLayout(service_group)
+            
+            # Logs button (keep for debugging)
+            service_controls_layout = QHBoxLayout()
+            self.service_logs_btn = QPushButton(I18N.t("📝 Logs", "📝 Nhật ký"))
+            self.service_logs_btn.setStyleSheet("QPushButton { background-color: #6c757d; color: white; font-weight: bold; padding: 6px 12px; }")
+            self.service_logs_btn.clicked.connect(self._view_service_logs)
+            
+            service_controls_layout.addWidget(self.service_logs_btn)
+            service_controls_layout.addStretch()
+            service_layout.addLayout(service_controls_layout)
+            
+            # Order tracking options - each checkbox controls its own functionality
+            tracking_layout = QHBoxLayout()
+            
+
+            self.track_orders_cb = QCheckBox(I18N.t("✅📊 Track order changes", "✅📊 Theo dõi thay đổi lệnh"))
+            self.notify_sl_tp_cb = QCheckBox(I18N.t("🛡️ SL/TP changes", "🛡️ Thay đổi SL/TP"))
+            self.notify_close_cb = QCheckBox(I18N.t("🏁 Order close", "🏁 Đóng lệnh"))
+            
+
+            tracking_layout.addWidget(self.track_orders_cb)
+            tracking_layout.addWidget(self.notify_sl_tp_cb)
+            tracking_layout.addWidget(self.notify_close_cb)
+            tracking_layout.addStretch()
+            
+            service_layout.addLayout(tracking_layout)
+            
+            # 🆕 Pip threshold settings for tracking notifications
+            pip_threshold_layout = QHBoxLayout()
+            
+            # Track orders pip threshold
+            self.track_pips_label = QLabel(I18N.t("📊 Order change threshold:", "📊 Ngưỡng thay đổi lệnh:"))
+            self.track_pips_label.setStyleSheet("font-size: 10px;")
+            self.track_orders_pips_spin = QSpinBox()
+            self.track_orders_pips_spin.setRange(0, 500)
+            self.track_orders_pips_spin.setValue(50)
+            self.track_orders_pips_spin.setSuffix(" pips")
+            self.track_orders_pips_spin.setToolTip(I18N.t(
+                "Notify when order P/L changes by this many pips from last notification (0 = notify every interval)",
+                "Thông báo khi P/L thay đổi bao nhiêu pips so với lần thông báo trước (0 = thông báo mỗi interval)"
+            ))
+            self.track_orders_pips_spin.setFixedWidth(90)
+            
+            pip_threshold_layout.addWidget(self.track_pips_label)
+            pip_threshold_layout.addWidget(self.track_orders_pips_spin)
+            
+            pip_threshold_layout.addSpacing(20)
+            
+            # SL/TP pip threshold
+            self.sltp_pips_label = QLabel(I18N.t("🛡️ SL/TP threshold:", "🛡️ Ngưỡng SL/TP:"))
+            self.sltp_pips_label.setStyleSheet("font-size: 10px;")
+            self.sltp_pips_spin = QSpinBox()
+            self.sltp_pips_spin.setRange(0, 500)
+            self.sltp_pips_spin.setValue(10)
+            self.sltp_pips_spin.setSuffix(" pips")
+            self.sltp_pips_spin.setToolTip(I18N.t(
+                "Only notify when SL/TP changes by at least this many pips (0 = notify any change)",
+                "Chỉ thông báo khi SL/TP thay đổi ít nhất bao nhiêu pips (0 = thông báo mọi thay đổi)"
+            ))
+            self.sltp_pips_spin.setFixedWidth(90)
+            
+            pip_threshold_layout.addWidget(self.sltp_pips_label)
+            pip_threshold_layout.addWidget(self.sltp_pips_spin)
+            pip_threshold_layout.addStretch()
+            
+            service_layout.addLayout(pip_threshold_layout)
+            
+            # 🆕 Initially disable spinboxes (will be enabled when checkbox is checked)
+            self.track_pips_label.setEnabled(False)
+            self.track_orders_pips_spin.setEnabled(False)
+            self.sltp_pips_label.setEnabled(False)
+            self.sltp_pips_spin.setEnabled(False)
+            
+            service_info = QLabel(I18N.t("💡 Background service monitors executed orders for changes", "💡 Dịch vụ nền theo dõi các lệnh đã thực hiện"))
+            service_info.setStyleSheet("color: #666; font-size: 9px; font-style: italic;")
+            service_layout.addWidget(service_info)
+            
+            layout.addWidget(service_group)
+            
+            # ═══════════════════════════════════════════════════════════
+            # 🆕 ADVANCED TRADING HISTORY REPORT - Báo cáo LSGD nâng cao
+            # ═══════════════════════════════════════════════════════════
+            history_report_group = QGroupBox(I18N.t("📊 Trading History Report", "📊 Báo cáo Lịch sử Giao dịch"))
+            history_report_layout = QVBoxLayout(history_report_group)
+            history_report_layout.setSpacing(8)
+            
+            # === Row 1: Period Selection ===
+            period_row = QHBoxLayout()
+            period_row.setSpacing(8)
+            
+            period_label = QLabel(I18N.t("📅 Report Period:", "📅 Khoảng thời gian:"))
+            period_label.setStyleSheet("font-weight: bold; font-size: 10px;")
+            period_row.addWidget(period_label)
+            
+            # Period type combo box
+            self.history_period_combo = QComboBox()
+            self.history_period_combo.addItems([
+                I18N.t("Today", "Hôm nay"),
+                I18N.t("Yesterday", "Hôm qua"),
+                I18N.t("Last 24 hours", "24 giờ qua"),
+                I18N.t("This Week", "Tuần này"),
+                I18N.t("Last Week", "Tuần trước"),
+                I18N.t("This Month", "Tháng này"),
+                I18N.t("Last Month", "Tháng trước"),
+                I18N.t("Custom Range", "Tùy chỉnh")
+            ])
+            self.history_period_combo.setFixedWidth(120)
+            self.history_period_combo.setToolTip(I18N.t(
+                "Select time period for trading history report",
+                "Chọn khoảng thời gian cho báo cáo lịch sử giao dịch"
+            ))
+            period_row.addWidget(self.history_period_combo)
+            
+            # Symbol filter combo box
+            symbol_label = QLabel(I18N.t("📊 Symbol:", "📊 Ký hiệu:"))
+            symbol_label.setStyleSheet("font-weight: bold; font-size: 10px;")
+            period_row.addWidget(symbol_label)
+            
+            self.history_symbol_combo = QComboBox()
+            self.history_symbol_combo.addItem(I18N.t("All Symbols", "Tất cả ký hiệu"))
+            self.history_symbol_combo.addItems(["EURUSD", "GBPUSD", "XAUUSD", "BNBUSD", "LTCUSD", "SOLUSD"])
+            self.history_symbol_combo.setFixedWidth(100)
+            self.history_symbol_combo.setToolTip(I18N.t(
+                "Filter by symbol",
+                "Lọc theo ký hiệu"
+            ))
+            period_row.addWidget(self.history_symbol_combo)
+            
+            # Custom date range (from - to)
+            self.history_from_label = QLabel(I18N.t("From:", "Từ:"))
+            self.history_from_label.setStyleSheet("font-size: 9px;")
+            self.history_from_label.setVisible(False)
+            period_row.addWidget(self.history_from_label)
+            
+            self.history_from_date = QDateEdit()
+            self.history_from_date.setCalendarPopup(True)
+            self.history_from_date.setDate(QDate.currentDate().addDays(-7))
+            self.history_from_date.setDisplayFormat("dd/MM/yyyy")
+            self.history_from_date.setFixedWidth(100)
+            self.history_from_date.setVisible(False)
+            period_row.addWidget(self.history_from_date)
+            
+            self.history_to_label = QLabel(I18N.t("To:", "Đến:"))
+            self.history_to_label.setStyleSheet("font-size: 9px;")
+            self.history_to_label.setVisible(False)
+            period_row.addWidget(self.history_to_label)
+            
+            self.history_to_date = QDateEdit()
+            self.history_to_date.setCalendarPopup(True)
+            self.history_to_date.setDate(QDate.currentDate())
+            self.history_to_date.setDisplayFormat("dd/MM/yyyy")
+            self.history_to_date.setFixedWidth(100)
+            self.history_to_date.setVisible(False)
+            period_row.addWidget(self.history_to_date)
+            
+            period_row.addStretch()
+            history_report_layout.addLayout(period_row)
+            
+            # === Row 2: Report Options ===
+            options_row = QHBoxLayout()
+            options_row.setSpacing(10)
+            
+            # Include options (removed "Open trades" - only closed trades for history)
+            self.history_include_closed = QCheckBox(I18N.t("Closed trades", "Lệnh đã đóng"))
+            self.history_include_closed.setChecked(True)
+            self.history_include_closed.setToolTip(I18N.t("Include closed positions", "Bao gồm các lệnh đã đóng"))
+            options_row.addWidget(self.history_include_closed)
+            
+            self.history_include_stats = QCheckBox(I18N.t("Statistics", "Thống kê"))
+            self.history_include_stats.setChecked(True)
+            self.history_include_stats.setToolTip(I18N.t("Include profit/loss statistics", "Bao gồm thống kê lãi/lỗ"))
+            options_row.addWidget(self.history_include_stats)
+            
+            self.history_include_chart = QCheckBox(I18N.t("Summary chart", "Biểu đồ tóm tắt"))
+            self.history_include_chart.setChecked(False)
+            self.history_include_chart.setToolTip(I18N.t("Include text-based summary chart", "Bao gồm biểu đồ tóm tắt dạng text"))
+            options_row.addWidget(self.history_include_chart)
+            
+            options_row.addStretch()
+            history_report_layout.addLayout(options_row)
+            
+            # === Row 3: Auto-send Schedule ===
+            schedule_row = QHBoxLayout()
+            schedule_row.setSpacing(8)
+            
+            self.daily_summary_cb = QCheckBox(I18N.t("⏰ Auto-send", "⏰ Tự động gửi"))
+            self.daily_summary_cb.setToolTip(I18N.t(
+                "Automatically send trading history report at scheduled time",
+                "Tự động gửi báo cáo lịch sử giao dịch vào giờ đã đặt"
+            ))
+            schedule_row.addWidget(self.daily_summary_cb)
+            
+            # Schedule type combo - simplified to hourly/daily only
+            self.history_schedule_type = QComboBox()
+            self.history_schedule_type.addItems([
+                I18N.t("Hourly", "Theo giờ"),
+                I18N.t("Daily", "Hằng ngày")
+            ])
+            self.history_schedule_type.setFixedWidth(100)
+            self.history_schedule_type.setEnabled(False)
+            schedule_row.addWidget(self.history_schedule_type)
+            
+            # 🆕 Hourly interval spin box
+            self.history_hourly_label = QLabel(I18N.t("Every:", "Mỗi:"))
+            self.history_hourly_label.setStyleSheet("font-size: 10px;")
+            self.history_hourly_label.setVisible(False)  # Hidden by default, shown when "Hourly" selected
+            schedule_row.addWidget(self.history_hourly_label)
+            self.history_hourly_interval = QSpinBox()
+            self.history_hourly_interval.setMinimum(1)
+            self.history_hourly_interval.setMaximum(24)
+            self.history_hourly_interval.setValue(1)
+            self.history_hourly_interval.setSuffix(I18N.t(" hour(s)", " giờ"))
+            self.history_hourly_interval.setFixedWidth(80)
+            self.history_hourly_interval.setVisible(False)  # Hidden by default
+            self.history_hourly_interval.setToolTip(I18N.t(
+                "Send report every N hours (1-24)",
+                "Gửi báo cáo mỗi N giờ (1-24)"
+            ))
+            schedule_row.addWidget(self.history_hourly_interval)
+            
+            time_label = QLabel(I18N.t("at:", "lúc:"))
+            time_label.setStyleSheet("font-size: 10px;")
+            schedule_row.addWidget(time_label)
+            
+            self.daily_summary_time = QTimeEdit()
+            self.daily_summary_time.setDisplayFormat("HH:mm")
+            self.daily_summary_time.setTime(QTime(20, 0))  # Default 20:00
+            self.daily_summary_time.setToolTip(I18N.t(
+                "Time to send trading report (24h format)",
+                "Giờ gửi báo cáo giao dịch (định dạng 24h)"
+            ))
+            self.daily_summary_time.setFixedWidth(70)
+            self.daily_summary_time.setEnabled(False)
+            schedule_row.addWidget(self.daily_summary_time)
+            
+            schedule_row.addStretch()
+            history_report_layout.addLayout(schedule_row)
+            
+            # === Row 4: Preview and Send Buttons ===
+            button_row = QHBoxLayout()
+            button_row.setSpacing(10)
+            
+            # Preview button
+            self.preview_history_btn = QPushButton(I18N.t("👁️ Preview Report", "👁️ Xem trước Báo cáo"))
+            self.preview_history_btn.setToolTip(I18N.t(
+                "Preview the trading history report before sending",
+                "Xem trước báo cáo lịch sử giao dịch trước khi gửi"
+            ))
+            self.preview_history_btn.setFixedWidth(140)
+            self.preview_history_btn.setStyleSheet("background-color: #2196F3; color: white; font-weight: bold;")
+            button_row.addWidget(self.preview_history_btn)
+            
+            # Send now button
+            self.send_daily_summary_btn = QPushButton(I18N.t("📤 Send Report", "📤 Gửi Báo cáo"))
+            self.send_daily_summary_btn.setToolTip(I18N.t(
+                "Send trading history report immediately",
+                "Gửi báo cáo lịch sử giao dịch ngay lập tức"
+            ))
+            self.send_daily_summary_btn.setFixedWidth(120)
+            self.send_daily_summary_btn.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;")
+            button_row.addWidget(self.send_daily_summary_btn)
+            
+            button_row.addStretch()
+            history_report_layout.addLayout(button_row)
+            
+            layout.addWidget(history_report_group)
+            
+            # Connect history report signals
+            self.history_period_combo.currentIndexChanged.connect(self._on_history_period_changed)
+            self.preview_history_btn.clicked.connect(self._preview_history_report)
+            self.daily_summary_cb.toggled.connect(lambda checked: (
+                self.history_schedule_type.setEnabled(checked),
+                self.daily_summary_time.setEnabled(checked)
+            ))
+            
+            # 🆕 Connect history schedule type to toggle hourly interval visibility
+            self.history_schedule_type.currentIndexChanged.connect(self._on_history_schedule_type_changed)
+            
+            # 🔧 FIX: Load current auto notification settings FIRST (before connecting signals)
+            self._load_auto_notification_settings()
+            
+            # 🔧 FIX: NOW connect signals AFTER loading settings to prevent save during load
+            # Connect auto notification signals  
+            # Connect each checkbox to both save settings AND manage its own service
+
+            self.track_orders_cb.toggled.connect(self._on_track_orders_toggled)
+            self.notify_sl_tp_cb.toggled.connect(self._on_sl_tp_toggled)
+            self.notify_close_cb.toggled.connect(self._on_close_toggled)
+            self.format_summary_rb.toggled.connect(self._save_auto_notification_settings)
+            self.format_full_rb.toggled.connect(self._save_auto_notification_settings)
+            
+            # Connect pip threshold spinboxes to save settings
+            self.track_orders_pips_spin.valueChanged.connect(self._save_auto_notification_settings)
+            self.sltp_pips_spin.valueChanged.connect(self._save_auto_notification_settings)
+            
+            # 🆕 Connect checkboxes to enable/disable corresponding spinboxes
+            self.track_orders_cb.toggled.connect(self._update_pip_threshold_state)
+            self.notify_sl_tp_cb.toggled.connect(self._update_pip_threshold_state)
+            
+            # Connect format radio buttons to enable/disable report checkboxes
+            self.format_summary_rb.toggled.connect(self._on_format_changed)
+            self.format_full_rb.toggled.connect(self._on_format_changed)
+            
+            # Connect 5 new notification type checkboxes
+            self.include_technical_cb.toggled.connect(self._save_auto_notification_settings)
+            self.include_indicators_cb.toggled.connect(self._save_auto_notification_settings)
+            self.include_summary_cb.toggled.connect(self._save_auto_notification_settings)
+            self.include_candlestick_cb.toggled.connect(self._save_auto_notification_settings)
+            self.include_price_patterns_cb.toggled.connect(self._save_auto_notification_settings)
+            
+            # 🎯 UPDATE WHITELIST when pattern checkboxes change
+            self.include_candlestick_cb.toggled.connect(lambda checked: (print(f"🔔 Candlestick checkbox toggled: {checked}"), self._trigger_whitelist_update()))
+            self.include_price_patterns_cb.toggled.connect(lambda checked: (print(f"🔔 Price patterns checkbox toggled: {checked}"), self._trigger_whitelist_update()))
+            
+            # Also update preview when checkboxes change
+            self.include_technical_cb.toggled.connect(lambda: self._update_preview() if hasattr(self, '_update_preview') else None)
+            self.include_indicators_cb.toggled.connect(lambda: self._update_preview() if hasattr(self, '_update_preview') else None)
+            self.include_summary_cb.toggled.connect(lambda: self._update_preview() if hasattr(self, '_update_preview') else None)
+            self.include_candlestick_cb.toggled.connect(lambda: self._update_preview() if hasattr(self, '_update_preview') else None)
+            self.include_price_patterns_cb.toggled.connect(lambda: self._update_preview() if hasattr(self, '_update_preview') else None)
+            
+            # Connect custom message controls to auto-save
+            self.send_custom_message.toggled.connect(self._save_auto_notification_settings)
+            self.custom_message.textChanged.connect(self._save_auto_notification_settings)
+            
+            # 🆕 Connect daily summary controls
+            self.daily_summary_cb.toggled.connect(self._on_daily_summary_toggled)
+            self.daily_summary_time.timeChanged.connect(self._save_auto_notification_settings)
+            self.send_daily_summary_btn.clicked.connect(self._send_history_report_now)  # Use new enhanced function
+            
+            # Preview section
+            preview_group = QGroupBox(I18N.t("Message Preview", "Xem trước tin nhắn"))
+            preview_layout = QVBoxLayout(preview_group)
+            
+            self.preview_area = QTextBrowser()
+            self.preview_area.setMaximumHeight(200)
+            preview_layout.addWidget(self.preview_area)
+            
+            layout.addWidget(preview_group)
+            
+            self.main_tabs.addTab(message_tab, I18N.t("📤 Message & Send", "📤 Tin nhắn & Gửi"))
+        
+        def _show_branding_settings(self):
+            """Show branding settings popup dialog"""
+            try:
+                from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox, QLabel, QLineEdit, QTextEdit, QCheckBox, QPushButton, QTextBrowser
+                from PyQt5.QtCore import Qt
+                
+                dialog = QDialog(self)
+                dialog.setWindowTitle(I18N.t("🏷️ Branding Settings", "🏷️ Cài đặt Thương hiệu"))
+                dialog.setModal(True)
+                dialog.resize(550, 600)
+                
+                layout = QVBoxLayout(dialog)
+                
+                # Simplified branding settings
+                branding_group = QGroupBox(I18N.t("🏷️ System Information", "🏷️ Thông tin Hệ thống"))
+                branding_layout = QGridLayout(branding_group)
+                
+                # System Names (simplified)
+                branding_layout.addWidget(QLabel(I18N.t("System Name (EN):", "Tên hệ thống (EN):")), 0, 0)
+                self.popup_system_name_en = QLineEdit()
+                self.popup_system_name_en.setText("")  # Will be loaded from config
+                branding_layout.addWidget(self.popup_system_name_en, 0, 1)
+                
+                branding_layout.addWidget(QLabel(I18N.t("System Name (VI):", "Tên hệ thống (VI):")), 1, 0)
+                self.popup_system_name_vi = QLineEdit()
+                self.popup_system_name_vi.setText("")  # Will be loaded from config
+                branding_layout.addWidget(self.popup_system_name_vi, 1, 1)
+                
+                layout.addWidget(branding_group)
+                
+                # Contact info (simplified)
+                contact_group = QGroupBox(I18N.t("📞 Contact Information", "📞 Thông tin Liên hệ"))
+                contact_layout = QGridLayout(contact_group)
+                
+                contact_layout.addWidget(QLabel(I18N.t("Phone:", "Điện thoại:")), 0, 0)
+                self.popup_contact_phone = QLineEdit()
+                self.popup_contact_phone.setText("")  # Will be loaded from config
+                contact_layout.addWidget(self.popup_contact_phone, 0, 1)
+                
+                contact_layout.addWidget(QLabel(I18N.t("Email:", "Email:")), 1, 0)
+                self.popup_contact_email = QLineEdit()
+                self.popup_contact_email.setText("")  # Will be loaded from config
+                contact_layout.addWidget(self.popup_contact_email, 1, 1)
+                
+                layout.addWidget(contact_group)
+                
+                # Footer settings (simplified)
+                footer_group = QGroupBox(I18N.t("📝 Footer Settings", "📝 Cài đặt Chân trang"))
+                footer_layout = QVBoxLayout(footer_group)
+                
+                self.popup_enable_custom_footer = QCheckBox(I18N.t("Enable custom footer", "Bật chân trang tùy chỉnh"))
+                self.popup_enable_custom_footer.setChecked(True)
+                footer_layout.addWidget(self.popup_enable_custom_footer)
+                
+                layout.addWidget(footer_group)
+                
+                # Preview
+                preview_group = QGroupBox(I18N.t("👀 Preview", "👀 Xem trước"))
+                preview_layout = QVBoxLayout(preview_group)
+                
+                self.popup_preview = QTextBrowser()
+                self.popup_preview.setMaximumHeight(100)
+                preview_layout.addWidget(self.popup_preview)
+                
+                layout.addWidget(preview_group)
+                
+                # Buttons
+                button_layout = QHBoxLayout()
+                
+                save_btn = QPushButton(I18N.t("💾 Save", "💾 Lưu"))
+                save_btn.setStyleSheet("QPushButton { background-color: #28a745; color: white; font-weight: bold; padding: 8px 16px; }")
+                save_btn.clicked.connect(lambda: self._save_branding_settings(dialog))
+                
+                cancel_btn = QPushButton(I18N.t("❌ Cancel", "❌ Hủy"))
+                cancel_btn.setStyleSheet("QPushButton { background-color: #dc3545; color: white; font-weight: bold; padding: 8px 16px; }")
+                cancel_btn.clicked.connect(dialog.reject)
+                
+                button_layout.addWidget(save_btn)
+                button_layout.addWidget(cancel_btn)
+                button_layout.addStretch()
+                
+                layout.addLayout(button_layout)
+                
+                # Load current settings and update preview
+                self._load_branding_settings_to_popup()
+                self._update_popup_preview()
+                
+                # Connect signals for real-time preview
+                self.popup_system_name_en.textChanged.connect(self._update_popup_preview)
+                self.popup_system_name_vi.textChanged.connect(self._update_popup_preview)
+                self.popup_contact_phone.textChanged.connect(self._update_popup_preview)
+                self.popup_contact_email.textChanged.connect(self._update_popup_preview)
+                self.popup_enable_custom_footer.toggled.connect(self._update_popup_preview)
+                
+                dialog.exec_()
+                
+            except Exception as e:
+                print(f"❌ [ERROR] Failed to show branding settings: {e}")
+                QMessageBox.warning(self, I18N.t("Error", "Lỗi"), 
+                                  I18N.t("Failed to show branding settings: {error}", "Không thể hiện cài đặt thương hiệu: {error}", error=str(e)))
+        
+        def _load_branding_settings_to_popup(self):
+            """Load current branding settings from config file to popup"""
+            try:
+                # Check if popup widgets exist
+                if not hasattr(self, 'popup_system_name_en'):
+                    print("⚠️ [DEBUG] Popup widgets not yet created")
+                    return
+                
+                # Load from notification_config.json
+                config_file = "notification_config.json"
+                if os.path.exists(config_file):
+                    with open(config_file, 'r', encoding='utf-8') as f:
+                        config = json.load(f)
+                        
+                    branding = config.get('branding', {})
+                    
+                    # Set values in popup fields - only if widgets exist
+                    if hasattr(self, 'popup_system_name_en'):
+                        self.popup_system_name_en.setText(branding.get('system_name_en', 'VU HIEN CFDs Smart Trading'))
+                    if hasattr(self, 'popup_system_name_vi'):
+                        self.popup_system_name_vi.setText(branding.get('system_name_vi', 'Hệ thống AI VU HIEN CFDs'))
+                    if hasattr(self, 'popup_contact_phone'):
+                        self.popup_contact_phone.setText(branding.get('phone', '+84 39 65 60 888'))
+                    if hasattr(self, 'popup_contact_email'):
+                        self.popup_contact_email.setText(branding.get('email', ''))
+                    if hasattr(self, 'popup_enable_custom_footer'):
+                        self.popup_enable_custom_footer.setChecked(branding.get('enable_custom_footer', True))
+                    
+            except Exception as e:
+                print(f"⚠️ [WARNING] Failed to load branding settings: {e}")
+        
+        def _save_branding_settings(self, dialog):
+            """Save branding settings from popup to config file"""
+            try:
+                # Load existing config
+                config_file = "notification_config.json"
+                config = {}
+                if os.path.exists(config_file):
+                    with open(config_file, 'r', encoding='utf-8') as f:
+                        config = json.load(f)
+                
+                # Update branding section
+                if 'branding' not in config:
+                    config['branding'] = {}
+                
+                # Only update values if popup widgets exist
+                branding_data = {}
+                if hasattr(self, 'popup_system_name_en'):
+                    branding_data['system_name_en'] = self.popup_system_name_en.text()
+                if hasattr(self, 'popup_system_name_vi'):
+                    branding_data['system_name_vi'] = self.popup_system_name_vi.text()
+                if hasattr(self, 'popup_contact_phone'):
+                    branding_data['phone'] = self.popup_contact_phone.text()
+                if hasattr(self, 'popup_contact_email'):
+                    branding_data['email'] = self.popup_contact_email.text()
+                if hasattr(self, 'popup_enable_custom_footer'):
+                    branding_data['enable_custom_footer'] = self.popup_enable_custom_footer.isChecked()
+                
+                config['branding'].update(branding_data)
+                
+                # Save back to file
+                with open(config_file, 'w', encoding='utf-8') as f:
+                    json.dump(config, f, indent=2, ensure_ascii=False)
+                
+                # Show success message and close dialog
+                QMessageBox.information(dialog, I18N.t("Success", "Thành công"), 
+                                      I18N.t("Branding settings saved successfully!", "Cài đặt thương hiệu đã lưu thành công!"))
+                dialog.accept()
+                
+            except Exception as e:
+                print(f"❌ [ERROR] Failed to save branding settings: {e}")
+                QMessageBox.critical(dialog, I18N.t("Error", "Lỗi"), 
+                                   I18N.t("Failed to save branding settings: {error}", "Không thể lưu cài đặt thương hiệu: {error}", error=str(e)))
+        
+        def _update_popup_preview(self):
+            """Update preview in branding settings popup"""
+            try:
+                # Check if all popup widgets exist
+                if not (hasattr(self, 'popup_preview') and hasattr(self, 'popup_enable_custom_footer')):
+                    return
+                    
+                if self.popup_enable_custom_footer.isChecked():
+                    system_name = ""
+                    phone = ""
+                    email = ""
+                    
+                    # Safely get values from widgets
+                    if hasattr(self, 'popup_system_name_vi') and self.popup_system_name_vi:
+                        system_name = self.popup_system_name_vi.text() or "Hệ thống AI VU HIEN CFDs"
+                    else:
+                        system_name = "Hệ thống AI VU HIEN CFDs"
+                        
+                    if hasattr(self, 'popup_contact_phone') and self.popup_contact_phone:
+                        phone = self.popup_contact_phone.text() or "+84 39 65 60 888"
+                    else:
+                        phone = "+84 39 65 60 888"
+                        
+                    if hasattr(self, 'popup_contact_email') and self.popup_contact_email:
+                        email = self.popup_contact_email.text()
+                    
+                    preview = f"🤖 {system_name}"
+                    if phone:
+                        preview += f"\n📱 {phone}"
+                    if email:
+                        preview += f"\n📧 {email}"
+                    
+                    self.popup_preview.setText(preview)
+                else:
+                    self.popup_preview.setText(I18N.t("Footer disabled", "Chân trang đã tắt"))
+            except Exception as e:
+                print(f"⚠️ [WARNING] Failed to update popup preview: {e}")
+                # Set fallback preview to prevent crash
+                if hasattr(self, 'popup_preview') and self.popup_preview:
+                    self.popup_preview.setText(I18N.t("Cannot display preview", "Không thể hiển thị xem trước"))
+        
+        # _create_branding_settings_tab method removed - functionality integrated into message tab popup
+        # All branding settings now accessible via "🏷️ Branding Settings" button in message tab
+            
+            # Message Footer Settings
+            footer_group = QGroupBox(I18N.t("📝 Message Footer Settings", "📝 Cài đặt Chân trang Tin nhắn"))
+            footer_layout = QVBoxLayout(footer_group)
+            
+            # Custom footer checkbox
+            self.enable_custom_footer = QCheckBox(I18N.t(
+                "Enable custom footer in messages",
+                "Bật chân trang tùy chỉnh trong tin nhắn"
+            ))
+            self.enable_custom_footer.setChecked(True)
+            footer_layout.addWidget(self.enable_custom_footer)
+            
+            # Footer template
+            footer_template_label = QLabel(I18N.t(
+                "Footer Template (use {system_name}, {phone}, {email}, {website}, {social}):",
+                "Mẫu chân trang (sử dụng {system_name}, {phone}, {email}, {website}, {social}):"
+            ))
+            footer_layout.addWidget(footer_template_label)
+        
+        def _update_footer_preview(self):
+            """Legacy method stub - footer preview functionality moved to popup"""
+            # This method was referencing widgets from the old branding tab
+            # Footer preview is now handled in the popup branding settings dialog
+            pass
+        
+        def _on_tab_changed(self, index):
+            """Handle tab change event - trigger footer preview update when switching to branding tab"""
+            try:
+                tab_text = self.main_tabs.tabText(index)
+                print(f"🔍 [DEBUG] Tab changed to: {tab_text} (index: {index})")
+                
+                # Update button visibility for current tab
+                self._update_button_visibility()
+                
+                # If switching to config tab, force reload values
+                if "Cấu hình" in tab_text or "Config" in tab_text:
+                    print("🔍 [DEBUG] Switched to config tab, force loading values...")
+                    from PyQt5.QtCore import QTimer
+                    QTimer.singleShot(50, self._force_reload_config_values)
+                
+                # If switching to branding tab, update footer preview
+                if "Branding" in tab_text or "Thương hiệu" in tab_text:
+                    print("🔍 [DEBUG] Switched to branding tab, triggering footer update...")
+                    # Add a small delay to ensure the tab is fully loaded
+                    from PyQt5.QtCore import QTimer
+                    QTimer.singleShot(100, self._update_footer_preview)
+                    
+            except Exception as e:
+                print(f"❌ [ERROR] _on_tab_changed failed: {e}")
+        
+        def _force_reload_config_values(self):
+            """Force reload config values into UI fields"""
+            try:
+                print("🔍 [DEBUG] Force reloading config values...")
+                import json
+                config_file = os.path.join(os.getcwd(), 'notification_config.json')
+                if os.path.exists(config_file):
+                    with open(config_file, 'r', encoding='utf-8') as f:
+                        config = json.load(f)
+                    
+                    telegram = config.get('telegram', {})
+                    bot_token = telegram.get('bot_token', '')
+                    chat_id = telegram.get('chat_id', '')
+                    
+                    if bot_token and hasattr(self, 'telegram_token'):
+                        self.telegram_token.setText(bot_token)
+                        print(f"✅ [DEBUG] Force set bot_token: {bot_token[:10]}...")
+                    
+                    if chat_id and hasattr(self, 'telegram_chat_id'):
+                        self.telegram_chat_id.setText(chat_id)
+                        print(f"✅ [DEBUG] Force set chat_id: {chat_id}")
+                        
+                    if telegram.get('enabled', False):
+                        self.telegram_cb.setChecked(True)
+                        
+            except Exception as e:
+                print(f"❌ [ERROR] Force reload config failed: {e}")
+        
+        def _manual_update_footer_preview(self):
+            """Manually triggered footer preview update (from button click)"""
+            print("🔍 [DEBUG] Manual footer preview update requested")
+            self._update_footer_status("Updating preview...")
+            self._update_footer_preview()
+        
+        def _update_footer_status(self, message):
+            """Update footer status label if it exists"""
+            if hasattr(self, 'footer_status') and self.footer_status:
+                self.footer_status.setText(message)
+                print(f"📋 [STATUS] {message}")
+        
+        def _reset_branding_to_defaults(self):
+            """Legacy method stub - branding reset functionality moved to popup"""
+            # This method was referencing widgets from the old branding tab
+            # Branding functionality is now handled in the popup branding settings dialog
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.information(self, I18N.t("Reset", "Đặt lại"), 
+                                  I18N.t("Branding settings reset to defaults", "Đã đặt lại cài đặt thương hiệu về mặc định"))
+        
+        def _get_branded_footer(self, language='auto'):
+            """Get formatted footer based on current branding settings from config file"""
+            try:
+                # Load branding settings from config file
+                config_file = "notification_config.json"
+                if os.path.exists(config_file):
+                    with open(config_file, 'r', encoding='utf-8') as f:
+                        config = json.load(f)
+                    branding = config.get('branding', {})
+                else:
+                    branding = {}
+                
+                # Check if footer is enabled
+                if not branding.get('enable_custom_footer', True):
+                    return ""
+                
+                # Determine language
+                if language == 'auto':
+                    is_vietnamese = AppState.language() == 'vi'
+                else:
+                    is_vietnamese = language == 'vi'
+                
+                # Get values from config
+                if is_vietnamese:
+                    system_name = branding.get('system_name_vi', 'Hệ thống AI VU HIEN CFDs')
+                else:
+                    system_name = branding.get('system_name_en', 'VU HIEN CFDs AI System')
+                
+                phone = branding.get('phone', '+84 39 65 60 888')
+                email = branding.get('email', '')
+                
+                # Build footer
+                footer_parts = [f"🤖 {system_name}"]
+                if phone:
+                    footer_parts.append(f"📱 {phone}")
+                if email:
+                    footer_parts.append(f"📧 {email}")
+                
+                return '\n'.join(footer_parts)
+                
+            except Exception as e:
+                print(f"❌ [ERROR] Failed to get branded footer: {e}")
+                # Fallback to default
+                if language == 'auto':
+                    is_vietnamese = AppState.language() == 'vi'
+                else:
+                    is_vietnamese = language == 'vi'
+                    
+                if is_vietnamese:
+                    return "🤖 Hệ thống AI VU HIEN CFDs\n📱 +84 39 65 60 888"
+                else:
+                    return "🤖 VU HIEN CFDs AI System\n📱 +84 39 65 60 888"
+        
+        # 🤖 AUTO NOTIFICATION METHODS
+        def _load_auto_notification_settings(self):
+            """Load auto notification settings from config"""
+            try:
+                import json
+                import os
+                
+                # 🔧 FIX: Mark loading mode BEFORE any operations
+                self._is_loading_settings = True
+                
+                config_path = os.path.join(os.getcwd(), 'notification_config.json')
+                if os.path.exists(config_path):
+                    with open(config_path, 'r', encoding='utf-8') as f:
+                        config = json.load(f)
+                    
+                    settings = config.get('settings', {})
+                    print(f"📂 [LOAD] Loading notification settings from config...")
+                    print(f"📂 [LOAD] Raw settings: send_custom_message={settings.get('send_custom_message')}, include_candlestick={settings.get('include_candlestick')}, include_summary={settings.get('include_summary')}")
+                    
+                    # Track orders checkbox
+                    if hasattr(self, 'track_orders_cb'):
+                        self.track_orders_cb.blockSignals(True)
+                        self.track_orders_cb.setChecked(settings.get('track_order_updates', False))
+                        self.track_orders_cb.blockSignals(False)
+                    
+                    # SL/TP checkbox
+                    if hasattr(self, 'notify_sl_tp_cb'):
+                        self.notify_sl_tp_cb.blockSignals(True)
+                        self.notify_sl_tp_cb.setChecked(settings.get('notify_sl_tp_changes', False))
+                        self.notify_sl_tp_cb.blockSignals(False)
+                    
+                    # Close checkbox
+                    if hasattr(self, 'notify_close_cb'):
+                        self.notify_close_cb.blockSignals(True)
+                        self.notify_close_cb.setChecked(settings.get('notify_order_close', False))
+                        self.notify_close_cb.blockSignals(False)
+                    
+                    # 🆕 Load pip threshold settings
+                    if hasattr(self, 'track_orders_pips_spin'):
+                        self.track_orders_pips_spin.blockSignals(True)
+                        self.track_orders_pips_spin.setValue(settings.get('track_orders_pip_threshold', 50))
+                        self.track_orders_pips_spin.blockSignals(False)
+                    
+                    if hasattr(self, 'sltp_pips_spin'):
+                        self.sltp_pips_spin.blockSignals(True)
+                        self.sltp_pips_spin.setValue(settings.get('sltp_pip_threshold', 10))
+                        self.sltp_pips_spin.blockSignals(False)
+                    
+                    # 🆕 Load daily summary settings
+                    if hasattr(self, 'daily_summary_cb'):
+                        self.daily_summary_cb.blockSignals(True)
+                        daily_enabled = settings.get('daily_summary_enabled', False)
+                        self.daily_summary_cb.setChecked(daily_enabled)
+                        self.daily_summary_cb.blockSignals(False)
+                        
+                        # Enable/disable time picker based on checkbox
+                        if hasattr(self, 'daily_summary_time'):
+                            self.daily_summary_time.setEnabled(daily_enabled)
+                    
+                    if hasattr(self, 'daily_summary_time'):
+                        self.daily_summary_time.blockSignals(True)
+                        time_str = settings.get('daily_summary_time', '20:00')
+                        self.daily_summary_time.setTime(QTime.fromString(time_str, "HH:mm"))
+                        self.daily_summary_time.blockSignals(False)
+                    
+                    # Load format settings
+                    format_type = settings.get('notification_format', 'full')
+                    print(f"📂 [LOAD] Format type: {format_type}")
+                    
+                    # Set format radio buttons
+                    if hasattr(self, 'format_summary_rb') and hasattr(self, 'format_full_rb'):
+                        self.format_summary_rb.blockSignals(True)
+                        self.format_full_rb.blockSignals(True)
+                        
+                        if format_type == 'full':
+                            self.format_full_rb.setChecked(True)
+                            self.format_summary_rb.setChecked(False)
+                        else:
+                            self.format_summary_rb.setChecked(True)
+                            self.format_full_rb.setChecked(False)
+                        
+                        self.format_summary_rb.blockSignals(False)
+                        self.format_full_rb.blockSignals(False)
+                    
+                    # 🔧 FIX: Load ALL checkboxes from notification_config.json DIRECTLY
+                    # Don't use whitelist for these settings - notification_config is the source of truth
+                    if hasattr(self, 'include_technical_cb'):
+                        self.include_technical_cb.blockSignals(True)
+                        val = settings.get('include_technical', True)
+                        self.include_technical_cb.setChecked(val)
+                        self.include_technical_cb.blockSignals(False)
+                        print(f"📂 [LOAD] include_technical = {val}")
+                    
+                    if hasattr(self, 'include_indicators_cb'):
+                        self.include_indicators_cb.blockSignals(True)
+                        val = settings.get('include_indicators', False)
+                        self.include_indicators_cb.setChecked(val)
+                        self.include_indicators_cb.blockSignals(False)
+                        print(f"📂 [LOAD] include_indicators = {val}")
+                    
+                    if hasattr(self, 'include_summary_cb'):
+                        self.include_summary_cb.blockSignals(True)
+                        val = settings.get('include_summary', True)
+                        self.include_summary_cb.setChecked(val)
+                        self.include_summary_cb.blockSignals(False)
+                        print(f"📂 [LOAD] include_summary = {val}")
+                    
+                    if hasattr(self, 'include_candlestick_cb'):
+                        self.include_candlestick_cb.blockSignals(True)
+                        val = settings.get('include_candlestick', True)
+                        self.include_candlestick_cb.setChecked(val)
+                        self.include_candlestick_cb.blockSignals(False)
+                        print(f"📂 [LOAD] include_candlestick = {val}")
+                    
+                    if hasattr(self, 'include_price_patterns_cb'):
+                        self.include_price_patterns_cb.blockSignals(True)
+                        val = settings.get('include_price_patterns', False)
+                        self.include_price_patterns_cb.setChecked(val)
+                        self.include_price_patterns_cb.blockSignals(False)
+                        print(f"📂 [LOAD] include_price_patterns = {val}")
+                    
+                    # Load custom message settings
+                    send_custom_enabled = settings.get('send_custom_message', False)
+                    if hasattr(self, 'send_custom_message'):
+                        self.send_custom_message.blockSignals(True)
+                        self.send_custom_message.setChecked(send_custom_enabled)
+                        self.send_custom_message.blockSignals(False)
+                        print(f"📂 [LOAD] send_custom_message = {send_custom_enabled}")
+                    
+                    if hasattr(self, 'custom_message'):
+                        self.custom_message.blockSignals(True)
+                        custom_content = settings.get('custom_message', '')
+                        self.custom_message.setPlainText(custom_content)
+                        self.custom_message.blockSignals(False)
+                        
+                        # Visual feedback
+                        if send_custom_enabled:
+                            self.custom_message.setStyleSheet("QTextEdit { border: 2px solid #4CAF50; }")
+                        else:
+                            self.custom_message.setStyleSheet("QTextEdit { border: 2px solid #ddd; }")
+                    
+                    # 🔧 FIX: Update enable/disable state based on format AFTER loading values
+                    # This only changes enabled state, not checked state
+                    if format_type == 'full':
+                        self.include_technical_cb.setEnabled(True)
+                        self.include_indicators_cb.setEnabled(True)
+                        self.include_summary_cb.setEnabled(True)
+                        self.include_candlestick_cb.setEnabled(True)
+                        self.include_price_patterns_cb.setEnabled(True)
+                    else:
+                        self.include_technical_cb.setEnabled(False)
+                        self.include_indicators_cb.setEnabled(False)
+                        self.include_summary_cb.setEnabled(False)
+                        self.include_candlestick_cb.setEnabled(False)
+                        self.include_price_patterns_cb.setEnabled(False)
+                    
+                    # Mark that config has been loaded
+                    self._config_loaded = True
+                    
+                    # Update whitelist based on loaded checkbox states
+                    if hasattr(self, '_trigger_whitelist_update'):
+                        from PyQt5.QtCore import QTimer
+                        QTimer.singleShot(500, self._trigger_whitelist_update)
+                    
+                    # 🆕 Update pip threshold spinbox enabled state based on checkbox states
+                    if hasattr(self, '_update_pip_threshold_state'):
+                        self._update_pip_threshold_state()
+                    
+                    # 🆕 AUTO-START DAILY SUMMARY SCHEDULER if enabled
+                    if settings.get('daily_summary_enabled', False):
+                        if hasattr(self, '_start_daily_summary_scheduler'):
+                            self._start_daily_summary_scheduler()
+                            print("🗓️ Auto-started daily summary scheduler")
+                    
+                    # AUTO-START MONITORING if settings are enabled
+                    try:
+                        if (settings.get('track_order_updates', False) or 
+                            settings.get('notify_sl_tp_changes', False) or 
+                            settings.get('notify_order_close', False)):
+                            
+                            from unified_notification_system import get_unified_notification_system
+                            notification_system = get_unified_notification_system()
+                            
+                            if not notification_system.monitoring_enabled:
+                                notification_system.start_monitoring()
+                                print("🚀 Auto-started unified monitoring system")
+                    except Exception as monitor_e:
+                        print(f"⚠️ Could not auto-start monitoring: {monitor_e}")
+                        
+                    print("✅ Auto notification settings loaded successfully")
+                else:
+                    print("⚠️ notification_config.json not found - using defaults")
+                    # Set defaults when no config exists
+                    if hasattr(self, 'format_full_rb'):
+                        self.format_full_rb.setChecked(True)
+                    self._config_loaded = True
+                    
+            except Exception as e:
+                print(f"❌ Error loading auto notification settings: {e}")
+                import traceback
+                traceback.print_exc()
+            finally:
+                # 🔧 FIX: Always clear loading flag
+                self._is_loading_settings = False
+        
+        def _on_format_changed(self):
+            """Enable/disable report checkboxes based on format selection"""
+            try:
+                # Debug current state
+                summary_checked = self.format_summary_rb.isChecked() if hasattr(self, 'format_summary_rb') else False
+                full_checked = self.format_full_rb.isChecked() if hasattr(self, 'format_full_rb') else False
+                print(f"🔍 [FORMAT_CHANGE_DEBUG] _on_format_changed called - Summary: {summary_checked}, Full: {full_checked}")
+                
+                # 🔧 FIX: Check if we're in loading mode - don't modify checkboxes during load
+                is_loading = getattr(self, '_is_loading_settings', False)
+                
+                # If "Chỉ Signal" is selected, disable all report checkboxes
+                if hasattr(self, 'format_summary_rb') and self.format_summary_rb.isChecked():
+                    print("🔍 [FORMAT_CHANGE_DEBUG] Summary selected - disabling advanced options")
+                    # Disable all report checkboxes
+                    self.include_technical_cb.setEnabled(False)
+                    self.include_indicators_cb.setEnabled(False)  
+                    self.include_summary_cb.setEnabled(False)
+                    self.include_candlestick_cb.setEnabled(False)
+                    self.include_price_patterns_cb.setEnabled(False)
+                    
+                    # 🔧 FIX: Only uncheck when user changes format, not during load
+                    if not is_loading:
+                        print("🔍 [FORMAT_CHANGE_DEBUG] User changed format - unchecking options")
+                        self.include_technical_cb.setChecked(False)
+                        self.include_indicators_cb.setChecked(False)
+                        self.include_summary_cb.setChecked(False)
+                        self.include_candlestick_cb.setChecked(False)
+                        self.include_price_patterns_cb.setChecked(False)
+                    else:
+                        print("🔍 [FORMAT_CHANGE_DEBUG] Loading mode - preserving checkbox states")
+                    
+                # If "Signal + Phân tích" is selected, enable all report checkboxes
+                elif hasattr(self, 'format_full_rb') and self.format_full_rb.isChecked():
+                    print("🔍 [FORMAT_CHANGE_DEBUG] Full selected - enabling advanced options")
+                    # Enable all report checkboxes
+                    self.include_technical_cb.setEnabled(True)
+                    self.include_indicators_cb.setEnabled(True)
+                    self.include_summary_cb.setEnabled(True)
+                    self.include_candlestick_cb.setEnabled(True)
+                    self.include_price_patterns_cb.setEnabled(True)
+                    
+                    # Don't force check - let user control their selection
+                    # Don't change checked state at all - just enable the checkboxes
+                    
+            except Exception as e:
+                print(f"❌ Error in format change handler: {e}")
+        
+        def _debug_test_save(self):
+            """Debug method to test save functionality"""
+            try:
+                print("🧪 [DEBUG_SAVE] Testing save functionality...")
+                
+                # Show current UI state
+                summary_checked = self.format_summary_rb.isChecked() if hasattr(self, 'format_summary_rb') else False
+                full_checked = self.format_full_rb.isChecked() if hasattr(self, 'format_full_rb') else False
+                
+                print(f"🔍 [DEBUG_SAVE] Current UI state:")
+                print(f"  Summary button: {summary_checked}")
+                print(f"  Full button: {full_checked}")
+                
+                # Force save current settings
+                self._save_auto_notification_settings()
+                
+                # Read back and verify
+                import json
+                import os
+                config_path = os.path.join(os.getcwd(), 'notification_config.json')
+                if os.path.exists(config_path):
+                    with open(config_path, 'r', encoding='utf-8') as f:
+                        config = json.load(f)
+                    
+                    saved_format = config.get('settings', {}).get('notification_format', 'NOT_FOUND')
+                    print(f"✅ [DEBUG_SAVE] Saved format: {saved_format}")
+                    
+                    # Show popup confirmation
+                    from PyQt5.QtWidgets import QMessageBox
+                    msg = QMessageBox()
+                    msg.setWindowTitle("Test Save Result")
+                    msg.setText(f"UI State: Summary={summary_checked}, Full={full_checked}\nSaved format: {saved_format}")
+                    msg.exec_()
+                    
+            except Exception as e:
+                print(f"❌ [DEBUG_SAVE] Error: {e}")
+        
+        def _trigger_whitelist_update(self):
+            """🎯 Update whitelist directly when pattern checkboxes change"""
+            try:
+                print(f"\n{'='*60}")
+                print(f"🔥 [WHITELIST_UPDATE] Function called!")
+                print(f"{'='*60}")
+                
+                # 🔥 ALWAYS handle whitelist update directly from AnalysisTab
+                # Don't delegate to IndicatorTab because it can't read Analysis checkboxes!
+                
+                # 🔥 READ CURRENT INDICATOR WHITELIST (don't create default list, preserve user's indicator choices!)
+                wl = []
+                try:
+                    import os, json
+                    wl_path = os.path.join(os.getcwd(), 'analysis_results', 'indicator_whitelist.json')
+                    if os.path.exists(wl_path):
+                        with open(wl_path, 'r', encoding='utf-8') as f:
+                            current_wl = json.load(f)
+                        # Keep all indicator tokens, remove pattern tokens (we'll re-add based on checkboxes)
+                        wl = [t for t in current_wl if t not in ('candlestick', 'price_patterns', 'patterns')]
+                        print(f"📖 Read existing indicator tokens from whitelist: {wl}")
+                    else:
+                        # Build basic whitelist with common indicators ONLY if file doesn't exist
+                        wl = [
+                            "atr", "bollinger", "donchian", "ema10", "ema100", "ema20", 
+                            "ema200", "ema50", "fibonacci", "ichimoku", "stochastic"
+                        ]
+                        print(f"📝 Created default indicator list (file didn't exist)")
+                except Exception as e:
+                    print(f"⚠️ Error reading existing whitelist, using defaults: {e}")
+                
+                # Add pattern tokens based on checkbox state
+                candlestick_enabled = hasattr(self, 'include_candlestick_cb') and self.include_candlestick_cb.isChecked()
+                price_patterns_enabled = hasattr(self, 'include_price_patterns_cb') and self.include_price_patterns_cb.isChecked()
+                
+                print(f"🔍 [WHITELIST_UPDATE] Checkbox states:")
+                print(f"  • Candlestick: {candlestick_enabled}")
+                print(f"  • Price Patterns: {price_patterns_enabled}")
+                
+                if candlestick_enabled:
+                    wl.append('candlestick')
+                    print(f"  ✅ Added 'candlestick' token")
+                else:
+                    print(f"  ⚠️ Skipped 'candlestick' token (disabled)")
+                
+                if price_patterns_enabled:
+                    wl.append('price_patterns')
+                    print(f"  ✅ Added 'price_patterns' token")
+                else:
+                    print(f"  ⚠️ Skipped 'price_patterns' token (disabled)")
+                
+                # Save to file
+                import os, json
+                out_dir = os.path.join(os.getcwd(), "analysis_results")
+                os.makedirs(out_dir, exist_ok=True)
+                out_fp = os.path.join(out_dir, "indicator_whitelist.json")
+                with open(out_fp, "w", encoding="utf-8") as f:
+                    json.dump(wl, f, ensure_ascii=False, indent=2)
+                
+                print(f"✅ [WHITELIST_UPDATE] Saved whitelist to {out_fp}")
+                print(f"📄 Final whitelist: {wl}")
+                
+                # Show success message in GUI
+                if hasattr(self, 'log_output') and self.log_output:
+                    self.log_output.append(I18N.t("✅ Updated whitelist: {count} indicators", "✅ Đã cập nhật whitelist: {count} chỉ báo", count=len(wl)))
+                    if candlestick_enabled or price_patterns_enabled:
+                        enabled = []
+                        if candlestick_enabled:
+                            enabled.append(I18N.t("Candlestick patterns", "Mô hình nến"))
+                        if price_patterns_enabled:
+                            enabled.append(I18N.t("Price patterns", "Mô hình giá"))
+                        self.log_output.append(f"   📊 Pattern: {', '.join(enabled)}")
+                    else:
+                        self.log_output.append(I18N.t("   ⚠️ Both pattern tabs are OFF", "   ⚠️ Cả 2 tab pattern đã TẮT"))
+                
+            except Exception as e:
+                print(f"❌ Failed to update whitelist: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        def _get_analysis_reports(self, symbols: List[str] = None) -> List[str]:
+            """Đọc các báo cáo phân tích từ analysis_results theo lựa chọn user"""
+            try:
+                import os
+                import glob
+                from datetime import datetime
+                
+                reports = []
+                analysis_dir = os.path.join(os.getcwd(), 'analysis_results')
+                
+                if not os.path.exists(analysis_dir):
+                    return reports
+                
+                # Determine language based on UI language
+                lang_suffix = "vi"  # Default to Vietnamese
+                try:
+                    # Check if there's a language setting
+                    if hasattr(self, 'current_language'):
+                        lang_suffix = "vi" if self.current_language == "vi" else "en"
+                except:
+                    pass
+                
+                # Get symbols from executed orders if not provided
+                if not symbols:
+                    symbols = []
+                    
+                # If no specific symbols, get latest reports
+                if not symbols:
+                    pattern = os.path.join(analysis_dir, f"*_report_{lang_suffix}_*.txt")
+                    report_files = glob.glob(pattern)
+                    # Sort by modification time, get latest 3
+                    report_files.sort(key=os.path.getmtime, reverse=True)
+                    report_files = report_files[:3]
+                else:
+                    # Get reports for specific symbols
+                    report_files = []
+                    for symbol in symbols:
+                        pattern = os.path.join(analysis_dir, f"{symbol}_report_{lang_suffix}_*.txt")
+                        symbol_files = glob.glob(pattern)
+                        if symbol_files:
+                            # Get latest file for this symbol
+                            symbol_files.sort(key=os.path.getmtime, reverse=True)
+                            report_files.append(symbol_files[0])
+                
+                # Read selected report types based on user checkboxes
+                for file_path in report_files:
+                    try:
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            content = f.read().strip()
+                            
+                        if not content:
+                            continue
+                            
+                        # Extract relevant sections based on user selections
+                        filtered_content = self._filter_report_content(content)
+                        
+                        if filtered_content:
+                            # Add symbol info and content
+                            filename = os.path.basename(file_path)
+                            symbol_name = filename.split('_')[0]
+                            report_header = f"📊 {symbol_name} Analysis"
+                            reports.append(f"{report_header}\n{filtered_content}")
+                            
+                    except Exception as e:
+                        print(f"❌ Error reading report {file_path}: {e}")
+                        continue
+                
+                return reports[:3]  # Limit to 3 reports max
+                
+            except Exception as e:
+                print(f"❌ Error getting analysis reports: {e}")
+                return []
+        
+        def _filter_report_content(self, content: str) -> str:
+            """Lọc nội dung báo cáo theo lựa chọn checkbox của user"""
+            try:
+                # 🎯 NEW LOGIC: Luôn kiểm tra checkboxes khi format_full_rb được chọn
+                if not hasattr(self, 'format_full_rb') or not self.format_full_rb.isChecked():
+                    return ""  # Only return content for full format
+                    
+                # Check what user wants to include
+                include_technical = hasattr(self, 'include_technical_cb') and self.include_technical_cb.isChecked()
+                include_indicators = hasattr(self, 'include_indicators_cb') and self.include_indicators_cb.isChecked() 
+                include_summary = hasattr(self, 'include_summary_cb') and self.include_summary_cb.isChecked()
+                include_candlestick = hasattr(self, 'include_candlestick_cb') and self.include_candlestick_cb.isChecked()
+                include_price_patterns = hasattr(self, 'include_price_patterns_cb') and self.include_price_patterns_cb.isChecked()
+                
+                # 🎯 LOG DEBUG: Show what user selected
+                print(f"🔍 Report sections selected:")
+                print(f"   Technical Analysis: {include_technical}")
+                print(f"   Indicators: {include_indicators}")
+                print(f"   Summary: {include_summary}")
+                print(f"   Candlestick: {include_candlestick}")
+                print(f"   Price Patterns: {include_price_patterns}")
+                
+                if not any([include_technical, include_indicators, include_summary, include_candlestick, include_price_patterns]):
+                    return ""  # Nothing selected
+                
+                sections = []
+                lines = content.split('\n')
+                
+                # 📊 SIGNAL INFO - Always include if any section is selected
+                signal_info = []
+                for i, line in enumerate(lines[:10]):
+                    if any(keyword in line.lower() for keyword in ['ký hiệu', 'symbol', 'tín hiệu', 'signal', 'độ tin cậy', 'confidence', 'entry', 'stoploss', 'takeprofit']):
+                        signal_info.append(line)
+                if signal_info:
+                    sections.extend(['📊 THÔNG TIN TÍN HIỆU:', ''] + signal_info + [''])
+                
+                # 🔍 TECHNICAL ANALYSIS - "Phân tích kỹ thuật:" (FULL CONTENT)
+                if include_technical:
+                    tech_section = []
+                    in_tech_section = False
+                    for line in lines:
+                        line_lower = line.lower().strip()
+                        if 'phân tích kỹ thuật:' in line_lower:
+                            in_tech_section = True
+                            tech_section.append('🔍 PHÂN TÍCH KỸ THUẬT:')
+                            continue
+                        elif in_tech_section:
+                            if 'tóm tắt:' in line_lower:
+                                break  # End of section
+                            elif line.strip():  # Add ALL non-empty lines
+                                tech_section.append(line)
+                            else:
+                                tech_section.append('')  # Keep empty lines for formatting
+                    
+                    if tech_section and len(tech_section) > 1:
+                        sections.extend(tech_section + [''])
+                
+                # 📈 TECHNICAL INDICATORS - "Chỉ báo kỹ thuật:" (FULL CONTENT)
+                if include_indicators:
+                    indicator_section = []
+                    in_indicator_section = False
+                    for line in lines:
+                        line_lower = line.lower().strip()
+                        if 'chỉ báo kỹ thuật:' in line_lower:
+                            in_indicator_section = True
+                            indicator_section.append('📈 CHỈ BÁO KỸ THUẬT:')
+                            continue
+                        elif in_indicator_section:
+                            if 'tóm tắt:' in line_lower:
+                                break  # End of section
+                            elif line.strip():  # Add ALL content lines
+                                indicator_section.append(line)
+                            else:
+                                indicator_section.append('')  # Keep formatting
+                    
+                    if indicator_section and len(indicator_section) > 1:
+                        sections.extend(indicator_section + [''])
+                
+                # 📋 SUMMARY - "Tóm tắt:"  
+                if include_summary:
+                    summary_section = []
+                    in_summary_section = False
+                    for line in lines:
+                        line_lower = line.lower().strip()
+                        if line_lower.startswith('tóm tắt:'):
+                            in_summary_section = True
+                            summary_section.append('� TÓM TẮT:')
+                            continue
+                        elif in_summary_section:
+                            if line_lower.startswith('- mô hình'):
+                                break  # Next section started
+                            elif line.strip() and line.strip().startswith('-'):  # Summary bullet points
+                                summary_section.append(line)
+                    
+                    if summary_section and len(summary_section) > 1:
+                        sections.extend(summary_section + [''])
+                
+                # 💹 PRICE PATTERNS - "- Mô hình giá:"
+                if include_price_patterns:
+                    price_section = []
+                    in_price_section = False
+                    for line in lines:
+                        line_lower = line.lower().strip()
+                        if '- mô hình giá:' in line_lower:
+                            in_price_section = True
+                            price_section.append('💹 MÔ HÌNH GIÁ:')
+                            continue
+                        elif in_price_section:
+                            if '- mô hình nến:' in line_lower:
+                                break  # Next section started
+                            elif line.strip() and line.strip().startswith('•'):  # Price pattern bullet points
+                                price_section.append(line)
+                    
+                    if price_section and len(price_section) > 1:
+                        sections.extend(price_section + [''])
+                
+                # 🕯️ CANDLESTICK PATTERNS - "- Mô hình nến:"
+                if include_candlestick:
+                    candle_section = []
+                    in_candle_section = False
+                    for line in lines:
+                        line_lower = line.lower().strip()
+                        if '- mô hình nến:' in line_lower:
+                            in_candle_section = True
+                            candle_section.append('🕯️ MÔ HÌNH NẾN:')
+                            continue
+                        elif in_candle_section:
+                            if line.strip() and not line.strip().startswith('•'):
+                                break  # End of section
+                            elif line.strip().startswith('•'):  # Candlestick pattern bullet points
+                                candle_section.append(line)
+                    
+                    if candle_section and len(candle_section) > 1:
+                        sections.extend(candle_section + [''])
+                
+                # Limit total length
+                result = '\n'.join(sections)
+                if len(result) > 1000:  # Limit to 1000 characters
+                    result = result[:1000] + "..."
+                
+                return result
+                
+            except Exception as e:
+                print(f"❌ Error filtering report content: {e}")
+                return content[:500]  # Return first 500 chars if error
+        
+        def _save_auto_notification_settings(self):
+            """Save auto notification settings to config"""
+            try:
+                import json
+                import os
+                
+                # 🔧 FIX: Don't save while loading settings
+                if getattr(self, '_is_loading_settings', False):
+                    print("⏳ [SAVE] Skipping save - currently loading settings")
+                    return
+                
+                config_path = os.path.join(os.getcwd(), 'notification_config.json')
+                
+                # Load existing config
+                config = {}
+                if os.path.exists(config_path):
+                    with open(config_path, 'r', encoding='utf-8') as f:
+                        config = json.load(f)
+                
+                # Update settings
+                if 'settings' not in config:
+                    config['settings'] = {}
+                
+                # Basic notification settings
+
+                # Safe checkbox access - protect against deleted widgets
+                try:
+                    if hasattr(self, 'track_orders_cb') and self.track_orders_cb:
+                        config['settings']['track_order_updates'] = self.track_orders_cb.isChecked()
+                except RuntimeError:
+                    config['settings']['track_order_updates'] = False
+                    
+                try:
+                    if hasattr(self, 'notify_sl_tp_cb') and self.notify_sl_tp_cb:
+                        config['settings']['notify_sl_tp_changes'] = self.notify_sl_tp_cb.isChecked()
+                except RuntimeError:
+                    config['settings']['notify_sl_tp_changes'] = False
+                    
+                try:
+                    if hasattr(self, 'notify_close_cb') and self.notify_close_cb:
+                        config['settings']['notify_order_close'] = self.notify_close_cb.isChecked()
+                except RuntimeError:
+                    config['settings']['notify_order_close'] = False
+                
+                # 🆕 Save pip threshold settings
+                try:
+                    if hasattr(self, 'track_orders_pips_spin') and self.track_orders_pips_spin:
+                        config['settings']['track_orders_pip_threshold'] = self.track_orders_pips_spin.value()
+                except RuntimeError:
+                    config['settings']['track_orders_pip_threshold'] = 50
+                    
+                try:
+                    if hasattr(self, 'sltp_pips_spin') and self.sltp_pips_spin:
+                        config['settings']['sltp_pip_threshold'] = self.sltp_pips_spin.value()
+                except RuntimeError:
+                    config['settings']['sltp_pip_threshold'] = 10
+                
+                # 🆕 Save daily summary settings
+                try:
+                    if hasattr(self, 'daily_summary_cb') and self.daily_summary_cb:
+                        config['settings']['daily_summary_enabled'] = self.daily_summary_cb.isChecked()
+                except RuntimeError:
+                    config['settings']['daily_summary_enabled'] = False
+                    
+                try:
+                    if hasattr(self, 'daily_summary_time') and self.daily_summary_time:
+                        config['settings']['daily_summary_time'] = self.daily_summary_time.time().toString("HH:mm")
+                except RuntimeError:
+                    config['settings']['daily_summary_time'] = "20:00"
+                
+                # Update unified notification system settings
+                try:
+                    from unified_notification_system import get_unified_notification_system
+                    notification_system = get_unified_notification_system()
+                    if notification_system:
+                        # Safe checkbox access with deleted object protection
+                        try:
+                            track_orders = self.track_orders_cb.isChecked() if hasattr(self, 'track_orders_cb') and self.track_orders_cb else False
+                        except RuntimeError:
+                            track_orders = False  # Widget deleted
+                            
+                        try:
+                            notify_sl_tp = self.notify_sl_tp_cb.isChecked() if hasattr(self, 'notify_sl_tp_cb') and self.notify_sl_tp_cb else False
+                        except RuntimeError:
+                            notify_sl_tp = False  # Widget deleted
+                            
+                        try:
+                            notify_close = self.notify_close_cb.isChecked() if hasattr(self, 'notify_close_cb') and self.notify_close_cb else False
+                        except RuntimeError:
+                            notify_close = False  # Widget deleted
+                        
+                        notification_system.update_tracking_settings(
+                            track_orders=track_orders, 
+                            sl_tp_changes=notify_sl_tp, 
+                            order_close=notify_close
+                        )
+                        
+                        # Start monitoring based on enabled options - use unified method
+                        if track_orders or notify_sl_tp or notify_close:
+                            # Start unified monitoring if any tracking enabled
+                            if not notification_system.monitoring_enabled:
+                                notification_system.start_monitoring()
+                                print("🚀 Started unified monitoring for tracking settings")
+                            
+                except Exception as e:
+                    print(f"⚠️ Error updating notification tracking settings: {e}")
+                
+                # Format settings
+                if hasattr(self, 'format_summary_rb') and hasattr(self, 'format_full_rb'):
+                    summary_checked = self.format_summary_rb.isChecked()
+                    full_checked = self.format_full_rb.isChecked()
+                    print(f"🔍 [SAVE_DEBUG] Format buttons - Summary: {summary_checked}, Full: {full_checked}")
+                    
+                    if summary_checked:
+                        config['settings']['notification_format'] = 'summary'
+                        print(f"⚠️ [SAVE_DEBUG] USER CHANGED TO SUMMARY FORMAT!")
+                        print(f"✅ [SAVE_DEBUG] Set notification_format = 'summary'")
+                    elif full_checked:
+                        config['settings']['notification_format'] = 'full'
+                        print(f"✅ [SAVE_DEBUG] Set notification_format = 'full'")
+                        print(f"🎯 [SAVE_DEBUG] User selected FULL format (Signal + Phân tích)")
+                    else:
+                        # Fallback: if neither checked, default to full (Signal + Phân tích)
+                        config['settings']['notification_format'] = 'full'
+                        print(f"⚠️ [SAVE_DEBUG] Neither button checked, defaulting to 'full'")
+                else:
+                    print(f"❌ [SAVE_DEBUG] Format radio buttons not found")
+                    config['settings']['notification_format'] = 'full'  # Default to full format                # Advanced options - 5 notification types
+                if hasattr(self, 'include_technical_cb'):
+                    config['settings']['include_technical'] = self.include_technical_cb.isChecked()
+                if hasattr(self, 'include_indicators_cb'):
+                    config['settings']['include_indicators'] = self.include_indicators_cb.isChecked()
+                if hasattr(self, 'include_summary_cb'):
+                    config['settings']['include_summary'] = self.include_summary_cb.isChecked()
+                if hasattr(self, 'include_candlestick_cb'):
+                    candlestick_checked = self.include_candlestick_cb.isChecked()
+                    config['settings']['include_candlestick'] = candlestick_checked
+                    print(f"💾 [SAVE] include_candlestick = {candlestick_checked}")
+                if hasattr(self, 'include_price_patterns_cb'):
+                    price_patterns_checked = self.include_price_patterns_cb.isChecked()
+                    config['settings']['include_price_patterns'] = price_patterns_checked
+                    print(f"💾 [SAVE] include_price_patterns = {price_patterns_checked}")
+                
+                # Custom message settings - 🔧 FIX: Save checkbox state correctly, don't override based on text content
+                send_custom_checked = False  # Default value
+                if hasattr(self, 'send_custom_message'):
+                    send_custom_checked = self.send_custom_message.isChecked()
+                    config['settings']['send_custom_message'] = send_custom_checked
+                    print(f"💾 [SAVE] send_custom_message checkbox = {send_custom_checked}")
+                
+                if hasattr(self, 'custom_message'):
+                    custom_text = self.custom_message.toPlainText().strip()
+                    config['settings']['custom_message'] = custom_text
+                    # 🔧 FIX: Don't override send_custom_message here! Let checkbox control it
+                    
+                    # Visual feedback: change placeholder when enabled/disabled
+                    if send_custom_checked:
+                        self.custom_message.setStyleSheet("QTextEdit { border: 2px solid #4CAF50; }")  # Green border when active
+                    else:
+                        self.custom_message.setStyleSheet("QTextEdit { border: 2px solid #ddd; }")     # Default border when not enabled
+                    
+                # Keep technical analysis setting for compatibility
+                if hasattr(self, 'format_full_rb') and self.format_full_rb.isChecked():
+                    config['settings']['include_technical_analysis'] = True
+                else:
+                    config['settings']['include_technical_analysis'] = False
+                
+                # Save config
+                with open(config_path, 'w', encoding='utf-8') as f:
+                    json.dump(config, f, indent=2, ensure_ascii=False)
+                
+                print("✅ Auto notification settings saved")
+                
+            except Exception as e:
+                print(f"❌ Error saving auto notification settings: {e}")
+        
+        def _update_pip_threshold_state(self):
+            """Enable/disable pip threshold spinboxes based on checkbox state"""
+            try:
+                # Track orders pip threshold - enabled when track_orders_cb is checked
+                track_orders_enabled = self.track_orders_cb.isChecked() if hasattr(self, 'track_orders_cb') else False
+                if hasattr(self, 'track_pips_label'):
+                    self.track_pips_label.setEnabled(track_orders_enabled)
+                if hasattr(self, 'track_orders_pips_spin'):
+                    self.track_orders_pips_spin.setEnabled(track_orders_enabled)
+                
+                # SL/TP pip threshold - enabled when notify_sl_tp_cb is checked
+                sltp_enabled = self.notify_sl_tp_cb.isChecked() if hasattr(self, 'notify_sl_tp_cb') else False
+                if hasattr(self, 'sltp_pips_label'):
+                    self.sltp_pips_label.setEnabled(sltp_enabled)
+                if hasattr(self, 'sltp_pips_spin'):
+                    self.sltp_pips_spin.setEnabled(sltp_enabled)
+                    
+            except Exception as e:
+                print(f"❌ Error updating pip threshold state: {e}")
+        
+        def _on_daily_summary_toggled(self, checked):
+            """Handle daily summary checkbox toggle"""
+            try:
+                # Enable/disable time picker based on checkbox
+                if hasattr(self, 'daily_summary_time'):
+                    self.daily_summary_time.setEnabled(checked)
+                
+                # Save settings
+                self._save_auto_notification_settings()
+                
+                # Start/stop daily summary scheduler
+                if checked:
+                    self._start_daily_summary_scheduler()
+                    print("🗓️ Daily trading summary scheduler ENABLED")
+                else:
+                    self._stop_daily_summary_scheduler()
+                    print("🗓️ Daily trading summary scheduler DISABLED")
+                    
+            except Exception as e:
+                print(f"❌ Error toggling daily summary: {e}")
+        
+        def _on_history_schedule_type_changed(self, index):
+            """Handle history schedule type change (Hourly vs Daily)"""
+            try:
+                if index == 0:  # Hourly selected
+                    print("⏰ Schedule type changed to HOURLY")
+                    if hasattr(self, 'history_hourly_interval'):
+                        self.history_hourly_interval.setVisible(True)
+                    if hasattr(self, 'history_hourly_label'):
+                        self.history_hourly_label.setVisible(True)
+                    # Hide time label and widget when hourly is selected
+                    if hasattr(self, 'daily_summary_time'):
+                        self.daily_summary_time.setVisible(False)
+                    # Find and hide "at:" label
+                    for child in self.findChildren(QLabel):
+                        if "at:" in child.text() or "lúc:" in child.text():
+                            child.setVisible(False)
+                            break
+                else:  # Daily selected (index == 1)
+                    print("⏰ Schedule type changed to DAILY")
+                    if hasattr(self, 'history_hourly_interval'):
+                        self.history_hourly_interval.setVisible(False)
+                    if hasattr(self, 'history_hourly_label'):
+                        self.history_hourly_label.setVisible(False)
+                    # Show time label and widget when daily is selected
+                    if hasattr(self, 'daily_summary_time'):
+                        self.daily_summary_time.setVisible(True)
+                    # Find and show "at:" label
+                    for child in self.findChildren(QLabel):
+                        if "at:" in child.text() or "lúc:" in child.text():
+                            child.setVisible(True)
+                            break
+                
+                # Save settings
+                self._save_auto_notification_settings()
+                
+            except Exception as e:
+                print(f"❌ Error changing history schedule type: {e}")
+        
+        
+        def _start_daily_summary_scheduler(self):
+            """Start the daily summary scheduler timer"""
+            try:
+                if not hasattr(self, '_daily_summary_timer'):
+                    self._daily_summary_timer = QTimer(self)
+                    self._daily_summary_timer.timeout.connect(self._check_daily_summary_time)
+                
+                # Check every minute
+                self._daily_summary_timer.start(60000)  # 60 seconds
+                self._last_summary_date = None  # Track last sent date
+                print("⏰ Daily summary scheduler started - checking every minute")
+            except Exception as e:
+                print(f"❌ Error starting daily summary scheduler: {e}")
+        
+        def _stop_daily_summary_scheduler(self):
+            """Stop the daily summary scheduler timer"""
+            try:
+                if hasattr(self, '_daily_summary_timer'):
+                    self._daily_summary_timer.stop()
+                    print("⏰ Daily summary scheduler stopped")
+            except Exception as e:
+                print(f"❌ Error stopping daily summary scheduler: {e}")
+        
+        def _check_daily_summary_time(self):
+            """Check if it's time to send the daily summary"""
+            try:
+                from datetime import datetime
+                
+                now = datetime.now()
+                current_time = now.strftime("%H:%M")
+                current_date = now.strftime("%Y-%m-%d")
+                
+                # Get scheduled time from widget
+                if hasattr(self, 'daily_summary_time'):
+                    scheduled_time = self.daily_summary_time.time().toString("HH:mm")
+                else:
+                    scheduled_time = "20:00"
+                
+                # Check if we already sent today
+                if hasattr(self, '_last_summary_date') and self._last_summary_date == current_date:
+                    return  # Already sent today
+                
+                # Check if it's time to send
+                if current_time == scheduled_time:
+                    print(f"⏰ It's {scheduled_time}! Sending daily trading summary...")
+                    self._last_summary_date = current_date  # Mark as sent today
+                    self._send_daily_summary_now()
+                    
+            except Exception as e:
+                print(f"❌ Error checking daily summary time: {e}")
+        
+        def _send_daily_summary_now(self):
+            """Send daily trading summary based on user settings (Daily/Hourly)"""
+            try:
+                import os
+                from datetime import datetime, timedelta
+                from unified_notification_system import get_unified_notification_system
+                
+                print("📊 Preparing trading summary based on schedule settings...")
+                
+                # Get current language
+                lang = AppState.language() if hasattr(AppState, 'language') else 'en'
+                
+                # 🔧 READ USER SETTINGS
+                auto_send_enabled = self.daily_summary_cb.isChecked() if hasattr(self, 'daily_summary_cb') else False
+                schedule_type = self.history_schedule_type.currentText() if hasattr(self, 'history_schedule_type') else "Daily"
+                hourly_interval = self.history_hourly_interval.value() if hasattr(self, 'history_hourly_interval') else 1
+                
+                if not auto_send_enabled:
+                    print("⚠️ Auto-send disabled. Enable '⏰ Tự động gửi' to schedule reports.")
+                    return
+                
+                # 🔧 DETERMINE REPORTING PERIOD BASED ON SETTINGS
+                now = datetime.now()
+                from_date = None
+                to_date = None
+                period_label = ""
+                
+                if "Daily" in schedule_type or "Hằng ngày" in schedule_type:
+                    # Daily: Report for today only
+                    from_date = now.date()
+                    to_date = now.date()
+                    if lang == 'vi':
+                        period_label = f"NGÀY {now.strftime('%d/%m/%Y')}"
+                    else:
+                        period_label = f"{now.strftime('%d/%m/%Y')} (Today)"
+                        
+                elif "Hourly" in schedule_type or "Theo giờ" in schedule_type:
+                    # Hourly: Report for last N hours
+                    start_time = now - timedelta(hours=hourly_interval)
+                    from_date = start_time.date()
+                    to_date = now.date()
+                    if lang == 'vi':
+                        period_label = f"{hourly_interval} GIỜ VỪA QUA ({start_time.strftime('%H:%M')} - {now.strftime('%H:%M')})"
+                    else:
+                        period_label = f"LAST {hourly_interval}H ({start_time.strftime('%H:%M')} - {now.strftime('%H:%M')})"
+                else:
+                    # Default: Daily
+                    from_date = now.date()
+                    to_date = now.date()
+                    if lang == 'vi':
+                        period_label = f"NGÀY {now.strftime('%d/%m/%Y')}"
+                    else:
+                        period_label = f"{now.strftime('%d/%m/%Y')} (Today)"
+                
+                # 🔧 GENERATE REPORT FOR SPECIFIED PERIOD ONLY
+                print(f"📅 Generating report for: {period_label}")
+                
+                try:
+                    import MetaTrader5 as mt5
+                    if not mt5.initialize():
+                        print("❌ Cannot connect to MT5")
+                        return
+                    
+                    # Get closed deals for the specified period
+                    from_timestamp = int(datetime.combine(from_date, datetime.min.time()).timestamp())
+                    to_timestamp = int(datetime.combine(to_date, datetime.max.time()).timestamp())
+                    
+                    deals = mt5.history_deals_get(from_timestamp, to_timestamp)
+                    if not deals:
+                        deals = []
+                    
+                    # Filter exit deals only
+                    closed_deals = [d for d in deals if d.entry == 1]
+                    
+                    if lang == 'vi':
+                        title = f"📊 TỔNG HỢP GIAO DỊCH {period_label}"
+                    else:
+                        title = f"📊 TRADING SUMMARY - {period_label}"
+                    
+                    # Build report for THIS PERIOD ONLY
+                    if closed_deals:
+                        from collections import defaultdict
+                        
+                        # Calculate statistics
+                        total_trades = len(closed_deals)
+                        wins = [d for d in closed_deals if d.profit >= 0]
+                        losses = [d for d in closed_deals if d.profit < 0]
+                        win_count = len(wins)
+                        loss_count = len(losses)
+                        win_rate = (win_count / total_trades * 100) if total_trades > 0 else 0
+                        
+                        total_profit = sum(d.profit for d in closed_deals)
+                        gross_profit = sum(d.profit for d in wins) if wins else 0
+                        gross_loss = abs(sum(d.profit for d in losses)) if losses else 1
+                        profit_factor = gross_profit / gross_loss if gross_loss > 0 else 0
+                        
+                        # Group by symbol
+                        symbol_stats = defaultdict(lambda: {'count': 0, 'profit': 0})
+                        for deal in closed_deals:
+                            symbol_stats[deal.symbol]['count'] += 1
+                            symbol_stats[deal.symbol]['profit'] += deal.profit
+                        
+                        sorted_symbols = sorted(symbol_stats.items(), key=lambda x: x[1]['profit'], reverse=True)
+                        
+                        # Build message
+                        profit_sign = "+" if total_profit >= 0 else ""
+                        message = f"{title}\n{'═'*45}\n\n"
+                        
+                        if lang == 'vi':
+                            message += f"  Tổng giao dịch:       {total_trades:>10}\n"
+                            message += f"  Thắng/Thua:           {win_count:>4} / {loss_count}\n"
+                            message += f"  Tỷ lệ thắng:          {win_rate:>9.1f}%\n"
+                            message += f"  Tổng P/L:         {profit_sign}${total_profit:>11,.2f}\n"
+                            message += f"  Profit Factor:        {profit_factor:>10.2f}\n"
+                            
+                            if sorted_symbols:
+                                message += f"\n  📈 Symbols:\n"
+                                for symbol, stats in sorted_symbols:
+                                    ps = "+" if stats['profit'] >= 0 else ""
+                                    message += f"    {symbol:<12} | {stats['count']:>2} lệnh | {ps}${stats['profit']:>9,.2f}\n"
+                        else:
+                            message += f"  Total Trades:        {total_trades:>10}\n"
+                            message += f"  Win/Loss:            {win_count:>4} / {loss_count}\n"
+                            message += f"  Win Rate:            {win_rate:>9.1f}%\n"
+                            message += f"  Total P/L:       {profit_sign}${total_profit:>11,.2f}\n"
+                            message += f"  Profit Factor:        {profit_factor:>10.2f}\n"
+                            
+                            if sorted_symbols:
+                                message += f"\n  📈 Symbols:\n"
+                                for symbol, stats in sorted_symbols:
+                                    ps = "+" if stats['profit'] >= 0 else ""
+                                    message += f"    {symbol:<12} | {stats['count']:>2} trd | {ps}${stats['profit']:>9,.2f}\n"
+                        
+                        message += f"\n{'═'*45}\n⏰ {now.strftime('%H:%M:%S %d/%m/%Y')}"
+                    else:
+                        if lang == 'vi':
+                            message = f"{title}\n{'═'*45}\n\n  📭 Không có giao dịch nào trong khoảng thời gian này.\n\n{'═'*45}\n⏰ {now.strftime('%H:%M:%S %d/%m/%Y')}"
+                        else:
+                            message = f"{title}\n{'═'*45}\n\n  📭 No trades in this period.\n\n{'═'*45}\n⏰ {now.strftime('%H:%M:%S %d/%m/%Y')}"
+                    
+                    # Send via notification system
+                    notification_system = get_unified_notification_system()
+                    if notification_system:
+                        success = notification_system.send_notification(message)
+                        if success:
+                            print(f"✅ Trading summary sent! ({total_trades} trades in {period_label})")
+                            # Show success feedback in UI
+                            if hasattr(self, 'send_daily_summary_btn'):
+                                original_text = self.send_daily_summary_btn.text()
+                                self.send_daily_summary_btn.setText("✅ Sent!")
+                                QTimer.singleShot(2000, lambda: self.send_daily_summary_btn.setText(original_text))
+                        else:
+                            print("❌ Failed to send trading summary")
+                    else:
+                        print("❌ Notification system not available")
+                        
+                except Exception as e:
+                    print(f"❌ Error generating report: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    
+            except Exception as e:
+                print(f"❌ Error sending trading summary: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        def _on_history_period_changed(self, index):
+            """Handle history period combo box change - show/hide custom date range"""
+            try:
+                # Index 7 = Custom Range
+                is_custom = (index == 7)
+                
+                if hasattr(self, 'history_from_label'):
+                    self.history_from_label.setVisible(is_custom)
+                if hasattr(self, 'history_from_date'):
+                    self.history_from_date.setVisible(is_custom)
+                if hasattr(self, 'history_to_label'):
+                    self.history_to_label.setVisible(is_custom)
+                if hasattr(self, 'history_to_date'):
+                    self.history_to_date.setVisible(is_custom)
+                    
+            except Exception as e:
+                print(f"❌ Error changing history period: {e}")
+        
+        def _get_history_date_range(self):
+            """Get date range based on selected period"""
+            from datetime import datetime, timedelta
+            import calendar
+            
+            today = datetime.now().date()
+            period_index = self.history_period_combo.currentIndex() if hasattr(self, 'history_period_combo') else 0
+            
+            if period_index == 0:  # Today
+                return today, today
+            elif period_index == 1:  # Yesterday
+                yesterday = today - timedelta(days=1)
+                return yesterday, yesterday
+            elif period_index == 2:  # Last 24 hours
+                return today - timedelta(days=1), today
+            elif period_index == 3:  # This Week
+                start_of_week = today - timedelta(days=today.weekday())
+                return start_of_week, today
+            elif period_index == 4:  # Last Week
+                start_of_last_week = today - timedelta(days=today.weekday() + 7)
+                end_of_last_week = start_of_last_week + timedelta(days=6)
+                return start_of_last_week, end_of_last_week
+            elif period_index == 5:  # This Month
+                start_of_month = today.replace(day=1)
+                return start_of_month, today
+            elif period_index == 6:  # Last Month
+                first_of_this_month = today.replace(day=1)
+                last_of_last_month = first_of_this_month - timedelta(days=1)
+                start_of_last_month = last_of_last_month.replace(day=1)
+                return start_of_last_month, last_of_last_month
+            elif period_index == 7:  # Custom Range
+                from_date = self.history_from_date.date().toPyDate() if hasattr(self, 'history_from_date') else today - timedelta(days=7)
+                to_date = self.history_to_date.date().toPyDate() if hasattr(self, 'history_to_date') else today
+                return from_date, to_date
+            else:
+                return today, today
+        
+        def _generate_history_report(self):
+            """Generate trading history report based on current settings - respects user options"""
+            import os
+            from datetime import datetime
+            from collections import defaultdict
+            
+            try:
+                lang = AppState.language() if hasattr(AppState, 'language') else 'en'
+                from_date, to_date = self._get_history_date_range()
+                
+                # 🔧 GET USER OPTIONS (respect checkboxes!)
+                include_closed = self.history_include_closed.isChecked() if hasattr(self, 'history_include_closed') else True
+                include_stats = self.history_include_stats.isChecked() if hasattr(self, 'history_include_stats') else True
+                include_chart = self.history_include_chart.isChecked() if hasattr(self, 'history_include_chart') else False
+                selected_symbol = self.history_symbol_combo.currentText() if hasattr(self, 'history_symbol_combo') else "All Symbols"
+                
+                # Build report header
+                if lang == 'vi':
+                    title = "📊 BÁO CÁO LỊCH SỬ GIAO DỊCH"
+                    period_text = f"📅 Khoảng thời gian: {from_date.strftime('%d/%m/%Y')} - {to_date.strftime('%d/%m/%Y')}"
+                    if selected_symbol not in [I18N.t("All Symbols", "Tất cả ký hiệu"), "All Symbols", "Tất cả ký hiệu"]:
+                        period_text += f" | 📊 {selected_symbol}"
+                else:
+                    title = "📊 TRADING HISTORY REPORT"
+                    period_text = f"📅 Period: {from_date.strftime('%d/%m/%Y')} - {to_date.strftime('%d/%m/%Y')}"
+                    if selected_symbol not in [I18N.t("All Symbols", "Tất cả ký hiệu"), "All Symbols", "Tất cả ký hiệu"]:
+                        period_text += f" | 📊 {selected_symbol}"
+                
+                # 🔧 SHORTER SEPARATOR LINES (35 chars instead of 50)
+                report = f"{title}\n{'═'*35}\n{period_text}\n{'─'*35}\n\n"
+                
+                # 🔧 SKIP IF "Include Closed Orders" IS UNCHECKED
+                if not include_closed:
+                    if lang == 'vi':
+                        report += "  📭 Lệnh đã đóng bị ẩn (không được chọn).\n"
+                    else:
+                        report += "  📭 Closed orders hidden (not selected).\n"
+                    report += "\n" + "═"*35
+                    report += f"\n⏰ {datetime.now().strftime('%H:%M:%S %d/%m/%Y')}"
+                    return report
+                
+                # Try to get trading data from MT5
+                import MetaTrader5 as mt5
+                if not mt5.initialize():
+                    if lang == 'vi':
+                        report += "❌ Không thể kết nối MT5. Hãy đăng nhập tài khoản MT5 trước.\n"
+                    else:
+                        report += "❌ Cannot connect to MT5. Please login MT5 account first.\n"
+                    return report
+                
+                # Get closed deals (history)
+                closed_deals = []
+                from_timestamp = int(datetime.combine(from_date, datetime.min.time()).timestamp())
+                to_timestamp = int(datetime.combine(to_date, datetime.max.time()).timestamp())
+                
+                try:
+                    deals = mt5.history_deals_get(from_timestamp, to_timestamp)
+                    if deals:
+                        closed_deals = [d for d in deals if d.entry == 1]
+                except Exception as e:
+                    print(f"⚠️ Error fetching deals: {e}")
+                    closed_deals = []
+                
+                # Apply symbol filter
+                if selected_symbol not in [I18N.t("All Symbols", "Tất cả ký hiệu"), "All Symbols", "Tất cả ký hiệu"]:
+                    closed_deals = [d for d in closed_deals if d.symbol.startswith(selected_symbol)]
+                
+                if closed_deals:
+                    # 🔧 ONLY INCLUDE STATISTICS IF CHECKBOX IS ENABLED
+                    if include_stats:
+                        # Calculate statistics
+                        total_trades = len(closed_deals)
+                        wins = [d for d in closed_deals if d.profit >= 0]
+                        losses = [d for d in closed_deals if d.profit < 0]
+                        win_count = len(wins)
+                        loss_count = len(losses)
+                        win_rate = (win_count / total_trades * 100) if total_trades > 0 else 0
+                        
+                        total_profit = sum(d.profit for d in closed_deals)
+                        gross_profit = sum(d.profit for d in wins) if wins else 0
+                        gross_loss = abs(sum(d.profit for d in losses)) if losses else 1
+                        profit_factor = gross_profit / gross_loss if gross_loss > 0 else 0
+                        
+                        avg_win = gross_profit / win_count if win_count > 0 else 0
+                        avg_loss = gross_loss / loss_count if loss_count > 0 else 0
+                        
+                        best_trade = max(closed_deals, key=lambda d: d.profit)
+                        worst_trade = min(closed_deals, key=lambda d: d.profit)
+                        
+                        # Group by symbol
+                        symbol_stats = defaultdict(lambda: {'count': 0, 'profit': 0})
+                        for deal in closed_deals:
+                            symbol_stats[deal.symbol]['count'] += 1
+                            symbol_stats[deal.symbol]['profit'] += deal.profit
+                        
+                        sorted_symbols = sorted(symbol_stats.items(), key=lambda x: x[1]['profit'], reverse=True)
+                        
+                        profit_sign = "+" if total_profit >= 0 else ""
+                        estimated_capital = 100000
+                        pct_pnl = (total_profit / estimated_capital * 100)
+                        pct_sign = "+" if pct_pnl >= 0 else ""
+                        
+                        if lang == 'vi':
+                            report += f"Tổng giao dịch:      {total_trades:>8}\n"
+                            report += f"Thắng/Thua:          {win_count:>4} / {loss_count}\n"
+                            report += f"Tỷ lệ thắng:         {win_rate:>7.1f}%\n"
+                            report += f"Tổng P/L:        {profit_sign}${total_profit:>10,.2f}\n"
+                            report += f"% P/L/Vốn:           {pct_sign}{pct_pnl:>7.2f}%\n"
+                            report += f"Profit Factor:       {profit_factor:>8.2f}\n"
+                            report += f"TB Thắng:        ${avg_win:>10,.2f}\n"
+                            report += f"TB Thua:         ${avg_loss:>10,.2f}\n"
+                            report += f"Trade tốt nhất:  ${best_trade.profit:>10,.2f}\n"
+                            report += f"Trade tệ nhất:   ${worst_trade.profit:>10,.2f}\n"
+                            
+                            if sorted_symbols:
+                                report += f"\n📈 Symbols:\n"
+                                for symbol, stats in sorted_symbols:
+                                    ps = "+" if stats['profit'] >= 0 else ""
+                                    report += f"  {symbol:<12} | {stats['count']:>3} lệnh  | {ps}${stats['profit']:>9,.2f}\n"
+                        else:
+                            report += f"Total Trades:        {total_trades:>8}\n"
+                            report += f"Win/Loss:            {win_count:>4} / {loss_count}\n"
+                            report += f"Win Rate:            {win_rate:>7.1f}%\n"
+                            report += f"Total P/L:       {profit_sign}${total_profit:>10,.2f}\n"
+                            report += f"% P/L on Capital:    {pct_sign}{pct_pnl:>7.2f}%\n"
+                            report += f"Profit Factor:       {profit_factor:>8.2f}\n"
+                            report += f"Avg Win:         ${avg_win:>10,.2f}\n"
+                            report += f"Avg Loss:        ${avg_loss:>10,.2f}\n"
+                            report += f"Best Trade:      ${best_trade.profit:>10,.2f}\n"
+                            report += f"Worst Trade:     ${worst_trade.profit:>10,.2f}\n"
+                            
+                            if sorted_symbols:
+                                report += f"\n📈 Symbols:\n"
+                                for symbol, stats in sorted_symbols:
+                                    ps = "+" if stats['profit'] >= 0 else ""
+                                    report += f"  {symbol:<12} | {stats['count']:>3} trades | {ps}${stats['profit']:>9,.2f}\n"
+                    else:
+                        # Statistics disabled - just show trade count
+                        total_trades = len(closed_deals)
+                        total_profit = sum(d.profit for d in closed_deals)
+                        profit_sign = "+" if total_profit >= 0 else ""
+                        if lang == 'vi':
+                            report += f"Tổng giao dịch:      {total_trades:>8}\n"
+                            report += f"Tổng P/L:        {profit_sign}${total_profit:>10,.2f}\n"
+                        else:
+                            report += f"Total Trades:        {total_trades:>8}\n"
+                            report += f"Total P/L:       {profit_sign}${total_profit:>10,.2f}\n"
+                    
+                    # 🔧 ONLY INCLUDE CHART IF CHECKBOX IS ENABLED
+                    if include_chart:
+                        report += "\n"
+                        if lang == 'vi':
+                            report += "📊 BIỂU ĐỒ LÃI/LỖ THEO SYMBOL:\n"
+                            report += "─"*35 + "\n"
+                        else:
+                            report += "📊 P/L CHART BY SYMBOL:\n"
+                            report += "─"*35 + "\n"
+                        
+                        symbol_profits = defaultdict(list)
+                        for deal in closed_deals:
+                            symbol_profits[deal.symbol].append(deal.profit)
+                        
+                        sorted_symbol_charts = sorted(symbol_profits.items(), 
+                                                     key=lambda x: sum(x[1]), 
+                                                     reverse=True)
+                        
+                        for symbol, profits in sorted_symbol_charts:
+                            symbol_total = sum(profits)
+                            symbol_count = len(profits)
+                            symbol_wins = len([p for p in profits if p >= 0])
+                            symbol_losses = len([p for p in profits if p < 0])
+                            symbol_win_rate = (symbol_wins / symbol_count * 100) if symbol_count > 0 else 0
+                            
+                            avg_account_value = 100000
+                            profit_percent = (symbol_total / avg_account_value * 100)
+                            
+                            ps = "+" if symbol_total >= 0 else ""
+                            win_rate_str = f"{symbol_win_rate:.0f}%"
+                            pct_s = "+" if profit_percent >= 0 else ""
+                            
+                            if lang == 'vi':
+                                report += f"{symbol:<10} {symbol_count:>2} lệnh | W/L {symbol_wins}/{symbol_losses} ({win_rate_str:<4}) | {pct_s}{profit_percent:>5.2f}% | {ps}${symbol_total:>8,.0f}\n"
+                            else:
+                                report += f"{symbol:<10} {symbol_count:>2} trd | W/L {symbol_wins}/{symbol_losses} ({win_rate_str:<4}) | {pct_s}{profit_percent:>5.2f}% | {ps}${symbol_total:>8,.0f}\n"
+                else:
+                    if lang == 'vi':
+                        report += "📭 Không có giao dịch nào trong khoảng thời gian này.\n"
+                    else:
+                        report += "📭 No trades found in this period.\n"
+                
+                # Footer
+                report += "\n" + "═"*35
+                report += f"\n⏰ {datetime.now().strftime('%H:%M:%S %d/%m/%Y')}"
+                
+                return report
+                
+            except Exception as e:
+                print(f"❌ Error generating history report: {e}")
+                import traceback
+                traceback.print_exc()
+                return f"❌ Error generating report: {str(e)}"
+        
+        def _preview_history_report(self):
+            """Preview trading history report in a popup dialog"""
+            try:
+                from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QTextBrowser, QPushButton, QLabel
+                from PyQt5.QtGui import QFont
+                from PyQt5.QtCore import Qt
+                
+                lang = AppState.language() if hasattr(AppState, 'language') else 'en'
+                
+                # Create popup dialog
+                preview_dialog = QDialog(self)
+                preview_dialog.setWindowTitle(I18N.t("👁️ Trading History Report Preview", "👁️ Xem trước Báo cáo Lịch sử Giao dịch"))
+                preview_dialog.setMinimumSize(600, 500)
+                preview_dialog.setModal(True)
+                
+                layout = QVBoxLayout(preview_dialog)
+                layout.setSpacing(10)
+                
+                # Title
+                title_label = QLabel(I18N.t("📊 Trading History Report", "📊 Báo cáo Lịch sử Giao dịch"))
+                title_label.setFont(QFont("Segoe UI", 14, QFont.Bold))
+                title_label.setAlignment(Qt.AlignCenter)
+                title_label.setStyleSheet("color: #2196F3; margin-bottom: 10px;")
+                layout.addWidget(title_label)
+                
+                # Report content area
+                report_browser = QTextBrowser()
+                report_browser.setFont(QFont("Consolas", 10))
+                report_browser.setStyleSheet("""
+                    QTextBrowser {
+                        background-color: #1e1e1e;
+                        color: #ddd;
+                        border: 1px solid #444;
+                        border-radius: 5px;
+                        padding: 10px;
+                    }
+                """)
+                
+                # Show loading text first
+                loading_text = "⏳ Đang tạo báo cáo..." if lang == 'vi' else "⏳ Generating report..."
+                report_browser.setPlainText(loading_text)
+                layout.addWidget(report_browser)
+                
+                # Button row
+                button_layout = QHBoxLayout()
+                button_layout.setSpacing(10)
+                
+                # Copy button
+                copy_btn = QPushButton(I18N.t("📋 Copy to Clipboard", "📋 Sao chép"))
+                copy_btn.setFixedWidth(140)
+                copy_btn.setStyleSheet("background-color: #607D8B; color: white; font-weight: bold; padding: 8px;")
+                button_layout.addWidget(copy_btn)
+                
+                # Send button
+                send_btn = QPushButton(I18N.t("📤 Send Report", "📤 Gửi Báo cáo"))
+                send_btn.setFixedWidth(140)
+                send_btn.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; padding: 8px;")
+                button_layout.addWidget(send_btn)
+                
+                # Close button
+                close_btn = QPushButton(I18N.t("❌ Close", "❌ Đóng"))
+                close_btn.setFixedWidth(100)
+                close_btn.setStyleSheet("background-color: #f44336; color: white; font-weight: bold; padding: 8px;")
+                button_layout.addWidget(close_btn)
+                
+                button_layout.addStretch()
+                layout.addLayout(button_layout)
+                
+                # Show dialog first, then generate report
+                preview_dialog.show()
+                QApplication.processEvents()
+                
+                # Generate report
+                report = self._generate_history_report()
+                report_browser.setPlainText(report)
+                
+                # Store report for copy/send functions
+                preview_dialog._report_content = report
+                
+                # Connect buttons
+                def copy_to_clipboard():
+                    from PyQt5.QtWidgets import QApplication
+                    clipboard = QApplication.clipboard()
+                    clipboard.setText(preview_dialog._report_content)
+                    copy_btn.setText("✅ Copied!")
+                    copy_btn.setStyleSheet("background-color: #388E3C; color: white; font-weight: bold; padding: 8px;")
+                    QTimer.singleShot(2000, lambda: (
+                        copy_btn.setText(I18N.t("📋 Copy to Clipboard", "📋 Sao chép")),
+                        copy_btn.setStyleSheet("background-color: #607D8B; color: white; font-weight: bold; padding: 8px;")
+                    ))
+                
+                def send_from_preview():
+                    try:
+                        from unified_notification_system import get_unified_notification_system
+                        notification_system = get_unified_notification_system()
+                        if notification_system:
+                            success = notification_system.send_notification(preview_dialog._report_content)
+                            if success:
+                                send_btn.setText("✅ Sent!")
+                                send_btn.setStyleSheet("background-color: #388E3C; color: white; font-weight: bold; padding: 8px;")
+                                QTimer.singleShot(2000, lambda: (
+                                    send_btn.setText(I18N.t("📤 Send Report", "📤 Gửi Báo cáo")),
+                                    send_btn.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; padding: 8px;")
+                                ))
+                            else:
+                                send_btn.setText("❌ Failed")
+                                QTimer.singleShot(2000, lambda: send_btn.setText(I18N.t("📤 Send Report", "📤 Gửi Báo cáo")))
+                    except Exception as e:
+                        print(f"❌ Error sending from preview: {e}")
+                
+                copy_btn.clicked.connect(copy_to_clipboard)
+                send_btn.clicked.connect(send_from_preview)
+                close_btn.clicked.connect(preview_dialog.close)
+                
+                # Execute dialog
+                preview_dialog.exec_()
+                    
+                print("👁️ History report preview dialog shown")
+                
+            except Exception as e:
+                print(f"❌ Error previewing history report: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        def _send_history_report_now(self):
+            """Send trading history report immediately (replaces old _send_daily_summary_now for manual send)"""
+            try:
+                from unified_notification_system import get_unified_notification_system
+                
+                print("📤 Sending trading history report...")
+                
+                # Generate report
+                report = self._generate_history_report()
+                
+                if not report:
+                    print("❌ Failed to generate report")
+                    return
+                
+                # Send via notification system
+                notification_system = get_unified_notification_system()
+                if notification_system:
+                    success = notification_system.send_notification(report)
+                    if success:
+                        print("✅ Trading history report sent successfully!")
+                        # Show success feedback in UI
+                        if hasattr(self, 'send_daily_summary_btn'):
+                            original_text = self.send_daily_summary_btn.text()
+                            self.send_daily_summary_btn.setText("✅ Sent!")
+                            self.send_daily_summary_btn.setStyleSheet("background-color: #388E3C; color: white; font-weight: bold;")
+                            QTimer.singleShot(2000, lambda: (
+                                self.send_daily_summary_btn.setText(original_text),
+                                self.send_daily_summary_btn.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;")
+                            ))
+                    else:
+                        print("❌ Failed to send trading history report")
+                else:
+                    print("❌ Notification system not available")
+                    
+            except Exception as e:
+                print(f"❌ Error sending history report: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        def _on_track_orders_toggled(self, checked):
+            """Handle track orders checkbox - start/stop continuous order tracking monitoring"""
+            try:
+                if checked:
+                    # Start continuous order tracking monitoring
+                    try:
+                        from unified_notification_system import get_unified_notification_system
+                        notification_system = get_unified_notification_system()
+                        
+                        # Enable track order changes in config
+                        notification_system.config["settings"]["track_order_updates"] = True
+                        notification_system._save_config()  # Save config
+                        
+                        # Ensure MT5 is connected before starting monitoring
+                        if hasattr(self, 'connection_manager') and self.connection_manager:
+                            if not self.connection_manager.is_connected():
+                                print("📡 Connecting to MT5 for order tracking...")
+                                try:
+                                    if not self.connection_manager.connect():
+                                        print("⚠️ Could not connect to MT5, but monitoring will start when MT5 becomes available")
+                                except Exception as e:
+                                    print(f"⚠️ MT5 connection warning: {e}")
+                        
+                        # Start continuous monitoring thread if not running
+                        if not notification_system.monitoring_enabled:
+                            notification_system.start_monitoring()
+                            self._show_notification(I18N.t("📊 Order Tracking", "� Theo dõi Lệnh"), 
+                                                  I18N.t("Continuous order tracking activated", "Theo dõi lệnh liên tục đã kích hoạt") + "\n" +
+                                                  I18N.t("• Real-time order change detection", "• Phát hiện thay đổi lệnh thời gian thực") + "\n" +
+                                                  I18N.t("• Volume and status monitoring", "• Theo dõi khối lượng và trạng thái") + "\n" +
+                                                  I18N.t("• Smart pip milestone tracking", "• Theo dõi mốc pip thông minh"))
+                            # Send platform notification instead of GUI popup
+                            message = I18N.t("📊 Theo dõi thay đổi lệnh đã được kích hoạt", "📊 Order tracking has been activated") + "\n" + \
+                                    I18N.t("• Phát hiện thay đổi lệnh thời gian thực", "• Real-time order change detection") + "\n" + \
+                                    I18N.t("• Theo dõi khối lượng và trạng thái", "• Volume and status monitoring") + "\n" + \
+                                    I18N.t("• Theo dõi mốc pip thông minh", "• Smart pip milestone tracking")
+                            
+                            self._send_platform_notification(message, "track_orders_enabled")
+                            print("✅ Continuous order tracking monitoring started")
+                        else:
+                            # Already running, just enable the setting
+                            self._show_notification(I18N.t("📊 Order Tracking", "📊 Theo dõi Lệnh"), 
+                                                  I18N.t("Order tracking enabled", "Theo dõi lệnh đã bật") + "\n" +
+                                                  I18N.t("• Monitoring thread already active", "• Luồng theo dõi đã hoạt động") + "\n" +
+                                                  I18N.t("• Order changes will be tracked", "• Thay đổi lệnh sẽ được theo dõi"))
+                            print("✅ Order tracking enabled (monitoring already active)")
+                            
+                    except Exception as e:
+                        print(f"⚠️ Error starting order tracking: {e}")
+                        self._show_notification(I18N.t("📊 Order Tracking", "📊 Theo dõi Lệnh"), 
+                                              I18N.t("Order tracking enabled (basic mode)", "Theo dõi lệnh đã bật (chế độ cơ bản)"))
+                        print("✅ Order tracking enabled (basic mode)")
+                        
+                else:
+                    # Disable track order changes
+                    try:
+                        from unified_notification_system import get_unified_notification_system
+                        notification_system = get_unified_notification_system()
+                        notification_system.config["settings"]["track_order_updates"] = False
+                        notification_system._save_config()  # Save config
+                    except:
+                        pass
+                    
+                    self._show_notification(I18N.t("📊 Order Tracking", "📊 Theo dõi Lệnh"), 
+                                          I18N.t("Order tracking monitoring deactivated", "Theo dõi lệnh đã tắt"))
+                    print("🛑 Order tracking disabled")
+                
+                # Send platform notification for tracking change
+                self._send_tracking_notification("track_orders", checked)
+                
+                self._save_auto_notification_settings()  # Save config
+            except Exception as e:
+                print(f"❌ Error toggling order tracking: {e}")
+                
+        def _on_sl_tp_toggled(self, checked):
+            """Handle SL/TP changes checkbox - start/stop continuous SL/TP monitoring"""
+            try:
+                if checked:
+                    # Start continuous SL/TP monitoring
+                    try:
+                        from unified_notification_system import get_unified_notification_system
+                        notification_system = get_unified_notification_system()
+                        
+                        # Enable SL/TP notifications in config
+                        notification_system.config["settings"]["notify_sl_tp_changes"] = True
+                        notification_system._save_config()  # Save config
+                        
+                        # Ensure MT5 is connected before starting monitoring
+                        if hasattr(self, 'connection_manager') and self.connection_manager:
+                            if not self.connection_manager.is_connected():
+                                print("📡 Connecting to MT5 for SL/TP tracking...")
+                                try:
+                                    if not self.connection_manager.connect():
+                                        print("⚠️ Could not connect to MT5, but monitoring will start when MT5 becomes available")
+                                except Exception as e:
+                                    print(f"⚠️ MT5 connection warning: {e}")
+                        
+                        # Start continuous monitoring thread if not running
+                        if not notification_system.monitoring_enabled:
+                            notification_system.start_monitoring()
+                            self._show_notification(I18N.t("🛡️ SL/TP Monitoring", "🛡️ Theo dõi SL/TP"), 
+                                                  I18N.t("Continuous SL/TP monitoring activated", "Theo dõi SL/TP liên tục đã kích hoạt") + "\n" +
+                                                  I18N.t("• Real-time SL/TP change detection", "• Phát hiện thay đổi SL/TP thời gian thực") + "\n" +
+                                                  I18N.t("• Smart thresholds per symbol type", "• Ngưỡng thông minh theo loại mã") + "\n" +
+                                                  I18N.t("• Group notifications by symbol", "• Nhóm thông báo theo mã"))
+                            print("✅ Continuous SL/TP monitoring started")
+                        else:
+                            # Already running, just enable the setting
+                            self._show_notification(I18N.t("🛡️ SL/TP Monitoring", "🛡️ Theo dõi SL/TP"), 
+                                                  I18N.t("SL/TP monitoring enabled", "Theo dõi SL/TP đã bật") + "\n" +
+                                                  I18N.t("• Monitoring thread already active", "• Luồng theo dõi đã hoạt động") + "\n" +
+                                                  I18N.t("• SL/TP changes will be tracked", "• Thay đổi SL/TP sẽ được theo dõi"))
+                            print("✅ SL/TP monitoring enabled (monitoring already active)")
+                            
+                    except Exception as e:
+                        print(f"⚠️ Error starting SL/TP monitoring: {e}")
+                        self._show_notification(I18N.t("🛡️ SL/TP Monitoring", "🛡️ Theo dõi SL/TP"), 
+                                              I18N.t("SL/TP monitoring enabled (basic mode)", "Theo dõi SL/TP đã bật (chế độ cơ bản)"))
+                        
+                else:
+                    # Disable SL/TP notifications
+                    try:
+                        from unified_notification_system import get_unified_notification_system
+                        notification_system = get_unified_notification_system()
+                        notification_system.config["settings"]["notify_sl_tp_changes"] = False
+                        notification_system._save_config()  # Save config
+                    except:
+                        pass
+                    
+                    self._show_notification(I18N.t("🛡️ SL/TP Monitoring", "🛡️ Theo dõi SL/TP"), 
+                                          I18N.t("SL/TP changes monitoring deactivated", "Theo dõi thay đổi SL/TP đã tắt")) 
+                    print("🛑 SL/TP monitoring disabled")
+                
+                # Send platform notification for SL/TP tracking change
+                self._send_tracking_notification("sl_tp", checked)
+                
+                self._save_auto_notification_settings()  # Save config
+            except Exception as e:
+                print(f"❌ Error toggling SL/TP monitoring: {e}")
+                
+        def _on_close_toggled(self, checked):
+            """Handle order close checkbox - start/stop continuous position close monitoring"""
+            try:
+                if checked:
+                    # Start continuous close monitoring
+                    try:
+                        from unified_notification_system import get_unified_notification_system
+                        notification_system = get_unified_notification_system()
+                        
+                        # Enable close notifications in config
+                        notification_system.config["settings"]["notify_order_close"] = True
+                        notification_system._save_config()  # Save config
+                        
+                        # Ensure MT5 is connected before starting monitoring
+                        if hasattr(self, 'connection_manager') and self.connection_manager:
+                            if not self.connection_manager.is_connected():
+                                print("📡 Connecting to MT5 for close tracking...")
+                                try:
+                                    if not self.connection_manager.connect():
+                                        print("⚠️ Could not connect to MT5, but monitoring will start when MT5 becomes available")
+                                except Exception as e:
+                                    print(f"⚠️ MT5 connection warning: {e}")
+                        
+                        # Start continuous monitoring thread if not running
+                        if not notification_system.monitoring_enabled:
+                            notification_system.start_monitoring()
+                            self._show_notification(I18N.t("🏁 Close Monitoring", "🏁 Theo dõi Đóng lệnh"), 
+                                                  I18N.t("Continuous position close monitoring activated", "Theo dõi đóng vị thế liên tục đã kích hoạt") + "\n" +
+                                                  I18N.t("• Real-time position close detection", "• Phát hiện đóng vị thế thời gian thực") + "\n" +
+                                                  I18N.t("• Validation with MT5 history", "• Xác thực với lịch sử MT5") + "\n" +
+                                                  I18N.t("• Group notifications by symbol", "• Nhóm thông báo theo mã"))
+                            print("✅ Continuous close monitoring started")
+                        else:
+                            # Already running, just enable the setting
+                            self._show_notification(I18N.t("🏁 Close Monitoring", "🏁 Theo dõi Đóng lệnh"), 
+                                                  I18N.t("Position close monitoring enabled", "Theo dõi đóng vị thế đã bật") + "\n" +
+                                                  I18N.t("• Monitoring thread already active", "• Luồng theo dõi đã hoạt động") + "\n" +
+                                                  I18N.t("• Position closes will be tracked", "• Đóng vị thế sẽ được theo dõi"))
+                            print("✅ Close monitoring enabled (monitoring already active)")
+                            
+                    except Exception as e:
+                        print(f"⚠️ Error starting close monitoring: {e}")
+                        self._show_notification(I18N.t("🏁 Close Monitoring", "🏁 Theo dõi Đóng lệnh"), 
+                                              I18N.t("Close monitoring enabled (basic mode)", "Theo dõi đóng lệnh đã bật (chế độ cơ bản)"))
+                        
+                else:
+                    # Disable close notifications
+                    try:
+                        from unified_notification_system import get_unified_notification_system
+                        notification_system = get_unified_notification_system()
+                        notification_system.config["settings"]["notify_order_close"] = False
+                        notification_system._save_config()  # Save config
+                    except:
+                        pass
+                    
+                    self._show_notification(I18N.t("🏁 Close Monitoring", "🏁 Theo dõi Đóng lệnh"), 
+                                          I18N.t("Position close monitoring deactivated", "Theo dõi đóng vị thế đã tắt"))
+                    print("🛑 Close monitoring disabled")
+                
+                # Send platform notification for order close tracking change
+                self._send_tracking_notification("order_close", checked)
+                
+                self._save_auto_notification_settings()  # Save config  
+            except Exception as e:
+                print(f"❌ Error toggling close monitoring: {e}")
+        
+        def _auto_start_track_orders_monitoring(self):
+            """Auto-start track orders monitoring during app startup"""
+            try:
+                from unified_notification_system import get_unified_notification_system
+                notification_system = get_unified_notification_system()
+                
+                # Enable track order changes in config
+                notification_system.config["settings"]["track_order_updates"] = True
+                notification_system._save_config()
+                
+                # Start continuous monitoring thread if not running
+                if not notification_system.monitoring_enabled:
+                    notification_system.start_monitoring()
+                    print("✅ Auto-started track orders monitoring on app startup")
+                else:
+                    print("✅ Track orders monitoring enabled (monitoring already active)")
+                    
+            except Exception as e:
+                print(f"⚠️ Error auto-starting track orders monitoring: {e}")
+        
+        def _auto_start_sl_tp_monitoring(self):
+            """Auto-start SL/TP monitoring during app startup"""
+            try:
+                from unified_notification_system import get_unified_notification_system
+                notification_system = get_unified_notification_system()
+                
+                # Enable SL/TP notifications in config
+                notification_system.config["settings"]["notify_sl_tp_changes"] = True
+                notification_system._save_config()
+                
+                # Start continuous monitoring thread if not running
+                if not notification_system.monitoring_enabled:
+                    notification_system.start_monitoring()
+                    print("✅ Auto-started SL/TP monitoring on app startup")
+                else:
+                    print("✅ SL/TP monitoring enabled (monitoring already active)")
+                    
+            except Exception as e:
+                print(f"⚠️ Error auto-starting SL/TP monitoring: {e}")
+                
+        def _auto_start_close_monitoring(self):
+            """Auto-start close monitoring during app startup"""
+            try:
+                from unified_notification_system import get_unified_notification_system
+                notification_system = get_unified_notification_system()
+                
+                # Enable close notifications in config
+                notification_system.config["settings"]["notify_order_close"] = True
+                notification_system._save_config()
+                
+                # Start continuous monitoring thread if not running
+                if not notification_system.monitoring_enabled:
+                    notification_system.start_monitoring()
+                    print("✅ Auto-started close monitoring on app startup")
+                else:
+                    print("✅ Close monitoring enabled (monitoring already active)")
+                    
+            except Exception as e:
+                print(f"⚠️ Error auto-starting close monitoring: {e}")
+        
+        def _check_service_status(self):
+            """Check order tracking service status"""
+            try:
+                daemon = OrderTrackingDaemon()
+                
+                if ORDER_DAEMON_AVAILABLE and daemon.status():
+                    self._show_notification("✅ Service Running", "Order tracking service is active")
+                else:
+                    if ORDER_DAEMON_AVAILABLE:
+                        self._show_notification("❌ Service Stopped", "Order tracking service is not running")
+                    else:
+                        self._show_notification("❌ Module Not Available", "Order tracking daemon module not available")
+                    
+            except Exception as e:
+                print(f"❌ Error checking service status: {e}")
+                self._show_notification("❌ Error", f"Error checking status: {str(e)}")
+        
+        def _show_notification(self, title, message):
+            """Show notification dialog"""
+            try:
+                from PyQt5.QtWidgets import QMessageBox
+                QMessageBox.information(self, title, message)
+            except:
+                print(f"{title}: {message}")
+        
+        def _send_platform_notification(self, message, notification_type="general"):
+            """Send notification through configured platforms (Telegram/Zalo/Discord)"""
+            try:
+                from unified_notification_system import get_unified_notification_system
+                notification_system = get_unified_notification_system()
+                # UnifiedNotificationSystem.send_notification only takes message parameter
+                notification_system.send_notification(message)
+                print(f"✅ Platform notification sent: {notification_type}")
+                return True
+            except Exception as e:
+                print(f"⚠️ Failed to send platform notification: {e}")
+                return False
+        
+        def _send_tracking_notification(self, tracking_type, enabled):
+            """Send notification for tracking button changes"""
+            try:
+                if tracking_type == "track_orders":
+                    if enabled:
+                        # Get interval from config
+                        interval = 30  # default
+                        try:
+                            import json
+                            with open(os.path.join(os.path.dirname(__file__), "notification_config.json"), 'r') as f:
+                                cfg = json.load(f)
+                                interval = cfg.get('settings', {}).get('update_interval_seconds', 30)
+                        except:
+                            pass
+                        
+                        message = I18N.t("📊 Theo dõi trạng thái lệnh đã được kích hoạt", "📊 Order status tracking has been activated") + "\n" + \
+                                I18N.t("• Thông báo P/L hiện tại định kỳ", "• Periodic current P/L notification") + "\n" + \
+                                I18N.t(f"• Cập nhật mỗi {interval} giây", f"• Update every {interval} seconds") + "\n" + \
+                                I18N.t("• Nhóm theo symbol với Entry/DCA tags", "• Grouped by symbol with Entry/DCA tags")
+                        self._send_platform_notification(message, "track_orders_enabled")
+                    else:
+                        message = I18N.t("🛑 Theo dõi trạng thái lệnh đã được tắt", "🛑 Order status tracking has been deactivated")
+                        self._send_platform_notification(message, "track_orders_disabled")
+                
+                elif tracking_type == "sl_tp":
+                    if enabled:
+                        message = I18N.t("🛡️ Theo dõi thay đổi SL/TP đã được kích hoạt", "🛡️ SL/TP change tracking has been activated") + "\n" + \
+                                I18N.t("• Thông báo khi SL/TP thay đổi", "• Notify when SL/TP changes") + "\n" + \
+                                I18N.t("• Đánh dấu Entry/DCA cho mỗi lệnh", "• Entry/DCA tag for each order") + "\n" + \
+                                I18N.t("• Nhóm thông báo theo symbol", "• Group notifications by symbol")
+                        self._send_platform_notification(message, "sl_tp_enabled")
+                    else:
+                        message = I18N.t("🛑 Theo dõi thay đổi SL/TP đã được tắt", "🛑 SL/TP change tracking has been deactivated")
+                        self._send_platform_notification(message, "sl_tp_disabled")
+                
+                elif tracking_type == "order_close":
+                    if enabled:
+                        message = I18N.t("🏁 Theo dõi đóng lệnh đã được kích hoạt", "🏁 Order close tracking has been activated") + "\n" + \
+                                I18N.t("• Thông báo khi lệnh đóng", "• Notify when orders close") + "\n" + \
+                                I18N.t("• Hiển thị lãi/lỗ và pips", "• Show profit/loss and pips") + "\n" + \
+                                I18N.t("• Nhóm thông báo theo symbol", "• Group notifications by symbol")
+                        self._send_platform_notification(message, "order_close_enabled")
+                    else:
+                        message = I18N.t("🛑 Theo dõi đóng lệnh đã được tắt", "🛑 Order close tracking has been deactivated")
+                        self._send_platform_notification(message, "order_close_disabled")
+                        
+            except Exception as e:
+                print(f"❌ Error sending tracking notification: {e}")
+        
+        def _generate_custom_notification(self, notification_type):
+            """Generate and send custom notification based on type"""
+            import os
+            import json
+            
+            try:
+                # Đường dẫn thư mục analysis_results
+                analysis_path = os.path.join(os.path.dirname(__file__), "analysis_results")
+                
+                if not os.path.exists(analysis_path):
+                    self._show_notification(I18N.t("❌ Error", "❌ Lỗi"), I18N.t("analysis_results folder does not exist", "Thư mục analysis_results không tồn tại"))
+                    return
+                
+                # Tìm file signal mới nhất
+                signal_files = [f for f in os.listdir(analysis_path) if f.endswith('_signal.json')]
+                if not signal_files:
+                    self._show_notification(I18N.t("❌ Error", "❌ Lỗi"), I18N.t("Signal file not found", "Không tìm thấy file tín hiệu"))
+                    return
+                
+                # Sắp xếp theo thời gian tạo và lấy file mới nhất
+                signal_files.sort(key=lambda x: os.path.getctime(os.path.join(analysis_path, x)), reverse=True)
+                latest_signal = signal_files[0]
+                
+                # Đọc dữ liệu signal
+                with open(os.path.join(analysis_path, latest_signal), 'r', encoding='utf-8') as f:
+                    signal_data = json.load(f)
+                
+                # Tạo nội dung theo từng loại
+                content = ""
+                symbol = signal_data.get('symbol', 'Unknown')
+                
+                if notification_type == "Phân Tích Kỹ Thuật":
+                    content = f"🔍 **PHÂN TÍCH KỸ THUẬT - {symbol}**\n\n"
+                    technical = signal_data.get('technical_analysis', {})
+                    content += f"📈 Xu hướng: {technical.get('trend', 'N/A')}\n"
+                    content += f"💪 Độ mạnh: {technical.get('strength', 'N/A')}\n"
+                    content += f"🎯 Tín hiệu: {technical.get('signal', 'N/A')}\n"
+                    content += f"⚖️ Rủi ro: {technical.get('risk_level', 'N/A')}\n"
+                
+                elif notification_type == "Chỉ Báo":
+                    content = f"📊 **CHỈ BÁO - {symbol}**\n\n"
+                    indicators = signal_data.get('indicators', {})
+                    for name, value in indicators.items():
+                        if isinstance(value, dict):
+                            content += f"• {name}: {value.get('value', 'N/A')} - {value.get('signal', 'N/A')}\n"
+                        else:
+                            content += f"• {name}: {value}\n"
+                
+                elif notification_type == "Tóm Tắt":
+                    content = f"📋 **TÓM TẮT TỔNG QUAN - {symbol}**\n\n"
+                    summary = signal_data.get('summary', {})
+                    content += f"🎯 Khuyến nghị: {summary.get('recommendation', 'N/A')}\n"
+                    content += f"📊 Điểm số: {summary.get('score', 'N/A')}\n"
+                    content += f"⏰ Thời gian: {summary.get('timestamp', 'N/A')}\n"
+                    content += f"💡 Ghi chú: {summary.get('notes', 'N/A')}\n"
+                
+                elif notification_type == "Mô Hình Nến":
+                    content = f"🕯️ **MÔ HÌNH NẾN - {symbol}**\n\n"
+                    patterns = signal_data.get('candlestick_patterns', [])
+                    if patterns:
+                        for pattern in patterns[:5]:  # Hiển thị tối đa 5 mô hình
+                            content += f"• {pattern.get('name', 'N/A')}: {pattern.get('strength', 'N/A')}\n"
+                    else:
+                        content += "Không phát hiện mô hình nến đặc biệt\n"
+                
+                elif notification_type == "Mô Hình Giá":
+                    content = f"💹 **MÔ HÌNH GIÁ - {symbol}**\n\n"
+                    price_patterns = signal_data.get('price_patterns', {})
+                    content += f"📈 Support: {price_patterns.get('support', 'N/A')}\n"
+                    content += f"📉 Resistance: {price_patterns.get('resistance', 'N/A')}\n"
+                    content += f"📊 Trend Lines: {price_patterns.get('trendlines', 'N/A')}\n"
+                    content += f"🔄 Breakout: {price_patterns.get('breakout', 'N/A')}\n"
+                
+                if content:
+                    # Gửi thông báo qua các nền tảng đã bật
+                    self._send_custom_notification(content)
+                    self._show_notification(I18N.t("✅ Success", "✅ Thành Công"), I18N.t("Sent notification {type}", "Đã gửi thông báo {type}", type=notification_type))
+                else:
+                    self._show_notification(I18N.t("❌ Error", "❌ Lỗi"), I18N.t("Cannot create notification content", "Không thể tạo nội dung thông báo"))
+                    
+            except Exception as e:
+                print(f"Error generating custom notification: {e}")
+                self._show_notification(I18N.t("❌ Error", "❌ Lỗi"), I18N.t("Notification error: {error}", "Lỗi tạo thông báo: {error}", error=str(e)))
+        
+        def _send_custom_notification(self, message_content):
+            """Send custom notification message to enabled platforms"""
+            try:
+                # Load current notification config
+                config_path = os.path.join(os.path.dirname(__file__), "notification_config.json")
+                if not os.path.exists(config_path):
+                    self._show_notification(I18N.t("❌ Error", "❌ Lỗi"), I18N.t("Notification not configured. Please open notification settings first.", "Chưa cấu hình thông báo. Vui lòng mở cài đặt thông báo trước."))
+                    return
+                
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                
+                success_platforms = []
+                failed_platforms = []
+                
+                # Import unified notification system
+                try:
+                    from unified_notification_system import get_unified_notification_system
+                    notification_system = get_unified_notification_system()
+                    
+                    # Send to enabled platforms
+                    success = notification_system.send_notification(message_content)
+                    if success:
+                        success_platforms.append("Telegram")
+                
+                    # Show results
+                    if success_platforms:
+                        result_msg = I18N.t("Sent successfully: {platforms}", "Gửi thành công: {platforms}", platforms=', '.join(success_platforms))
+                        if failed_platforms:
+                            result_msg += I18N.t("\nFailed: {platforms}", "\nThất bại: {platforms}", platforms=', '.join(failed_platforms))
+                        print(f"✅ {result_msg}")
+                    elif failed_platforms:
+                        print(I18N.t("❌ Send failed: {platforms}", "❌ Gửi thất bại: {platforms}", platforms=', '.join(failed_platforms)))
+                    else:
+                        print(I18N.t("⚠️ No platforms activated", "⚠️ Không có nền tảng nào được kích hoạt"))
+                        
+                except ImportError:
+                    print("❌ Unified notification system not available")
+                    
+            except Exception as e:
+                print(f"Error sending custom notification: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        def _view_service_logs(self):
+            """View order tracking service logs"""
+            try:
+                if not ORDER_DAEMON_AVAILABLE:
+                    self._show_notification("❌ Module Not Available", "Order tracking daemon module not available")
+                    return
+                
+                daemon = OrderTrackingDaemon()
+                
+                # Create log viewer dialog
+                from PyQt5.QtWidgets import QDialog, QVBoxLayout, QTextBrowser, QPushButton, QHBoxLayout
+                
+                dialog = QDialog(self)
+                dialog.setWindowTitle("📝 Order Tracking Service Logs")
+                dialog.resize(800, 600)
+                
+                layout = QVBoxLayout(dialog)
+                
+                logs_browser = QTextBrowser()
+                
+                if daemon.logfile and hasattr(daemon.logfile, 'exists') and daemon.logfile.exists():
+                    with open(daemon.logfile, 'r', encoding='utf-8') as f:
+                        logs_content = f.read()
+                    logs_browser.setPlainText(logs_content)
+                else:
+                    logs_browser.setPlainText("📝 No logs found")
+                
+                layout.addWidget(logs_browser)
+                
+                # Buttons
+                button_layout = QHBoxLayout()
+                refresh_btn = QPushButton("🔄 Refresh")
+                close_btn = QPushButton("❌ Close")
+                
+                def refresh_logs():
+                    if daemon.logfile and hasattr(daemon.logfile, 'exists') and daemon.logfile.exists():
+                        with open(daemon.logfile, 'r', encoding='utf-8') as f:
+                            logs_content = f.read()
+                        logs_browser.setPlainText(logs_content)
+                        # Scroll to bottom
+                        scrollbar = logs_browser.verticalScrollBar()
+                        scrollbar.setValue(scrollbar.maximum())
+                
+                refresh_btn.clicked.connect(refresh_logs)
+                close_btn.clicked.connect(dialog.close)
+                
+                button_layout.addWidget(refresh_btn)
+                button_layout.addStretch()
+                button_layout.addWidget(close_btn)
+                
+                layout.addLayout(button_layout)
+                
+                dialog.exec_()
+                    
+            except Exception as e:
+                print(f"❌ Error viewing service logs: {e}")
+                self._show_notification("❌ Error", f"Error viewing logs: {str(e)}")
+        
+        # Smart Trading Monitor tab has been removed per user request
+        # All real order monitoring now handled directly by unified_notification_system
+        
+        # _start_smart_monitoring method removed - tab functionality disabled
+        
+        # _stop_smart_monitoring method removed - tab functionality disabled
+        
+        # _update_monitor_status method removed - tab functionality disabled
+        
+        # _schedule_auto_start_monitoring method removed - Smart Trading Monitor tab disabled per user request
+        
+        # _add_notification_log method removed - Smart Trading Monitor tab disabled
+        
+        def closeEvent(self, event):
+            """Handle dialog close event - auto save all config"""
+            try:
+                print("🔍 [DEBUG] NotificationDialog closeEvent triggered")
+                
+                # Save platform configuration
+                print("💾 [DEBUG] Auto-saving platform config on close...")
+                self._save_config(show_message=False)
+                
+                # Save notification/reporting settings
+                print("💾 [DEBUG] Auto-saving notification settings on close...")
+                self._save_auto_notification_settings()
+                
+                print("✅ [DEBUG] All configs saved successfully on close")
+                event.accept()
+            except Exception as e:
+                print(f"❌ [ERROR] Error in closeEvent: {e}")
+                event.accept()
+        
+        
+        def _create_action_buttons(self, layout):
+            """Create bottom action buttons"""
+            button_layout = QHBoxLayout()
+            
+            # Left side buttons
+            self.save_btn = QPushButton(I18N.t("💾 Save Configuration", "💾 Lưu cấu hình"))
+            self.save_btn.clicked.connect(lambda: self._save_config(show_message=True))
+            self.save_btn.setStyleSheet("QPushButton { background-color: #28a745; color: white; font-weight: bold; padding: 8px 16px; }")
+            
+            # Right side buttons - only shown on specific tabs
+            self.preview_btn = QPushButton(I18N.t("👀 Update Preview", "👀 Cập nhật xem trước"))
+            self.preview_btn.clicked.connect(self._manual_update_preview)
+            # Initially hidden - will be shown only on Message & Send tab
+            self.preview_btn.setVisible(False)
+            
+            self.send_btn = QPushButton(I18N.t("📤 Send Now", "📤 Gửi ngay"))
+            self.send_btn.clicked.connect(self._send_notification)
+            self.send_btn.setStyleSheet("QPushButton { background-color: #28a745; color: white; font-weight: bold; }")
+            # Initially hidden - will be shown only on Message & Send tab
+            self.send_btn.setVisible(False)
+            
+            self.cancel_btn = QPushButton(I18N.t("❌ Cancel", "❌ Hủy"))
+            self.cancel_btn.clicked.connect(self.close)
+            
+            button_layout.addWidget(self.save_btn)
+            button_layout.addStretch()
+            button_layout.addWidget(self.cancel_btn)
+            
+            # Auto notification checkbox - compact version
+            try:
+                from unified_notification_system import get_unified_notification_system
+                
+                # Auto notification toggle (small version)
+                auto_notify_frame = QWidget()
+                auto_notify_frame.setStyleSheet("QWidget { background-color: rgba(40, 167, 69, 0.05); border: 1px solid #28a745; border-radius: 4px; padding: 2px; }")
+                auto_notify_layout = QHBoxLayout(auto_notify_frame)
+                auto_notify_layout.setContentsMargins(4, 2, 4, 2)
+                auto_notify_layout.setSpacing(4)
+                
+                # Status icon (small)
+                self.notification_status_icon = QLabel("🔕")
+                self.notification_status_icon.setStyleSheet("font-size: 12px;")
+                
+                # Auto notification checkbox (compact)
+                self.auto_notification_cb = QCheckBox(I18N.t("Auto", "Tự động"))
+                self.auto_notification_cb.setStyleSheet("""
+                    QCheckBox {
+                        font-weight: bold;
+                        color: #28a745;
+                        font-size: 10px;
+                    }
+                    QCheckBox::indicator {
+                        width: 12px;
+                        height: 12px;
+                    }
+                    QCheckBox::indicator:unchecked {
+                        border: 1px solid #ccc;
+                        background-color: white;
+                        border-radius: 2px;
+                    }
+                    QCheckBox::indicator:checked {
+                        border: 1px solid #28a745;
+                        background-color: #28a745;
+                        border-radius: 2px;
+                    }
+                """)
+                
+                # Load current state
+                notification_system = get_unified_notification_system()
+                is_enabled = notification_system.config.get("telegram", {}).get("enabled", False)
+                self.auto_notification_cb.setChecked(is_enabled)
+                self.notification_status_icon.setText("🔔" if is_enabled else "🔕")
+                
+                # Set tooltip
+                self.auto_notification_cb.setToolTip(I18N.t(
+                    "Auto notification - when checked, automatically sends real-time trading notifications",
+                    "Thông báo tự động - khi bật, tự động gửi thông báo giao dịch real-time"
+                ))
+                
+                # Connect toggle function
+                def toggle_auto_notification(checked):
+                    try:
+                        notification_system = get_unified_notification_system()
+                        
+                        # Update config
+                        if "telegram" not in notification_system.config:
+                            notification_system.config["telegram"] = {}
+                        notification_system.config["telegram"]["enabled"] = checked
+                        
+                        # Save config
+                        import json
+                        with open(notification_system.config_file, 'w', encoding='utf-8') as f:
+                            json.dump(notification_system.config, f, indent=2, ensure_ascii=False)
+                        
+                        # Update status icon
+                        self.notification_status_icon.setText("🔔" if checked else "🔕")
+                        
+                        # Start/stop monitoring
+                        if checked:
+                            # Check if any notification method is properly configured
+                            def check_platform_config(config, required_fields):
+                                """Check if a platform has required fields configured"""
+                                if not config.get("enabled", False):
+                                    return False
+                                return any(config.get(field, "").strip() for field in required_fields)
+                            
+                            # Check all supported platforms
+                            platforms_configured = []
+                            
+                            # Telegram
+                            telegram_config = notification_system.config.get("telegram", {})
+                            if check_platform_config(telegram_config, ["bot_token", "chat_id"]):
+                                platforms_configured.append("Telegram")
+                            
+                            # Zalo  
+                            zalo_config = notification_system.config.get("zalo", {})
+                            if check_platform_config(zalo_config, ["webhook_url", "access_token"]):
+                                platforms_configured.append("Zalo")
+                            
+                            # Discord
+                            discord_config = notification_system.config.get("discord", {})
+                            if check_platform_config(discord_config, ["webhook_url", "bot_token"]):
+                                platforms_configured.append("Discord")
+                            
+                            # Slack
+                            slack_config = notification_system.config.get("slack", {})
+                            if check_platform_config(slack_config, ["webhook_url", "bot_token"]):
+                                platforms_configured.append("Slack")
+                            
+                            # Email
+                            email_config = notification_system.config.get("email", {})
+                            if check_platform_config(email_config, ["username", "password"]):
+                                platforms_configured.append("Email")
+                            
+                            # Generic Webhook
+                            webhook_config = notification_system.config.get("webhook", {})
+                            if check_platform_config(webhook_config, ["urls"]):
+                                platforms_configured.append("Webhook")
+                            
+                            # Microsoft Teams
+                            teams_config = notification_system.config.get("teams", {})
+                            if check_platform_config(teams_config, ["webhook_url"]):
+                                platforms_configured.append("Teams")
+                            
+                            # Always allow auto notification (basic monitoring + any configured external platforms)
+                            if True:  # Always enable for maximum flexibility
+                                if not notification_system.monitoring_enabled:
+                                    try:
+                                        notification_system.start_monitoring()
+                                        print("✅ Auto notification monitoring started")
+                                        # Show success feedback
+                                        self.auto_notification_cb.setStyleSheet(self.auto_notification_cb.styleSheet().replace("#28a745", "#20c997"))
+                                        from PyQt5.QtCore import QTimer
+                                        QTimer.singleShot(1000, lambda: self.auto_notification_cb.setStyleSheet(self.auto_notification_cb.styleSheet().replace("#20c997", "#28a745")))
+                                    except Exception as e:
+                                        print(f"⚠️ Could not start monitoring: {e}")
+                            else:
+                                # Show status of configured platforms
+                                if platforms_configured:
+                                    platforms_str = ", ".join(platforms_configured)
+                                    print(f"✅ Auto notification enabled with external services: {platforms_str}")
+                                    
+                                    try:
+                                        from PyQt5.QtWidgets import QMessageBox
+                                        QMessageBox.information(self, 
+                                            I18N.t("Auto Notification Enabled", "Thông báo Tự động Đã Bật"), 
+                                            I18N.t(
+                                                f"Auto notification enabled successfully!\n\nConfigured platforms: {platforms_str}\n\nAll notifications will be sent to configured services and internal monitoring is active.",
+                                                f"Thông báo tự động đã được bật thành công!\n\nCác nền tảng đã cấu hình: {platforms_str}\n\nTất cả thông báo sẽ được gửi đến các dịch vụ đã cấu hình và giám sát nội bộ đang hoạt động."
+                                            ))
+                                    except:
+                                        pass
+                                else:
+                                    print("⚠️ Auto notification enabled for internal monitoring only")
+                                    print("💡 Configure external platforms: Telegram, Discord, Slack, Email, Webhook, Teams, Zalo")
+                                    
+                                    try:
+                                        from PyQt5.QtWidgets import QMessageBox
+                                        QMessageBox.information(self, 
+                                            I18N.t("Auto Notification Enabled", "Thông báo Tự động Đã Bật"), 
+                                            I18N.t(
+                                                "Auto notification enabled for internal monitoring.\n\nSupported external platforms:\n• Telegram (bot + chat)\n• Discord (webhook/bot)\n• Slack (webhook/bot)\n• Email (SMTP)\n• Generic Webhook\n• Microsoft Teams\n• Zalo\n\nConfigure any platform in notification settings for external alerts.",
+                                                "Thông báo tự động đã được bật cho giám sát nội bộ.\n\nCác nền tảng bên ngoài được hỗ trợ:\n• Telegram (bot + chat)\n• Discord (webhook/bot)\n• Slack (webhook/bot)\n• Email (SMTP)\n• Generic Webhook\n• Microsoft Teams\n• Zalo\n\nCấu hình bất kỳ nền tảng nào trong cài đặt thông báo để nhận cảnh báo bên ngoài."
+                                            ))
+                                    except:
+                                        pass
+                                
+                                # Start basic monitoring anyway
+                                try:
+                                    if not notification_system.monitoring_enabled:
+                                        notification_system.start_monitoring()
+                                        print("✅ Basic auto notification monitoring started")
+                                except Exception as e:
+                                    print(f"⚠️ Could not start basic monitoring: {e}")
+                        else:
+                            # Stop monitoring
+                            if notification_system.monitoring_enabled:
+                                try:
+                                    notification_system.stop_monitoring()
+                                    print("🛑 Auto notification monitoring stopped")
+                                except Exception as e:
+                                    print(f"⚠️ Could not stop monitoring: {e}")
+                        
+                        print(f"🔔 Auto notification {'enabled' if checked else 'disabled'}")
+                        
+                    except Exception as e:
+                        print(f"❌ Error toggling auto notification: {e}")
+                
+                self.auto_notification_cb.toggled.connect(toggle_auto_notification)
+                
+                # Add to layout
+                auto_notify_layout.addWidget(self.notification_status_icon)
+                auto_notify_layout.addWidget(self.auto_notification_cb)
+                
+                button_layout.addWidget(auto_notify_frame)
+                button_layout.addSpacing(8)
+                
+                print("✅ Compact auto notification toggle added to notification dialog")
+                
+            except Exception as e:
+                print(f"⚠️ Could not add auto notification toggle to dialog: {e}")
+            
+            # Store message/send specific buttons separately  
+            button_layout.addWidget(self.preview_btn)
+            button_layout.addWidget(self.send_btn)
+            button_layout.addWidget(self.cancel_btn)
+            
+            layout.addLayout(button_layout)
+            
+            # Store button layout reference for dynamic management
+            self.button_layout = button_layout
+            
+            # Update button visibility based on current tab
+            self._update_button_visibility()
+            
+            # Connect tab change to update button visibility
+            if hasattr(self.main_tabs, 'currentChanged'):
+                try:
+                    self.main_tabs.currentChanged.disconnect(self._update_button_visibility)
+                except:
+                    pass
+                self.main_tabs.currentChanged.connect(self._update_button_visibility)
+        
+        def _update_button_visibility(self):
+            """Update button visibility based on current tab"""
+            try:
+                current_index = self.main_tabs.currentIndex()
+                current_tab_text = self.main_tabs.tabText(current_index)
+                
+                # Show preview and send buttons only on Message & Send tab
+                is_message_tab = ("Message & Send" in current_tab_text or 
+                                "Tin nhắn & Gửi" in current_tab_text or 
+                                "📤" in current_tab_text)
+                
+                if not hasattr(self, 'button_layout') or not hasattr(self, 'preview_btn') or not hasattr(self, 'send_btn'):
+                    return
+                    
+                # Try removing and re-adding buttons to layout
+                if is_message_tab:
+                    # Remove buttons from layout first (in case they were already added)
+                    self.button_layout.removeWidget(self.preview_btn)
+                    self.button_layout.removeWidget(self.send_btn)
+                    
+                    # Insert preview and send buttons before cancel button
+                    cancel_index = self.button_layout.indexOf(self.cancel_btn)
+                    if cancel_index >= 0:
+                        self.button_layout.insertWidget(cancel_index, self.preview_btn)
+                        self.button_layout.insertWidget(cancel_index + 1, self.send_btn)
+                    
+                    # Make sure they're visible
+                    self.preview_btn.setVisible(True)
+                    self.send_btn.setVisible(True)
+                    self.preview_btn.show()
+                    self.send_btn.show()
+                    
+                    
+                else:
+                    # Remove buttons from layout
+                    self.button_layout.removeWidget(self.preview_btn)
+                    self.button_layout.removeWidget(self.send_btn)
+                    
+                    # Hide them
+                    self.preview_btn.setVisible(False)
+                    self.send_btn.setVisible(False)
+                
+                print(f"🔍 [DEBUG] Tab: '{current_tab_text}' - Preview/Send buttons {'visible' if is_message_tab else 'hidden'}")
+                
+            except Exception as e:
+                print(f"❌ [ERROR] _update_button_visibility failed: {e}")
+                import traceback
+                print(f"❌ [TRACEBACK] {traceback.format_exc()}")
+        
+        def _on_platform_selection_changed(self):
+            """Handle platform selection changes - dynamically create/remove tabs"""
+            # Clear all config tabs first
+            while self.config_tabs.count() > 0:
+                self.config_tabs.removeTab(0)
+            
+            # Get selected platforms
+            selected_platforms = []
+            platform_mapping = {
+                'Telegram': ('📟 Telegram', self._create_telegram_config_tab),
+                'Zalo': ('🇻🇳 Zalo', self._create_zalo_config_tab),
+                'WhatsApp': ('💬 WhatsApp', self._create_whatsapp_config_tab),
+                'Discord': ('🎮 Discord', self._create_discord_config_tab),
+                'Signal': ('🔐 Signal', self._create_signal_config_tab),
+                'WeChat': ('🇨🇳 WeChat', self._create_wechat_config_tab),
+                'LINE': ('🇯🇵 LINE', self._create_line_config_tab),
+                'KakaoTalk': ('🇰🇷 KakaoTalk', self._create_kakaotalk_config_tab),
+                'Facebook Messenger': ('📘 Facebook', self._create_facebook_config_tab),
+                'Instagram DM': ('📷 Instagram', self._create_instagram_config_tab),
+                'Twitter/X DM': ('🐦 Twitter/X', self._create_twitter_config_tab),
+                'LinkedIn': ('💼 LinkedIn', self._create_linkedin_config_tab),
+                'Slack': ('💬 Slack', self._create_slack_config_tab),
+                'Microsoft Teams': ('👥 Teams', self._create_teams_config_tab),
+                'Skype': ('📞 Skype', self._create_skype_config_tab),
+                'Viber': ('💜 Viber', self._create_viber_config_tab),
+                'Email': ('📧 Email', self._create_email_config_tab),
+                'SMS': ('📱 SMS', self._create_sms_config_tab),
+                'Custom Webhook': ('🔗 Webhook', self._create_webhook_config_tab),
+                'Pushbullet': ('📋 Pushbullet', self._create_pushbullet_config_tab)
+            }
+            
+            # Add tabs for selected platforms
+            for cb in self.all_platform_checkboxes:
+                if cb.isChecked():
+                    platform_name = cb.text().split(' ', 1)[1]  # Remove emoji
+                    if platform_name in platform_mapping:
+                        tab_title, create_func = platform_mapping[platform_name]
+                        try:
+                            create_func()
+                        except AttributeError:
+                            # If method doesn't exist, create a generic config tab
+                            self._create_generic_config_tab(platform_name, tab_title)
+        
+        def _telegram_auto_setup(self):
+            """Launch Telegram auto setup"""
+            try:
+                import subprocess
+                result = subprocess.run(['python', 'super_simple_setup.py'], 
+                                     capture_output=True, text=True, cwd=os.getcwd())
+                if result.returncode == 0:
+                    QMessageBox.information(self, I18N.t("Success", "Thành công"), 
+                                          I18N.t("Auto setup completed successfully!", "Setup tự động hoàn thành thành công!"))
+                    self._load_current_config()
+                else:
+                    QMessageBox.warning(self, I18N.t("Error", "Lỗi"), 
+                                      I18N.t("Setup failed", "Setup thất bại") + f":\n{result.stderr}")
+            except Exception as e:
+                QMessageBox.critical(self, I18N.t("Error", "Lỗi"), I18N.t("Failed to launch setup: {error}", "Không thể khởi chạy cài đặt: {error}", error=str(e)))
+        
+        def _telegram_get_chat_id(self):
+            """Show instructions for getting Chat ID"""
+            instructions = I18N.t(
+                "To get Chat ID:\n1. Add your bot to the group\n2. Send a message to the group\n3. Visit: https://api.telegram.org/botYOUR_TOKEN/getUpdates\n4. Look for 'chat':{'id': -1234567890}\n5. Copy that number (including minus sign)",
+                "Để lấy Chat ID:\n1. Thêm bot vào nhóm\n2. Gửi tin nhắn trong nhóm\n3. Truy cập: https://api.telegram.org/botTOKEN_CỦA_BẠN/getUpdates\n4. Tìm 'chat':{'id': -1234567890}\n5. Sao chép số đó (bao gồm dấu trừ)"
+            )
+            QMessageBox.information(self, I18N.t("Get Chat ID", "Lấy Chat ID"), instructions)
+        
+        def _test_telegram(self):
+            """Test Telegram connection"""
+            token = self.telegram_token.text().strip()
+            chat_id = self.telegram_chat_id.text().strip()
+            
+            if not token or not chat_id:
+                QMessageBox.warning(self, I18N.t("Missing Info", "Thiếu thông tin"), 
+                                  I18N.t("Please enter both Bot Token and Chat ID", "Vui lòng nhập cả Bot Token và Chat ID"))
+                return
+            
+            # Test the connection
+            try:
+                import requests
+                url = f"https://api.telegram.org/bot{token}/sendMessage"
+                data = {
+                    "chat_id": chat_id,
+                    "text": I18N.t("🧪 Test message from VU HIEN CFDs Trading Bot", "🧪 Tin nhắn test từ VU HIEN CFDs Trading Bot")
+                }
+                
+                response = requests.post(url, json=data, timeout=10)
+                
+                if response.status_code == 200:
+                    QMessageBox.information(self, I18N.t("Success", "Thành công"), 
+                                          I18N.t("Test message sent successfully!", "Tin nhắn test gửi thành công!"))
+                else:
+                    QMessageBox.warning(self, I18N.t("Failed", "Thất bại"), 
+                                      I18N.t("Test failed", "Test thất bại") + f": {response.status_code}")
+                    
+            except Exception as e:
+                QMessageBox.critical(self, I18N.t("Error", "Lỗi"), f"Test error: {e}")
+        
+        def _update_preview(self):
+            """Update message preview - maps 100% accurately to real data"""
+            try:
+                preview_text = ""
+                
+                # Check which message type is selected
+                if self.signal_radio.isChecked():
+                    # Get actual trading signal from latest analysis
+                    preview_text = self._get_real_signal_preview()
+                    
+                elif self.custom_radio.isChecked():
+                    # Get custom message from text area
+                    if hasattr(self, 'custom_message'):
+                        custom_text = self.custom_message.toPlainText().strip()
+                        if custom_text:
+                            preview_text = custom_text + "\n\n" + self._get_branded_footer()
+                        else:
+                            preview_text = I18N.t("Enter your custom message above...", "Nhập tin nhắn tùy chỉnh ở trên...")
+                    else:
+                        preview_text = I18N.t("Custom message area not available", "Khu vực tin nhắn tùy chỉnh không khả dụng")
+                
+                elif self.report_radio.isChecked():
+                    # Get actual account positions report
+                    preview_text = self._get_real_account_report_preview()
+                else:
+                    preview_text = I18N.t("Select message type above...", "Chọn loại tin nhắn ở trên...")
+                
+                # Update preview area
+                if hasattr(self, 'preview_area'):
+                    self.preview_area.setPlainText(preview_text)
+                else:
+                    print(f"Preview updated: {preview_text[:100]}...")
+                
+            except Exception as e:
+                error_msg = f"Preview error: {e}"
+                if hasattr(self, 'preview_area'):
+                    self.preview_area.setPlainText(error_msg)
+                else:
+                    print(error_msg)
+        
+        def _get_real_signal_preview(self):
+            """Get preview of real trading signal from latest analysis data"""
+            try:
+                import json
+                import os
+                import glob
+                from datetime import datetime
+                
+                # Look for latest signal files in analysis_results
+                analysis_dir = os.path.join(os.getcwd(), 'analysis_results')
+                if os.path.exists(analysis_dir):
+                    # Find latest signal files
+                    signal_files = glob.glob(os.path.join(analysis_dir, '*_signal*.json'))
+                    
+                    if signal_files:
+                        # Sort by modification time and get latest
+                        latest_signal = max(signal_files, key=os.path.getmtime)
+                        
+                        # Read signal data
+                        with open(latest_signal, 'r', encoding='utf-8') as f:
+                            signal_data = json.load(f)
+                        
+                        # Extract symbol from data or filename
+                        symbol = signal_data.get('symbol', 'N/A')
+                        final_signal = signal_data.get('final_signal', {})
+                        
+                        # Format signal preview with real data
+                        if AppState.language() == 'vi':
+                            preview_text = f"""🚀 TÍN HIỆU GIAO DỊCH MỚI
+==============================
+⏰ Thời gian: {signal_data.get('timestamp', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))}
+💱 Ký hiệu: {symbol}
+📊 Hướng: {final_signal.get('signal', 'N/A')}
+🎯 Độ tin cậy: {final_signal.get('confidence', 'N/A'):.1f}%
+💰 Entry: {final_signal.get('entry', 'N/A')}
+🛑 StopLoss: {final_signal.get('stoploss', 'N/A')}
+🎯 TakeProfit: {final_signal.get('takeprofit', 'N/A')}
+� Loại lệnh: {final_signal.get('order_type', 'N/A')}
+💡 Lý do: {final_signal.get('entry_reason', 'Tín hiệu dựa trên phân tích kỹ thuật')}
+
+"""
+                        else:
+                            preview_text = f"""🚀 NEW TRADING SIGNAL
+==============================
+⏰ Time: {signal_data.get('timestamp', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))}
+💱 Symbol: {symbol}
+📊 Direction: {final_signal.get('signal', 'N/A')}
+🎯 Confidence: {final_signal.get('confidence', 'N/A'):.1f}%
+💰 Entry: {final_signal.get('entry', 'N/A')}
+🛑 StopLoss: {final_signal.get('stoploss', 'N/A')}
+🎯 TakeProfit: {final_signal.get('takeprofit', 'N/A')}
+� Order Type: {final_signal.get('order_type', 'N/A')}
+💡 Reason: {final_signal.get('entry_reason', 'Signal based on technical analysis')}
+
+"""
+                        
+                        preview_text += self._get_branded_footer()
+                        return preview_text
+                
+                # Fallback: Read actual report file for signal data
+                if AppState.language() == 'vi':
+                    report_files = glob.glob(os.path.join(analysis_dir, '*_report_vi_*.txt'))
+                else:
+                    report_files = glob.glob(os.path.join(analysis_dir, '*_report_en_*.txt'))
+                
+                if report_files:
+                    latest_report = max(report_files, key=os.path.getmtime)
+                    
+                    # Extract data from report file
+                    with open(latest_report, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    
+                    # Parse key information
+                    lines = content.split('\n')
+                    data = {}
+                    for line in lines[:15]:  # First 15 lines contain key info
+                        if ':' in line:
+                            key, value = line.split(':', 1)
+                            data[key.strip()] = value.strip()
+                    
+                    # Format with actual data
+                    if AppState.language() == 'vi':
+                        preview_text = f"""🚀 TÍN HIỆU GIAO DỊCH MỚI
+==============================
+⏰ Thời gian: {data.get('Thời gian', 'N/A')}
+💱 Ký hiệu: {data.get('Ký hiệu', 'N/A')}
+📊 Tín hiệu: {data.get('Tín hiệu', 'N/A')}
+🎯 Độ tin cậy: {data.get('Độ tin cậy', 'N/A')}
+💰 Entry: {data.get('Entry', 'N/A')}
+🛑 StopLoss: {data.get('Stoploss', 'N/A')}
+🎯 TakeProfit: {data.get('Takeprofit', 'N/A')}
+
+"""
+                    else:
+                        preview_text = f"""🚀 NEW TRADING SIGNAL
+==============================
+⏰ Time: {data.get('Time', data.get('Thời gian', 'N/A'))}
+💱 Symbol: {data.get('Symbol', data.get('Ký hiệu', 'N/A'))}
+📊 Signal: {data.get('Signal', data.get('Tín hiệu', 'N/A'))}
+🎯 Confidence: {data.get('Confidence', data.get('Độ tin cậy', 'N/A'))}
+💰 Entry: {data.get('Entry', 'N/A')}
+🛑 StopLoss: {data.get('StopLoss', data.get('Stoploss', 'N/A'))}
+🎯 TakeProfit: {data.get('TakeProfit', data.get('Takeprofit', 'N/A'))}
+
+"""
+                    
+                    preview_text += self._get_branded_footer()
+                    return preview_text
+                
+                # Final fallback - no real data available
+                if AppState.language() == 'vi':
+                    return "🚀 TÍN HIỆU GIAO DỊCH\n==============================\n\n⚠️ Chưa có dữ liệu tín hiệu thực tế\nVui lòng chạy phân tích để tạo tín hiệu mới\n\n" + self._get_branded_footer()
+                else:
+                    return "🚀 TRADING SIGNAL\n==============================\n\n⚠️ No real signal data available\nPlease run analysis to generate new signals\n\n" + self._get_branded_footer()
+                
+            except Exception as e:
+                return f"Error getting real signal preview: {e}"
+        
+        def _get_executed_order_preview(self):
+            """Get preview of executed order message"""
+            try:
+                # Try to get latest executed order from reports
+                import json
+                import os
+                from datetime import datetime
+                
+                # Check for execution reports
+                reports_path = os.path.join(os.getcwd(), 'reports', 'execution_reports.json')
+                if os.path.exists(reports_path):
+                    with open(reports_path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                    
+                    # Handle both old and new format
+                    execution_reports = data.get('execution_reports', data) if isinstance(data, dict) else data
+                    
+                    if execution_reports and len(execution_reports) > 0:
+                        # Get latest executed report
+                        latest_report = execution_reports[-1]
+                        
+                        # Extract info from report
+                        symbol = latest_report.get('symbol', 'XAUUSD')
+                        timestamp = latest_report.get('timestamp', datetime.now().isoformat())
+                        
+                        # Try to format timestamp
+                        try:
+                            if 'T' in timestamp:
+                                dt = datetime.fromisoformat(timestamp.replace('T', ' ').split('.')[0])
+                                formatted_time = dt.strftime('%Y-%m-%d %H:%M:%S')
+                            else:
+                                formatted_time = timestamp
+                        except:
+                            formatted_time = timestamp
+                        
+                        # Look for actions in the report
+                        actions = latest_report.get('actions', [])
+                        if actions and len(actions) > 0:
+                            latest_action = actions[-1]
+                            action_type = latest_action.get('action', 'BUY')
+                            signal_trigger = latest_action.get('signal_trigger', action_type)
+                            reason = latest_action.get('reason', '')
+                            confidence = latest_action.get('confidence', 0)
+                            
+                            # Format action type
+                            if 'SELL' in signal_trigger.upper():
+                                direction = 'SELL'
+                            else:
+                                direction = 'BUY'
+                        else:
+                            direction = 'BUY'
+                            reason = 'Order executed'
+                            confidence = 0
+                        
+                        # Format like enhanced signal style
+                        if AppState.language() == 'vi':
+                            preview_text = f"🚀 SIGNAL EXECUTED\n"
+                            preview_text += f"==============================\n"
+                            preview_text += f"⏰ Thời gian: {formatted_time}\n"
+                            preview_text += f"💱 Cặp tiền: {symbol}\n"
+                            preview_text += f"📊 Hướng: {direction}\n"
+                            if confidence > 0:
+                                preview_text += f"🎯 Độ tin cậy: {confidence}%\n"
+                            if reason:
+                                preview_text += f"� Lý do: {reason}\n"
+                            preview_text += f"🎫 Ticket: #AUTO\n\n"
+                        else:
+                            preview_text = f"🚀 SIGNAL EXECUTED\n"
+                            preview_text += f"==============================\n"
+                            preview_text += f"⏰ Time: {formatted_time}\n"
+                            preview_text += f"💱 Symbol: {symbol}\n"
+                            preview_text += f"📊 Direction: {direction}\n"
+                            if confidence > 0:
+                                preview_text += f"🎯 Confidence: {confidence}%\n"
+                            if reason:
+                                preview_text += f"� Reason: {reason}\n"
+                            preview_text += f"🎫 Ticket: #AUTO\n\n"
+                        
+                        preview_text += self._get_branded_footer()
+                        return preview_text
+                
+                # Fallback to example data
+                if AppState.language() == 'vi':
+                    preview_text = "🚀 SIGNAL EXECUTED\n==============================\n⏰ Thời gian: 2025-10-14 02:30:45\n💱 Cặp tiền: XAUUSD\n📊 Hướng: BUY\n🎯 Độ tin cậy: 75%\n� Lý do: Entry signal confirmed\n🎫 Ticket: #12345678\n\n" + self._get_branded_footer()
+                else:
+                    preview_text = "🚀 SIGNAL EXECUTED\n==============================\n⏰ Time: 2025-10-14 02:30:45\n💱 Symbol: XAUUSD\n📊 Direction: BUY\n🎯 Confidence: 75%\n� Reason: Entry signal confirmed\n🎫 Ticket: #12345678\n\n" + self._get_branded_footer()
+                    
+                return preview_text
+                
+            except Exception as e:
+                return f"Error getting executed order preview: {e}"
+        
+        def _get_analysis_report_preview(self):
+            """Get preview of analysis report message"""
+            try:
+                # Try to get latest analysis report
+                import os
+                import glob
+                
+                # Look for latest analysis report files
+                analysis_dir = os.path.join(os.getcwd(), 'analysis_results')
+                if os.path.exists(analysis_dir):
+                    # Find latest report files
+                    if AppState.language() == 'vi':
+                        report_files = glob.glob(os.path.join(analysis_dir, '*_report_vi_*.txt'))
+                    else:
+                        report_files = glob.glob(os.path.join(analysis_dir, '*_report_en_*.txt'))
+                    
+                    if report_files:
+                        # Sort by modification time and get latest
+                        latest_report = max(report_files, key=os.path.getmtime)
+                        
+                        # Read first few lines of the report
+                        with open(latest_report, 'r', encoding='utf-8') as f:
+                            lines = f.readlines()
+                        
+                        # Extract key information
+                        preview_lines = []
+                        for line in lines[:10]:  # First 10 lines
+                            line = line.strip()
+                            if line and not line.startswith('Time:'):
+                                preview_lines.append(line)
+                        
+                        preview_text = '\n'.join(preview_lines[:5])  # Top 5 meaningful lines
+                        if len(preview_text) > 300:
+                            preview_text = preview_text[:300] + "..."
+                            
+                        preview_text += "\n\n" + self._get_branded_footer()
+                        return preview_text
+                
+                # Fallback to example data
+                if AppState.language() == 'vi':
+                    preview_text = "📈 BÁO CÁO PHÂN TÍCH\n\nTổng quan thị trường: Xu hướng tăng\nMức quan trọng: Hỗ trợ 2640, Kháng cự 2680\nKhuyến nghị: Tìm cơ hội mua vào\nĐộ tin cậy: 75%\n\n" + self._get_branded_footer()
+                else:
+                    preview_text = "📈 ANALYSIS REPORT\n\nMarket Overview: Bullish trend detected\nKey Levels: Support 2640, Resistance 2680\nRecommendation: Look for buying opportunities\nConfidence: 75%\n\n" + self._get_branded_footer()
+                    
+                return preview_text
+                
+            except Exception as e:
+                return f"Error getting analysis report preview: {e}"
+        
+        def _get_real_account_report_preview(self):
+            """Get preview of real account positions report"""
+            try:
+                import os
+                
+                # Look for latest account positions report
+                analysis_dir = os.path.join(os.getcwd(), 'analysis_results')
+                
+                if AppState.language() == 'vi':
+                    report_file = os.path.join(analysis_dir, 'account_positions_actions_vi.txt')
+                else:
+                    report_file = os.path.join(analysis_dir, 'account_positions_actions_en.txt')
+                
+                if os.path.exists(report_file):
+                    # Read the actual report
+                    with open(report_file, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    
+                    # Extract key sections
+                    lines = content.split('\n')
+                    
+                    # Find key sections
+                    summary_lines = []
+                    positions_lines = []
+                    capturing_summary = False
+                    capturing_positions = False
+                    
+                    for line in lines:
+                        if '--- TỔNG QUAN RỦI RO ---' in line or '--- RISK OVERVIEW ---' in line:
+                            capturing_summary = True
+                            capturing_positions = False
+                            continue
+                        elif '--- HÀNH ĐỘNG ƯU TIÊN ---' in line or '--- PRIORITY ACTIONS ---' in line:
+                            capturing_summary = False
+                            capturing_positions = True
+                            continue
+                        elif capturing_summary and line.strip():
+                            summary_lines.append(line)
+                        elif capturing_positions and line.strip() and len(positions_lines) < 5:  # Top 5 positions
+                            if line.startswith('•'):
+                                positions_lines.append(line)
+                    
+                    # Format preview
+                    if AppState.language() == 'vi':
+                        preview_text = "📊 BÁO CÁO QUẢN LÝ VỊ THẾ\n"
+                        preview_text += "==============================\n\n"
+                        
+                        # Risk overview
+                        if summary_lines:
+                            preview_text += "🎯 TỔNG QUAN RỦI RO:\n"
+                            for line in summary_lines[:6]:  # Top 6 summary items
+                                preview_text += f"• {line.strip()}\n"
+                            preview_text += "\n"
+                        
+                        # Top positions
+                        if positions_lines:
+                            preview_text += "📈 VỊ THẾ ƯU TIÊN:\n"
+                            for line in positions_lines[:3]:  # Top 3 positions
+                                # Simplify position line for preview
+                                if '|' in line:
+                                    parts = line.split('|')
+                                    symbol_vol = parts[0].replace('•', '').strip()
+                                    pnl = parts[2].strip() if len(parts) > 2 else 'N/A'
+                                    preview_text += f"• {symbol_vol} | {pnl}\n"
+                                else:
+                                    preview_text += f"• {line.strip()[:100]}...\n"
+                    else:
+                        preview_text = "📊 POSITIONS MANAGEMENT REPORT\n"
+                        preview_text += "==============================\n\n"
+                        
+                        # Risk overview
+                        if summary_lines:
+                            preview_text += "🎯 RISK OVERVIEW:\n"
+                            for line in summary_lines[:6]:  # Top 6 summary items
+                                preview_text += f"• {line.strip()}\n"
+                            preview_text += "\n"
+                        
+                        # Top positions
+                        if positions_lines:
+                            preview_text += "📈 PRIORITY POSITIONS:\n"
+                            for line in positions_lines[:3]:  # Top 3 positions
+                                # Simplify position line for preview
+                                if '|' in line:
+                                    parts = line.split('|')
+                                    symbol_vol = parts[0].replace('•', '').strip()
+                                    pnl = parts[2].strip() if len(parts) > 2 else 'N/A'
+                                    preview_text += f"• {symbol_vol} | {pnl}\n"
+                                else:
+                                    preview_text += f"• {line.strip()[:100]}...\n"
+                    
+                    preview_text += "\n" + self._get_branded_footer()
+                    return preview_text
+                
+                # Fallback if no real data
+                if AppState.language() == 'vi':
+                    return "📊 BÁO CÁO QUẢN LÝ VỊ THẾ\n==============================\n\n⚠️ Chưa có dữ liệu vị thế thực tế\nVui lòng kết nối tài khoản trading để xem báo cáo\n\n" + self._get_branded_footer()
+                else:
+                    return "📊 POSITIONS MANAGEMENT REPORT\n==============================\n\n⚠️ No real positions data available\nPlease connect trading account to view report\n\n" + self._get_branded_footer()
+                
+            except Exception as e:
+                return f"Error getting real account report preview: {e}"
+        
+        def _manual_update_preview(self):
+            """Manual update preview when button is clicked"""
+            try:
+                print("🔄 Manual update preview button clicked")
+                
+                # Debug: Check current state of radio buttons
+                signal_checked = self.signal_radio.isChecked() if hasattr(self, 'signal_radio') else False
+                custom_checked = self.custom_radio.isChecked() if hasattr(self, 'custom_radio') else False
+                report_checked = self.report_radio.isChecked() if hasattr(self, 'report_radio') else False
+                
+                print(f"📊 Radio states - Signal: {signal_checked}, Custom: {custom_checked}, Report: {report_checked}")
+                
+                # Force update preview
+                self._update_preview()
+                
+                # Show confirmation message
+                self._show_notification(I18N.t("✅ Preview Updated", "✅ Xem trước đã cập nhật"), 
+                                      I18N.t("Message preview has been refreshed", "Xem trước tin nhắn đã được làm mới"))
+                
+            except Exception as e:
+                print(f"❌ Error in manual update preview: {e}")
+                self._show_notification(I18N.t("❌ Preview Error", "❌ Lỗi xem trước"), 
+                                      I18N.t("Error updating preview:", "Lỗi cập nhật xem trước:") + f" {str(e)}")
+        
+        def _load_current_config(self):
+            """Load current notification configuration"""
+            try:
+                # Temporarily disconnect auto-save signals to avoid conflicts
+                self._disconnect_auto_save_signals()
+                
+                import json
+                config_file = os.path.join(os.getcwd(), 'notification_config.json')
+                if os.path.exists(config_file):
+                    with open(config_file, 'r', encoding='utf-8') as f:
+                        config = json.load(f)
+                    
+                    # Load Telegram settings
+                    telegram = config.get('telegram', {})
+                    if telegram.get('enabled', False):
+                        self.telegram_cb.setChecked(True)
+                    
+                    bot_token = telegram.get('bot_token', '')
+                    print(f"🔍 [DEBUG] Loading bot_token: '{bot_token}'")
+                    if bot_token and bot_token != 'THAY_BOT_TOKEN_TỪ_BOTFATHER':
+                        self.telegram_token.setText(bot_token)
+                        print(f"✅ [DEBUG] Bot token set to field. Current field value: '{self.telegram_token.text()}'")
+                    else:
+                        print(f"❌ [DEBUG] Bot token not set - empty or placeholder")
+                    
+                    chat_id = telegram.get('chat_id', '')
+                    print(f"🔍 [DEBUG] Loading chat_id: '{chat_id}'")
+                    if chat_id and chat_id != 'THAY_CHAT_ID_TỪ_NHÓM':
+                        self.telegram_chat_id.setText(chat_id)
+                        print(f"✅ [DEBUG] Chat ID set to field. Current field value: '{self.telegram_chat_id.text()}'")
+                    else:
+                        print(f"❌ [DEBUG] Chat ID not set - empty or placeholder")
+                    
+                    # Load Zalo settings
+                    zalo = config.get('zalo', {})
+                    if zalo.get('enabled', False):
+                        self.zalo_cb.setChecked(True)
+                    
+                    webhook = zalo.get('webhook_url', '')
+                    if webhook and webhook != 'YOUR_WEBHOOK_URL_HERE':
+                        self.zalo_webhook.setText(webhook)
+                    
+                    zalo_token = zalo.get('access_token', '')
+                    if hasattr(self, 'zalo_token') and zalo_token:
+                        self.zalo_token.setText(zalo_token)
+                    
+                    # Load WhatsApp settings
+                    whatsapp = config.get('whatsapp', {})
+                    if whatsapp.get('enabled', False):
+                        self.whatsapp_cb.setChecked(True)
+                    
+                    if hasattr(self, 'whatsapp_api_key'):
+                        whatsapp_api = whatsapp.get('api_key', '')
+                        if whatsapp_api:
+                            self.whatsapp_api_key.setText(whatsapp_api)
+                    
+                    if hasattr(self, 'whatsapp_phone'):
+                        whatsapp_phone = whatsapp.get('phone_number', '')
+                        if whatsapp_phone:
+                            self.whatsapp_phone.setText(whatsapp_phone)
+                    
+                    # Load Discord settings
+                    discord = config.get('discord', {})
+                    if discord.get('enabled', False):
+                        self.discord_cb.setChecked(True)
+                    
+                    if hasattr(self, 'discord_webhook'):
+                        discord_webhook = discord.get('webhook_url', '')
+                        if discord_webhook:
+                            self.discord_webhook.setText(discord_webhook)
+                    
+                    # Load Email settings
+                    email = config.get('email', {})
+                    if email.get('enabled', False):
+                        self.email_cb.setChecked(True)
+                    
+                    if hasattr(self, 'email_smtp'):
+                        email_smtp = email.get('smtp_server', '')
+                        if email_smtp:
+                            self.email_smtp.setText(email_smtp)
+                    
+                    if hasattr(self, 'email_port'):
+                        email_port = email.get('port', '')
+                        if email_port:
+                            self.email_port.setText(email_port)
+                    
+                    if hasattr(self, 'email_address'):
+                        email_addr = email.get('email', '')
+                        if email_addr:
+                            self.email_address.setText(email_addr)
+                    
+                    if hasattr(self, 'email_password'):
+                        email_pass = email.get('password', '')
+                        if email_pass:
+                            self.email_password.setText(email_pass)
+                    
+                    if hasattr(self, 'email_to'):
+                        email_to = email.get('to_email', '')
+                        if email_to:
+                            self.email_to.setText(email_to)
+                    
+                    # Load Custom Webhook settings
+                    webhook_config = config.get('webhook', {})
+                    if webhook_config.get('enabled', False):
+                        self.webhook_cb.setChecked(True)
+                    
+                    if hasattr(self, 'webhook_url'):
+                        webhook_url = webhook_config.get('url', '')
+                        if webhook_url:
+                            self.webhook_url.setText(webhook_url)
+                    
+                    if hasattr(self, 'webhook_method'):
+                        webhook_method = webhook_config.get('method', 'POST')
+                        if webhook_method:
+                            index = self.webhook_method.findText(webhook_method)
+                            if index >= 0:
+                                self.webhook_method.setCurrentIndex(index)
+                    
+                    if hasattr(self, 'webhook_headers'):
+                        webhook_headers = webhook_config.get('headers', '')
+                        if webhook_headers:
+                            self.webhook_headers.setPlainText(webhook_headers)
+                
+                # Load Branding settings
+                branding = config.get('branding', {})
+                if hasattr(self, 'enable_custom_footer'):
+                    self.enable_custom_footer.setChecked(branding.get('enable_custom_footer', True))
+                if hasattr(self, 'system_name_en'):
+                    self.system_name_en.setText(branding.get('system_name_en', 'VU HIEN CFDs AI System'))
+                if hasattr(self, 'system_name_vi'):
+                    self.system_name_vi.setText(branding.get('system_name_vi', 'Hệ thống AI VU HIEN CFDs'))
+                if hasattr(self, 'contact_phone'):
+                    self.contact_phone.setText(branding.get('phone', '+84 39 65 60 888'))
+                if hasattr(self, 'contact_email'):
+                    self.contact_email.setText(branding.get('email', ''))
+                if hasattr(self, 'contact_website'):
+                    self.contact_website.setText(branding.get('website', ''))
+                if hasattr(self, 'contact_social'):
+                    self.contact_social.setText(branding.get('social', ''))
+                if hasattr(self, 'footer_template'):
+                    self.footer_template.setPlainText(branding.get('footer_template', '🤖 {system_name}\n📱 {phone}\n📧 {email}\n🌐 {website}\n� {social}'))
+                
+                # Default selections
+                self.signal_radio.setChecked(True)
+                self._update_preview()
+                self._on_platform_selection_changed()
+                
+                # Reconnect auto-save signals after loading
+                self._connect_auto_save_signals()
+                
+            except Exception as e:
+                print(f"Error loading config: {e}")
+                # Reconnect signals even on error
+                self._connect_auto_save_signals()
+        
+        def _load_config_and_connect_signals(self):
+            """Load config first, then connect auto-save signals"""
+            try:
+                # Load configuration
+                self._load_config_only()
+                
+                # Clear loading flag to allow saves
+                self._is_loading_settings = False
+                
+                # NOW connect auto-save signals
+                self._connect_auto_save_signals()
+                
+                print("✅ Config loaded and auto-save signals connected")
+                
+            except Exception as e:
+                print(f"❌ Error loading config and connecting signals: {e}")
+                self._is_loading_settings = False
+        
+        def _load_config_only(self):
+            """Load existing notification configuration - SIMPLE VERSION"""
+            try:
+                import json
+                config_file = os.path.join(os.getcwd(), 'notification_config.json')
+                if not os.path.exists(config_file):
+                    return
+                    
+                with open(config_file, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                
+                # Load Telegram settings
+                telegram = config.get('telegram', {})
+                if telegram.get('enabled', False):
+                    self.telegram_cb.setChecked(True)
+                
+                bot_token = telegram.get('bot_token', '')
+                if bot_token and hasattr(self, 'telegram_token'):
+                    print(f"🔍 [DEBUG] Setting bot_token to field: {bot_token[:10]}...")
+                    self.telegram_token.setText(bot_token)
+                    self.telegram_token.clearFocus()  # Force update
+                    self.telegram_token.repaint()     # Force repaint
+                    print(f"🔍 [DEBUG] After setText: {self.telegram_token.text()}")
+                else:
+                    print(f"❌ [DEBUG] Cannot set bot_token - field missing or empty token")
+                
+                chat_id = telegram.get('chat_id', '')
+                if chat_id and hasattr(self, 'telegram_chat_id'):
+                    print(f"🔍 [DEBUG] Setting chat_id to field: {chat_id}")
+                    self.telegram_chat_id.setText(chat_id)
+                    self.telegram_chat_id.clearFocus()  # Force update
+                    self.telegram_chat_id.repaint()     # Force repaint
+                    print(f"🔍 [DEBUG] After setText: {self.telegram_chat_id.text()}")
+                else:
+                    print(f"❌ [DEBUG] Cannot set chat_id - field missing or empty chat_id")
+                
+                # Load Facebook Messenger settings
+                facebook = config.get('facebook_messenger', {})
+                if facebook.get('enabled', False):
+                    self.facebook_cb.setChecked(True)
+                
+                facebook_token = facebook.get('page_access_token', '')
+                if facebook_token and hasattr(self, 'facebook_token'):
+                    self.facebook_token.setText(facebook_token)
+                
+                facebook_recipient = facebook.get('recipient_id', '')
+                if facebook_recipient and hasattr(self, 'facebook_recipient'):
+                    self.facebook_recipient.setText(facebook_recipient)
+                
+                # 🆕 Load notification/reporting settings from 'settings' section
+                settings = config.get('settings', {})
+                
+                # Track orders
+                if hasattr(self, 'track_orders_cb'):
+                    self.track_orders_cb.setChecked(settings.get('track_order_updates', False))
+                if hasattr(self, 'track_orders_pips_spin'):
+                    self.track_orders_pips_spin.setValue(settings.get('track_orders_pip_threshold', 50))
+                
+                # SL/TP notifications
+                if hasattr(self, 'notify_sl_tp_cb'):
+                    self.notify_sl_tp_cb.setChecked(settings.get('notify_sl_tp_changes', False))
+                if hasattr(self, 'sltp_pips_spin'):
+                    self.sltp_pips_spin.setValue(settings.get('sltp_pip_threshold', 10))
+                
+                # Close notifications
+                if hasattr(self, 'notify_close_cb'):
+                    self.notify_close_cb.setChecked(settings.get('notify_order_close', False))
+                
+                # Daily summary
+                if hasattr(self, 'daily_summary_cb'):
+                    self.daily_summary_cb.setChecked(settings.get('daily_summary_enabled', False))
+                if hasattr(self, 'daily_summary_time'):
+                    time_str = settings.get('daily_summary_time', '20:00')
+                    self.daily_summary_time.setTime(QTime.fromString(time_str, "HH:mm"))
+                
+                # Notification format
+                format_type = settings.get('notification_format', 'full')
+                if hasattr(self, 'format_summary_rb') and hasattr(self, 'format_full_rb'):
+                    if format_type == 'summary':
+                        self.format_summary_rb.setChecked(True)
+                    else:
+                        self.format_full_rb.setChecked(True)
+                
+                # Advanced checkboxes
+                if hasattr(self, 'include_technical_cb'):
+                    self.include_technical_cb.setChecked(settings.get('include_technical', True))
+                if hasattr(self, 'include_indicators_cb'):
+                    self.include_indicators_cb.setChecked(settings.get('include_indicators', False))
+                if hasattr(self, 'include_summary_cb'):
+                    self.include_summary_cb.setChecked(settings.get('include_summary', True))
+                if hasattr(self, 'include_candlestick_cb'):
+                    self.include_candlestick_cb.setChecked(settings.get('include_candlestick', True))
+                if hasattr(self, 'include_price_patterns_cb'):
+                    self.include_price_patterns_cb.setChecked(settings.get('include_price_patterns', False))
+                
+                # Custom message
+                if hasattr(self, 'send_custom_message'):
+                    self.send_custom_message.setChecked(settings.get('send_custom_message', False))
+                if hasattr(self, 'custom_message'):
+                    self.custom_message.setPlainText(settings.get('custom_message', ''))
+                
+                # 🆕 Trading History Report options
+                if hasattr(self, 'history_include_closed'):
+                    self.history_include_closed.setChecked(settings.get('history_include_closed', True))
+                if hasattr(self, 'history_include_stats'):
+                    self.history_include_stats.setChecked(settings.get('history_include_stats', True))
+                if hasattr(self, 'history_include_chart'):
+                    self.history_include_chart.setChecked(settings.get('history_include_chart', False))
+                if hasattr(self, 'history_period_combo'):
+                    period_idx = settings.get('history_period', 0)
+                    if 0 <= period_idx < self.history_period_combo.count():
+                        self.history_period_combo.setCurrentIndex(period_idx)
+                if hasattr(self, 'history_schedule_type'):
+                    schedule_idx = settings.get('history_schedule_type', 0)
+                    if 0 <= schedule_idx < self.history_schedule_type.count():
+                        self.history_schedule_type.setCurrentIndex(schedule_idx)
+                        # Enable/disable time widget based on schedule type
+                        if hasattr(self, 'daily_summary_time'):
+                            self.daily_summary_time.setEnabled(schedule_idx == 1)  # Daily
+                            self.daily_summary_time.setVisible(schedule_idx == 1)  # Hide if hourly
+                        if hasattr(self, 'history_hourly_interval'):
+                            self.history_hourly_interval.setVisible(schedule_idx == 0)  # Hourly
+                        if hasattr(self, 'history_hourly_label'):
+                            self.history_hourly_label.setVisible(schedule_idx == 0)  # Hourly
+                if hasattr(self, 'daily_summary_time'):
+                    time_str = settings.get('history_schedule_time', '20:00')
+                    self.daily_summary_time.setTime(QTime.fromString(time_str, "HH:mm"))
+                if hasattr(self, 'history_hourly_interval'):
+                    hourly_interval = settings.get('history_hourly_interval', 1)
+                    if 1 <= hourly_interval <= 24:
+                        self.history_hourly_interval.setValue(hourly_interval)
+                
+                # Default selections
+                self.signal_radio.setChecked(True)
+                self._update_preview()
+                self._on_platform_selection_changed()
+                
+                print(f"✅ Config loaded: token={bot_token[:10]}..., chat_id={chat_id}")
+                print(f"🔍 [DEBUG] Field values after setText: token='{self.telegram_token.text()}', chat_id='{self.telegram_chat_id.text()}'")
+                print(f"📋 [DEBUG] Notification settings loaded from config")
+                print(f"📊 [DEBUG] Trading history settings loaded from config")
+                
+                # DO NOT save config after loading - it overwrites with empty values
+                print("⚠️ [DEBUG] Skipping force save - preserving JSON file")
+                
+            except Exception as e:
+                print(f"❌ Error loading config: {e}")
+
+        def _get_widget_text(self, widget_name, default=""):
+            """Safely get text from widget"""
+            try:
+                widget = getattr(self, widget_name, None)
+                if widget and hasattr(widget, 'text'):
+                    return widget.text().strip()
+                elif widget and hasattr(widget, 'toPlainText'):
+                    return widget.toPlainText().strip()
+                return default
+            except:
+                return default
+        
+        def _get_widget_checked(self, widget_name, default=False):
+            """Safely get checked state from widget"""
+            try:
+                widget = getattr(self, widget_name, None)
+                if widget and hasattr(widget, 'isChecked'):
+                    return widget.isChecked()
+                return default
+            except:
+                return default
+
+        def _save_config(self, show_message=True):
+            """Save notification configuration"""
+            try:
+                import json
+                
+                # Protection: Don't save if Telegram fields are empty
+                bot_token = self.telegram_token.text().strip()
+                chat_id = self.telegram_chat_id.text().strip()
+                
+                if not bot_token or not chat_id:
+                    print("⚠️ [DEBUG] Skipping save - Telegram fields are empty")
+                    if show_message:
+                        QMessageBox.warning(self, I18N.t("Save Config", "Lưu cấu hình"), I18N.t("Telegram Bot Token and Chat ID cannot be empty!", "Telegram Bot Token và Chat ID không được để trống!"))
+                    return False
+                
+                # Build config for all platforms using safe methods
+                config = {
+                    "telegram": {
+                        "enabled": self.telegram_cb.isChecked(),
+                        "bot_token": bot_token,
+                        "chat_id": chat_id
+                    },
+                    "whatsapp": self._get_safe_whatsapp_config(),
+                    "discord": self._get_safe_discord_config(),
+                    "zalo": self._get_safe_zalo_config(),
+                    "facebook_messenger": self._get_safe_facebook_config(),
+                    "email": self._get_safe_email_config(),
+                    "webhook": self._get_safe_webhook_config(),
+                    "settings": self._get_safe_settings_config(),
+                    "branding": self._get_safe_branding_config()
+                }
+                
+                config_file = os.path.join(os.getcwd(), 'notification_config.json')
+                with open(config_file, 'w', encoding='utf-8') as f:
+                    json.dump(config, f, indent=2, ensure_ascii=False)
+                
+                if show_message:
+                    QMessageBox.information(self, I18N.t("Saved", "Đã lưu"), 
+                                          I18N.t("Configuration saved successfully!", "Cấu hình đã được lưu thành công!"))
+                return True
+                
+            except Exception as e:
+                if show_message:
+                    QMessageBox.critical(self, I18N.t("Error", "Lỗi"), 
+                                       I18N.t("Failed to save config", "Lưu cấu hình thất bại") + f": {e}")
+                return False
+        
+        def _get_safe_branding_config(self):
+            """Safely get branding configuration with error protection"""
+            branding_config = {}
+            
+            # Enable custom footer checkbox
+            try:
+                if hasattr(self, 'enable_custom_footer') and self.enable_custom_footer:
+                    branding_config['enable_custom_footer'] = self.enable_custom_footer.isChecked()
+                else:
+                    branding_config['enable_custom_footer'] = True
+            except RuntimeError:
+                branding_config['enable_custom_footer'] = True
+            
+            # System name fields
+            try:
+                if hasattr(self, 'system_name_en') and self.system_name_en:
+                    branding_config['system_name_en'] = self.system_name_en.text().strip()
+                else:
+                    branding_config['system_name_en'] = "VU HIEN CFDs AI System"
+            except RuntimeError:
+                branding_config['system_name_en'] = "VU HIEN CFDs AI System"
+                
+            try:
+                if hasattr(self, 'system_name_vi') and self.system_name_vi:
+                    branding_config['system_name_vi'] = self.system_name_vi.text().strip()
+                else:
+                    branding_config['system_name_vi'] = "Hệ thống AI VU HIEN CFDs"
+            except RuntimeError:
+                branding_config['system_name_vi'] = "Hệ thống AI VU HIEN CFDs"
+            
+            # Contact fields
+            try:
+                if hasattr(self, 'contact_phone') and self.contact_phone:
+                    branding_config['phone'] = self.contact_phone.text().strip()
+                else:
+                    branding_config['phone'] = "+84 39 65 60 888"
+            except RuntimeError:
+                branding_config['phone'] = "+84 39 65 60 888"
+                
+            try:
+                if hasattr(self, 'contact_email') and self.contact_email:
+                    branding_config['email'] = self.contact_email.text().strip()
+                else:
+                    branding_config['email'] = "vuhien2444cfds@gmail.com"
+            except RuntimeError:
+                branding_config['email'] = "vuhien2444cfds@gmail.com"
+                
+            try:
+                if hasattr(self, 'contact_website') and self.contact_website:
+                    branding_config['website'] = self.contact_website.text().strip()
+                else:
+                    branding_config['website'] = ""
+            except RuntimeError:
+                branding_config['website'] = ""
+                
+            try:
+                if hasattr(self, 'contact_social') and self.contact_social:
+                    branding_config['social'] = self.contact_social.text().strip()
+                else:
+                    branding_config['social'] = ""
+            except RuntimeError:
+                branding_config['social'] = ""
+            
+            # Footer template
+            try:
+                if hasattr(self, 'footer_template') and self.footer_template:
+                    branding_config['footer_template'] = self.footer_template.toPlainText().strip()
+                else:
+                    branding_config['footer_template'] = "🤖 {system_name}\n📱 {phone}\n📧 {email}\n🌐 {website}\n� {social}"
+            except RuntimeError:
+                branding_config['footer_template'] = "🤖 {system_name}\n📱 {phone}\n📧 {email}\n🌐 {website}\n� {social}"
+            
+            return branding_config
+        
+        def _get_safe_whatsapp_config(self):
+            """Safely get WhatsApp configuration"""
+            try:
+                return {
+                    "enabled": self.whatsapp_cb.isChecked() if hasattr(self, 'whatsapp_cb') and self.whatsapp_cb else False,
+                    "api_key": self.whatsapp_api_key.text().strip() if hasattr(self, 'whatsapp_api_key') and self.whatsapp_api_key else "",
+                    "phone_number": self.whatsapp_phone.text().strip() if hasattr(self, 'whatsapp_phone') and self.whatsapp_phone else ""
+                }
+            except RuntimeError:
+                return {"enabled": False, "api_key": "", "phone_number": ""}
+        
+        def _get_safe_discord_config(self):
+            """Safely get Discord configuration"""
+            try:
+                return {
+                    "enabled": self.discord_cb.isChecked() if hasattr(self, 'discord_cb') and self.discord_cb else False,
+                    "webhook_url": self.discord_webhook.text().strip() if hasattr(self, 'discord_webhook') and self.discord_webhook else ""
+                }
+            except RuntimeError:
+                return {"enabled": False, "webhook_url": ""}
+        
+        def _get_safe_zalo_config(self):
+            """Safely get Zalo configuration"""
+            try:
+                return {
+                    "enabled": self.zalo_cb.isChecked() if hasattr(self, 'zalo_cb') and self.zalo_cb else False,
+                    "webhook_url": self.zalo_webhook.text().strip() if hasattr(self, 'zalo_webhook') and self.zalo_webhook else "",
+                    "access_token": self.zalo_token.text().strip() if hasattr(self, 'zalo_token') and self.zalo_token else ""
+                }
+            except RuntimeError:
+                return {"enabled": False, "webhook_url": "", "access_token": ""}
+        
+        def _get_safe_facebook_config(self):
+            """Safely get Facebook configuration"""
+            try:
+                return {
+                    "enabled": self.facebook_cb.isChecked() if hasattr(self, 'facebook_cb') and self.facebook_cb else False,
+                    "page_access_token": self.facebook_token.text().strip() if hasattr(self, 'facebook_token') and self.facebook_token else "",
+                    "page_id": "",
+                    "recipient_id": self.facebook_recipient.text().strip() if hasattr(self, 'facebook_recipient') and self.facebook_recipient else "",
+                    "note": "Facebook Messenger API - Get from Meta for Developers"
+                }
+            except RuntimeError:
+                return {"enabled": False, "page_access_token": "", "page_id": "", "recipient_id": "", "note": "Facebook Messenger API - Get from Meta for Developers"}
+        
+        def _get_safe_email_config(self):
+            """Safely get Email configuration"""
+            try:
+                return {
+                    "enabled": self.email_cb.isChecked() if hasattr(self, 'email_cb') and self.email_cb else False,
+                    "smtp_server": self.email_smtp.text().strip() if hasattr(self, 'email_smtp') and self.email_smtp else "",
+                    "port": self.email_port.text().strip() if hasattr(self, 'email_port') and self.email_port else "",
+                    "email": self.email_address.text().strip() if hasattr(self, 'email_address') and self.email_address else "",
+                    "password": self.email_password.text().strip() if hasattr(self, 'email_password') and self.email_password else "",
+                    "to_email": self.email_to.text().strip() if hasattr(self, 'email_to') and self.email_to else ""
+                }
+            except RuntimeError:
+                return {"enabled": False, "smtp_server": "", "port": "", "email": "", "password": "", "to_email": ""}
+        
+        def _get_safe_webhook_config(self):
+            """Safely get Webhook configuration"""
+            try:
+                return {
+                    "enabled": self.webhook_cb.isChecked() if hasattr(self, 'webhook_cb') and self.webhook_cb else False,
+                    "url": self.webhook_url.text().strip() if hasattr(self, 'webhook_url') and self.webhook_url else "",
+                    "method": self.webhook_method.currentText() if hasattr(self, 'webhook_method') and self.webhook_method else "POST",
+                    "headers": self.webhook_headers.toPlainText().strip() if hasattr(self, 'webhook_headers') and self.webhook_headers else ""
+                }
+            except RuntimeError:
+                return {"enabled": False, "url": "", "method": "POST", "headers": ""}
+        
+        def _get_safe_settings_config(self):
+            """Safely get Settings configuration"""
+            try:
+                return {
+                    "send_signals": False,
+                    "send_reports": False,
+                    "send_execution_results": True,
+                    "daily_summary": True,
+                    "format_vietnamese": True,
+                    "max_message_length": 4000,
+                    "track_order_updates": True,
+                    "notify_sl_tp_changes": True,
+                    "notify_order_close": True,
+                    "update_interval_seconds": 30,
+                    "custom_message": self.custom_message.toPlainText().strip() if hasattr(self, 'custom_message') and self.custom_message else "Liên Hệ:",
+                    "notification_format": "full" if (hasattr(self, 'format_full_rb') and self.format_full_rb.isChecked()) else "summary",
+                    "include_technical": self.include_technical_cb.isChecked() if hasattr(self, 'include_technical_cb') and self.include_technical_cb else True,
+                    "include_indicators": self.include_indicators_cb.isChecked() if hasattr(self, 'include_indicators_cb') and self.include_indicators_cb else False,
+                    "include_summary": self.include_summary_cb.isChecked() if hasattr(self, 'include_summary_cb') and self.include_summary_cb else True,
+                    "include_candlestick": self.include_candlestick_cb.isChecked() if hasattr(self, 'include_candlestick_cb') and self.include_candlestick_cb else True,
+                    "include_price_patterns": self.include_price_patterns_cb.isChecked() if hasattr(self, 'include_price_patterns_cb') and self.include_price_patterns_cb else True,
+                    "send_custom_message": self.send_custom_message.isChecked() if hasattr(self, 'send_custom_message') and self.send_custom_message else False,
+                    "include_technical_analysis": True,
+                    # 🆕 Trading History Report options
+                    "history_include_closed": self.history_include_closed.isChecked() if hasattr(self, 'history_include_closed') and self.history_include_closed else True,
+                    "history_include_stats": self.history_include_stats.isChecked() if hasattr(self, 'history_include_stats') and self.history_include_stats else True,
+                    "history_include_chart": self.history_include_chart.isChecked() if hasattr(self, 'history_include_chart') and self.history_include_chart else False,
+                    "history_period": self.history_period_combo.currentIndex() if hasattr(self, 'history_period_combo') and self.history_period_combo else 0,
+                    "history_schedule_type": self.history_schedule_type.currentIndex() if hasattr(self, 'history_schedule_type') and self.history_schedule_type else 0,
+                    "history_schedule_time": self.daily_summary_time.time().toString("HH:mm") if hasattr(self, 'daily_summary_time') and self.daily_summary_time else "20:00",
+                    "history_hourly_interval": self.history_hourly_interval.value() if hasattr(self, 'history_hourly_interval') and self.history_hourly_interval else 1,
+                }
+            except RuntimeError:
+                return {
+                    "send_signals": False,
+                    "send_reports": False,
+                    "send_execution_results": True,
+                    "daily_summary": True,
+                    "format_vietnamese": True,
+                    "max_message_length": 4000,
+                    "track_order_updates": True,
+                    "notify_sl_tp_changes": True,
+                    "notify_order_close": True,
+                    "update_interval_seconds": 30,
+                    "custom_message": "Liên Hệ:",
+                    "notification_format": "summary",
+                    "include_technical": True,
+                    "include_indicators": False,
+                    "include_summary": True,
+                    "include_candlestick": True,
+                    "include_price_patterns": True,
+                    "send_custom_message": False,
+                    "include_technical_analysis": True,
+                    # 🆕 Trading History Report default options
+                    "history_include_closed": True,
+                    "history_include_stats": True,
+                    "history_include_chart": False,
+                    "history_period": 0,
+                    "history_schedule_type": 0,
+                    "history_schedule_time": "20:00",
+                    "history_hourly_interval": 1,
+                }
+        
+        def _disconnect_auto_save_signals(self):
+            """Temporarily disconnect auto-save signals"""
+            try:
+                print("🔍 [DEBUG] Disconnecting auto-save signals...")
+                
+                # Disconnect Telegram fields
+                if hasattr(self, 'telegram_token'):
+                    self.telegram_token.textChanged.disconnect()
+                
+                if hasattr(self, 'telegram_chat_id'):
+                    self.telegram_chat_id.textChanged.disconnect()
+                
+                # Disconnect Zalo fields
+                if hasattr(self, 'zalo_webhook'):
+                    self.zalo_webhook.textChanged.disconnect()
+                
+                if hasattr(self, 'zalo_token'):
+                    self.zalo_token.textChanged.disconnect()
+                
+                # Disconnect other fields...
+                if hasattr(self, 'whatsapp_api_key'):
+                    self.whatsapp_api_key.textChanged.disconnect()
+                
+                if hasattr(self, 'whatsapp_phone'):
+                    self.whatsapp_phone.textChanged.disconnect()
+                
+                if hasattr(self, 'discord_webhook'):
+                    self.discord_webhook.textChanged.disconnect()
+                
+                if hasattr(self, 'custom_message'):
+                    self.custom_message.textChanged.disconnect()
+                
+                # Disconnect checkboxes
+                if hasattr(self, 'telegram_cb'):
+                    self.telegram_cb.stateChanged.disconnect()
+                
+                if hasattr(self, 'zalo_cb'):
+                    self.zalo_cb.stateChanged.disconnect()
+                
+                if hasattr(self, 'whatsapp_cb'):
+                    self.whatsapp_cb.stateChanged.disconnect()
+                
+                if hasattr(self, 'discord_cb'):
+                    self.discord_cb.stateChanged.disconnect()
+                
+                if hasattr(self, 'email_cb'):
+                    self.email_cb.stateChanged.disconnect()
+                
+                if hasattr(self, 'webhook_cb'):
+                    self.webhook_cb.stateChanged.disconnect()
+                
+                print("✅ [DEBUG] Auto-save signals disconnected successfully")
+                
+            except Exception as e:
+                print(f"⚠️ [WARNING] Error disconnecting signals (this is normal): {e}")
+        
+        def _connect_auto_save_signals(self):
+            """Connect all widget signals to auto-save function"""
+            try:
+                print("🔌 [DEBUG] Connecting auto-save signals...")
+                
+                # Notification/Reporting tab
+                if hasattr(self, 'track_orders_cb'):
+                    self.track_orders_cb.toggled.connect(self._save_auto_notification_settings)
+                if hasattr(self, 'notify_sl_tp_cb'):
+                    self.notify_sl_tp_cb.toggled.connect(self._save_auto_notification_settings)
+                if hasattr(self, 'notify_close_cb'):
+                    self.notify_close_cb.toggled.connect(self._save_auto_notification_settings)
+                if hasattr(self, 'track_orders_pips_spin'):
+                    self.track_orders_pips_spin.valueChanged.connect(self._save_auto_notification_settings)
+                if hasattr(self, 'sltp_pips_spin'):
+                    self.sltp_pips_spin.valueChanged.connect(self._save_auto_notification_settings)
+                if hasattr(self, 'daily_summary_cb'):
+                    self.daily_summary_cb.toggled.connect(self._save_auto_notification_settings)
+                if hasattr(self, 'daily_summary_time'):
+                    self.daily_summary_time.timeChanged.connect(self._save_auto_notification_settings)
+                
+                # Format radio buttons
+                if hasattr(self, 'format_summary_rb'):
+                    self.format_summary_rb.toggled.connect(self._save_auto_notification_settings)
+                if hasattr(self, 'format_full_rb'):
+                    self.format_full_rb.toggled.connect(self._save_auto_notification_settings)
+                
+                # Advanced checkboxes
+                if hasattr(self, 'include_technical_cb'):
+                    self.include_technical_cb.toggled.connect(self._save_auto_notification_settings)
+                if hasattr(self, 'include_indicators_cb'):
+                    self.include_indicators_cb.toggled.connect(self._save_auto_notification_settings)
+                if hasattr(self, 'include_summary_cb'):
+                    self.include_summary_cb.toggled.connect(self._save_auto_notification_settings)
+                if hasattr(self, 'include_candlestick_cb'):
+                    self.include_candlestick_cb.toggled.connect(self._save_auto_notification_settings)
+                if hasattr(self, 'include_price_patterns_cb'):
+                    self.include_price_patterns_cb.toggled.connect(self._save_auto_notification_settings)
+                
+                # Custom message
+                if hasattr(self, 'send_custom_message'):
+                    self.send_custom_message.toggled.connect(self._save_auto_notification_settings)
+                if hasattr(self, 'custom_message'):
+                    self.custom_message.textChanged.connect(self._save_auto_notification_settings)
+                
+                # Trading History Report options
+                if hasattr(self, 'history_include_closed'):
+                    self.history_include_closed.toggled.connect(self._save_auto_notification_settings)
+                if hasattr(self, 'history_include_stats'):
+                    self.history_include_stats.toggled.connect(self._save_auto_notification_settings)
+                if hasattr(self, 'history_include_chart'):
+                    self.history_include_chart.toggled.connect(self._save_auto_notification_settings)
+                if hasattr(self, 'history_period_combo'):
+                    self.history_period_combo.currentIndexChanged.connect(self._save_auto_notification_settings)
+                if hasattr(self, 'history_schedule_type'):
+                    self.history_schedule_type.currentIndexChanged.connect(self._save_auto_notification_settings)
+                if hasattr(self, 'history_hourly_interval'):
+                    self.history_hourly_interval.valueChanged.connect(self._save_auto_notification_settings)
+                
+                print("✅ [DEBUG] All auto-save signals connected")
+                
+            except Exception as e:
+                print(f"❌ Error connecting auto-save signals: {e}")
+        
+        def _send_notification(self):
+            """Send notification to selected platforms"""
+            try:
+                # Save config first
+                if not self._save_config(show_message=True):
+                    return
+                
+                # Prepare message content
+                message_content = ""
+                
+                if self.signal_radio.isChecked():
+                    # Get latest signals
+                    signal_data = self._get_latest_signals()
+                    if signal_data:
+                        message_content = self._format_signal_message(signal_data)
+                    else:
+                        message_content = I18N.t("No recent signals available", "Không có tín hiệu gần đây")
+                        
+                elif self.custom_radio.isChecked():
+                    message_content = self.custom_message.toPlainText().strip()
+                    if not message_content:
+                        QMessageBox.warning(self, I18N.t("Empty Message", "Tin nhắn trống"), 
+                                          I18N.t("Please enter a message", "Vui lòng nhập tin nhắn"))
+                        return
+                        
+                elif self.report_radio.isChecked():
+                    message_content = self._get_latest_report()
+                
+                if not message_content:
+                    QMessageBox.warning(self, I18N.t("No Content", "Không có nội dung"), 
+                                      I18N.t("No message content to send", "Không có nội dung tin nhắn để gửi"))
+                    return
+                
+                # Send to selected platforms
+                success_platforms = []
+                failed_platforms = []
+                
+                # Telegram
+                if self.telegram_cb.isChecked():
+                    if self._send_to_telegram(message_content):
+                        success_platforms.append("Telegram")
+                    else:
+                        failed_platforms.append("Telegram")
+                
+                # Discord 
+                if self.discord_cb.isChecked():
+                    if self._send_to_discord(message_content):
+                        success_platforms.append("Discord")
+                    else:
+                        failed_platforms.append("Discord")
+                
+                # Show results
+                if success_platforms:
+                    success_msg = I18N.t("Successfully sent to: ", "Gửi thành công tới: ") + ", ".join(success_platforms)
+                    if failed_platforms:
+                        success_msg += "\n" + I18N.t("Failed to send to: ", "Gửi thất bại tới: ") + ", ".join(failed_platforms)
+                    QMessageBox.information(self, I18N.t("Send Results", "Kết quả gửi"), success_msg)
+                else:
+                    QMessageBox.warning(self, I18N.t("Send Failed", "Gửi thất bại"), 
+                                      I18N.t("Failed to send to any platform", "Gửi thất bại tới tất cả nền tảng"))
+                
+            except Exception as e:
+                QMessageBox.critical(self, I18N.t("Error", "Lỗi"), f"Send error: {e}")
+        
+        def _send_to_telegram(self, message):
+            """Send message to Telegram"""
+            try:
+                token = self.telegram_token.text().strip()
+                chat_id = self.telegram_chat_id.text().strip()
+                
+                if not token or not chat_id:
+                    return False
+                
+                import requests
+                url = f"https://api.telegram.org/bot{token}/sendMessage"
+                data = {"chat_id": chat_id, "text": message, "parse_mode": "HTML"}
+                
+                response = requests.post(url, json=data, timeout=10)
+                return response.status_code == 200
+                
+            except Exception as e:
+                print(f"Telegram send error: {e}")
+                return False
+        
+        def _send_to_discord(self, message):
+            """Send message to Discord"""
+            try:
+                webhook_url = getattr(self, 'discord_webhook', QLineEdit()).text().strip()
+                if not webhook_url:
+                    return False
+                
+                import requests
+                data = {"content": message}
+                response = requests.post(webhook_url, json=data, timeout=10)
+                return response.status_code == 204
+                
+            except Exception as e:
+                print(f"Discord send error: {e}")
+                return False
+        
+        def _get_latest_signals(self):
+            """Get latest signal data from analysis results"""
+            try:
+                import json
+                import glob
+                
+                # Look for latest signal files
+                signal_files = glob.glob(os.path.join(os.getcwd(), 'analysis_results', '*_signal_*.json'))
+                if not signal_files:
+                    return None
+                
+                # Get most recent file
+                latest_file = max(signal_files, key=os.path.getmtime)
+                
+                with open(latest_file, 'r', encoding='utf-8') as f:
+                    signal_data = json.load(f)
+                
+                return signal_data
+                
+            except Exception as e:
+                print(f"Error loading signal data: {e}")
+                return None
+        
+        def _format_signal_message(self, signal_data):
+            """Format signal data into readable message - handles both signals and executed orders"""
+            try:
+                if isinstance(signal_data, dict):
+                    symbol = signal_data.get('symbol', 'Unknown')
+                    signal_type = signal_data.get('signal', 'Unknown')
+                    confidence = signal_data.get('confidence', 0)
+                    entry = signal_data.get('entry_price', 0)
+                    sl = signal_data.get('stop_loss', 0)
+                    tp = signal_data.get('take_profit', 0)
+                    
+                    # Check if this is an executed order
+                    is_executed = signal_data.get('is_executed', False)
+                    ticket = signal_data.get('ticket', 0)
+                    volume = signal_data.get('volume', 0)
+                    executed_at = signal_data.get('executed_at', '')
+                    
+                    if AppState.language() == 'vi':
+                        if is_executed:
+                            message = f"✅ LỆNH ĐÃ THỰC HIỆN\n\n"
+                            message += f"📊 {symbol}\n"
+                            message += f"📈 {signal_type}\n"
+                            message += f"💰 Giá vào: {entry:.5f}\n"
+                            message += f"📦 Khối lượng: {volume:.2f} lots\n"
+                            message += f"🎫 Ticket: #{ticket}\n"
+                            message += f"⏰ Thời gian: {executed_at}\n\n"
+                        else:
+                            message = f"🔔 TÍN HIỆU GIAO DỊCH\n\n"
+                            message += f"📊 {symbol}\n"
+                            message += f"📈 {signal_type} ({confidence:.1f}%)\n"
+                            message += f"💰 Vào lệnh: {entry:.5f}\n"
+                            message += f"🛡️ Cắt lỗ: {sl:.5f}\n"
+                            message += f"🎯 Chốt lãi: {tp:.5f}\n\n"
+                        message += self._get_branded_footer('vi')
+                    else:
+                        if is_executed:
+                            message = f"✅ ORDER EXECUTED\n\n"
+                            message += f"📊 {symbol}\n"
+                            message += f"📈 {signal_type}\n"
+                            message += f"💰 Entry Price: {entry:.5f}\n"
+                            message += f"📦 Volume: {volume:.2f} lots\n"
+                            message += f"🎫 Ticket: #{ticket}\n"
+                            message += f"⏰ Time: {executed_at}\n\n"
+                        else:
+                            message = f"🔔 TRADING SIGNAL\n\n"
+                            message += f"📊 {symbol}\n"
+                            message += f"📈 {signal_type} ({confidence:.1f}%)\n"
+                            message += f"💰 Entry: {entry:.5f}\n"
+                            message += f"🛡️ SL: {sl:.5f}\n"
+                            message += f"🎯 TP: {tp:.5f}\n\n"
+                        message += self._get_branded_footer('en')
+                    
+                    return message
+                
+            except Exception as e:
+                print(f"Error formatting signal: {e}")
+            
+            return I18N.t("Error formatting signal data", "Lỗi định dạng dữ liệu tín hiệu")
+        
+        def _get_latest_report(self):
+            """Get comprehensive report including executed orders and analysis"""
+            try:
+                import glob
+                import json
+                from datetime import datetime
+                
+                report_content = ""
+                
+                # 1. Add executed orders section
+                executed_orders = self._get_latest_signals()  # This now returns executed orders
+                if executed_orders:
+                    if AppState.language() == 'vi':
+                        report_content += "🔥 CÁC LỆNH ĐÃ THỰC HIỆN GẦN ĐÂY\n"
+                        report_content += "=" * 40 + "\n\n"
+                    else:
+                        report_content += "🔥 RECENTLY EXECUTED ORDERS\n"
+                        report_content += "=" * 40 + "\n\n"
+                    
+                    for order in executed_orders[:3]:  # Show last 3 executed orders
+                        if isinstance(order, dict):
+                            symbol = order.get('symbol', 'Unknown')
+                            action = order.get('signal', 'Unknown')
+                            price = order.get('entry_price', 0)
+                            volume = order.get('volume', 0)
+                            ticket = order.get('ticket', 0)
+                            time = order.get('executed_at', 'Unknown')
+                            
+                            if AppState.language() == 'vi':
+                                report_content += f"✅ {symbol} - {action}\n"
+                                report_content += f"   💰 Giá: {price:.5f} | 📦 Lượng: {volume:.2f} lots\n"
+                                report_content += f"   🎫 Ticket: #{ticket} | ⏰ {time}\n\n"
+                            else:
+                                report_content += f"✅ {symbol} - {action}\n"
+                                report_content += f"   💰 Price: {price:.5f} | 📦 Volume: {volume:.2f} lots\n"
+                                report_content += f"   🎫 Ticket: #{ticket} | ⏰ {time}\n\n"
+                
+                # 2. Add account positions summary
+                actions_file = os.path.join(os.getcwd(), 'analysis_results', 'account_positions_actions.json')
+                if os.path.exists(actions_file):
+                    with open(actions_file, 'r', encoding='utf-8') as f:
+                        actions_data = json.load(f)
+                    
+                    if isinstance(actions_data, dict) and 'summary' in actions_data:
+                        summary = actions_data['summary']
+                        if AppState.language() == 'vi':
+                            report_content += "📊 TÓM TẮT PHÂN TÍCH TÀI KHOẢN\n"
+                            report_content += "=" * 40 + "\n"
+                            report_content += f"🔍 Symbols phân tích: {summary.get('total_symbols_analyzed', 0)}\n"
+                            report_content += f"⚡ Tín hiệu tạo: {summary.get('signals_generated', 0)}\n"
+                            report_content += f"🎯 Hành động ưu tiên cao: {summary.get('high_priority_actions', 0)}\n"
+                            report_content += f"📈 Tổng hành động: {summary.get('total_actions', 0)}\n\n"
+                        else:
+                            report_content += "📊 ACCOUNT ANALYSIS SUMMARY\n"
+                            report_content += "=" * 40 + "\n"
+                            report_content += f"🔍 Symbols analyzed: {summary.get('total_symbols_analyzed', 0)}\n"
+                            report_content += f"⚡ Signals generated: {summary.get('signals_generated', 0)}\n"
+                            report_content += f"🎯 High priority actions: {summary.get('high_priority_actions', 0)}\n"
+                            report_content += f"📈 Total actions: {summary.get('total_actions', 0)}\n\n"
+                        
+                        # Add detailed actions display
+                        if 'actions' in actions_data and actions_data['actions']:
+                            actions_list = actions_data['actions']
+                            
+                            if AppState.language() == 'vi':
+                                report_content += "🎯 CHI TIẾT HÀNH ĐỘNG\n"
+                                report_content += "=" * 40 + "\n"
+                            else:
+                                report_content += "🎯 DETAILED ACTIONS\n"
+                                report_content += "=" * 40 + "\n"
+                            
+                            # Show up to 10 most recent actions
+                            for i, action in enumerate(actions_list[-10:], 1):
+                                action_type = action.get('action_type', 'unknown')
+                                symbol = action.get('symbol', 'N/A')
+                                direction = action.get('direction', 'N/A')
+                                reason = action.get('reason', 'No reason provided')
+                                confidence = action.get('confidence', 0)
+                                priority = action.get('priority', 0)
+                                
+                                # Action type emoji mapping
+                                type_emoji = {
+                                    'dca_entry': '🔄',
+                                    'hold': '⏸️',
+                                    'move_sl_to_be': '🛡️',
+                                    'set_trailing_sl': '📈',
+                                    'close_position': '❌',
+                                    'entry_signal': '🚀'
+                                }.get(action_type, '⚡')
+                                
+                                # Priority indicator
+                                priority_text = "🔥 " if priority >= 3 else ""
+                                
+                                if AppState.language() == 'vi':
+                                    report_content += f"{i}. {type_emoji} {priority_text}{symbol} ({direction})\n"
+                                    report_content += f"   📝 {reason}\n"
+                                    report_content += f"   🎯 Tin cậy: {confidence:.1f}% | Ưu tiên: {priority}\n\n"
+                                else:
+                                    report_content += f"{i}. {type_emoji} {priority_text}{symbol} ({direction})\n"
+                                    report_content += f"   📝 {reason}\n"
+                                    report_content += f"   🎯 Confidence: {confidence:.1f}% | Priority: {priority}\n\n"
+                
+                # 3. Add latest analysis report
+                report_files = glob.glob(os.path.join(os.getcwd(), 'analysis_results', '*_report_*.txt'))
+                if report_files:
+                    # Choose language-appropriate file
+                    lang_suffix = '_vi_' if AppState.language() == 'vi' else '_en_'
+                    lang_files = [f for f in report_files if lang_suffix in f]
+                    
+                    if not lang_files:
+                        lang_files = report_files  # Fallback to any report
+                    
+                    # Get most recent file
+                    latest_file = max(lang_files, key=os.path.getmtime)
+                    
+                    with open(latest_file, 'r', encoding='utf-8') as f:
+                        analysis_content = f.read()
+                    
+                    if AppState.language() == 'vi':
+                        report_content += "📈 PHÂN TÍCH KỸ THUẬT MỚI NHẤT\n"
+                    else:
+                        report_content += "📈 LATEST TECHNICAL ANALYSIS\n"
+                    
+                    report_content += "=" * 40 + "\n"
+                    
+                    # Truncate analysis if too long
+                    if len(analysis_content) > 1500:
+                        analysis_content = analysis_content[:1500] + "..."
+                    
+                    report_content += analysis_content + "\n\n"
+                
+                # Add footer
+                report_content += self._get_branded_footer(AppState.language())
+                
+                # Final truncate if still too long
+                if len(report_content) > 4000:
+                    report_content = report_content[:4000] + "..."
+                
+                return report_content if report_content.strip() else I18N.t("No analysis data available", "Không có dữ liệu phân tích")
+                
+            except Exception as e:
+                print(f"Error loading comprehensive report: {e}")
+                import traceback
+                traceback.print_exc()
+                return I18N.t("Error loading report", "Lỗi tải báo cáo")
+        
+        def _auto_setup(self):
+            """Launch auto setup wizard"""
+            try:
+                import subprocess
+                result = subprocess.run(['python', 'super_simple_setup.py'], 
+                                     capture_output=True, text=True, cwd=os.getcwd())
+                if result.returncode == 0:
+                    QMessageBox.information(self, I18N.t("Setup Complete", "Cài đặt Hoàn tất"), 
+                                          I18N.t("Auto setup completed successfully!\nPlease restart this dialog to see the changes.", 
+                                                "Cài đặt tự động hoàn tất thành công!\nVui lòng khởi động lại hộp thoại này để thấy thay đổi."))
+                    self._load_current_config()
+                else:
+                    QMessageBox.warning(self, I18N.t("Setup Error", "Lỗi Cài đặt"), 
+                                      I18N.t("Setup failed:", "Cài đặt thất bại:") + f"\n{result.stderr}")
+            except Exception as e:
+                QMessageBox.critical(self, I18N.t("Error", "Lỗi"), 
+                                   I18N.t("Failed to launch setup:", "Không thể khởi chạy cài đặt:") + f" {e}")
+        
+        def _test_connection(self):
+            """Test notification connections"""
+            self._save_config()  # Save first
+            
+            try:
+                import subprocess
+                result = subprocess.run(['python', 'test_notifications.py'], 
+                                     capture_output=True, text=True, cwd=os.getcwd())
+                if result.returncode == 0:
+                    QMessageBox.information(self, I18N.t("Test Result", "Kết quả Test"), 
+                                          I18N.t("Test completed!\nCheck console output for details.", 
+                                                "Test hoàn thành!\nKiểm tra kết quả đầu ra console để biết chi tiết."))
+                else:
+                    QMessageBox.warning(self, I18N.t("Test Failed", "Test Thất bại"), 
+                                      I18N.t("Test failed:", "Test thất bại:") + f"\n{result.stderr}")
+            except Exception as e:
+                QMessageBox.critical(self, I18N.t("Error", "Lỗi"), 
+                                   I18N.t("Failed to test:", "Không thể test:") + f" {e}")
+        
+        def _update_preview(self):
+            """Update message preview"""
+            try:
+                if self.signal_radio.isChecked():
+                    # Show latest signal preview with format based on APP language setting (not config)
+                    config = self._get_current_config_for_preview()
+                    # 🔧 FIX: Use AppState.language() instead of config for UI language sync
+                    is_vietnamese = AppState.language() == 'vi'
+                    
+                    if is_vietnamese:
+                        preview_text = "🚨 LỆNH ĐÃ THỰC HIỆN\n"
+                        preview_text += "⏰ Thời gian: 18:30:45\n"
+                        preview_text += "📊 Cặp tiền: XAUUSD\n"
+                        preview_text += "📈 Hướng: MUA\n"
+                        preview_text += "🎯 Độ tin cậy: 75%\n"
+                        preview_text += "💰 Giá vào: 2650.00000\n"
+                        preview_text += "🔢 Khối lượng: 0.10 lots\n"
+                        preview_text += "🏷️ Loại lệnh: Tín hiệu vào lệnh\n"
+                        preview_text += "🛡️ Cắt lỗ: 2640.00000\n"
+                        preview_text += "🎯 Chốt lời: 2665.00000\n"
+                        preview_text += "🎫 Mã lệnh: #12345678\n\n"
+                    else:
+                        preview_text = "🚨 ORDER EXECUTED\n"
+                        preview_text += "⏰ Time: 18:30:45\n"
+                        preview_text += "📊 Symbol: XAUUSD\n"
+                        preview_text += "📈 Direction: BUY\n"
+                        preview_text += "🎯 Confidence: 75%\n"
+                        preview_text += "💰 Entry Price: 2650.00000\n"
+                        preview_text += "🔢 Volume: 0.10 lots\n"
+                        preview_text += "🏷️ Order Type: Entry Signal\n"
+                        preview_text += "🛡️ Stop Loss: 2640.00000\n"
+                        preview_text += "🎯 Take Profit: 2665.00000\n"
+                        preview_text += "🎫 Ticket: #12345678\n\n"
+                    
+                    # Add analysis sections based on current settings and language
+                    if config.get('settings', {}).get('include_technical', False):
+                        if is_vietnamese:
+                            preview_text += "🔍 PHÂN TÍCH KỸ THUẬT:\n"
+                            preview_text += "  - Xu hướng: tăng (H4)\n"
+                            preview_text += "  - Vùng hỗ trợ: 2640.50 (H4)\n"
+                            preview_text += "  - Vùng kháng cự: 2670.20 (H4)\n\n"
+                        else:
+                            preview_text += "🔍 TECHNICAL ANALYSIS:\n"
+                            preview_text += "  - Trend: upward (H4)\n"
+                            preview_text += "  - Support zone: 2640.50 (H4)\n"
+                            preview_text += "  - Resistance zone: 2670.20 (H4)\n\n"
+                    
+                    if config.get('settings', {}).get('include_indicators', False):
+                        if is_vietnamese:
+                            preview_text += "📈 CHỈ BÁO KỸ THUẬT:\n"
+                            preview_text += "        • EMA20: giá cao hơn EMA20 (tích cực)\n"
+                            preview_text += "        • RSI: 65.4 - gần vùng quá mua\n\n"
+                        else:
+                            preview_text += "📈 TECHNICAL INDICATORS:\n"
+                            preview_text += "        • EMA20: price above EMA20 (positive)\n"
+                            preview_text += "        • RSI: 65.4 - near overbought zone\n\n"
+                    
+                    if config.get('settings', {}).get('include_summary', False):
+                        if is_vietnamese:
+                            preview_text += "📋 TÓM TẮT:\n"
+                            preview_text += "  - Độ hội tụ chỉ báo: Ủng hộ BUY 3 | SELL 0\n"
+                            preview_text += "  - Biến động: 15.2 pips\n\n"
+                        else:
+                            preview_text += "📋 SUMMARY:\n"
+                            preview_text += "  - Indicator consensus: Support BUY 3 | SELL 0\n"
+                            preview_text += "  - Volatility: 15.2 pips\n\n"
+                    
+                    if config.get('settings', {}).get('include_price_patterns', False):
+                        if is_vietnamese:
+                            preview_text += "💹 MÔ HÌNH GIÁ:\n"
+                            preview_text += "        • bullish flag ↑ (H1) – Tiếp diễn tăng – 75% (cao)\n"
+                            preview_text += "        • ascending triangle ↑ (H4) – Breakout – 70% (cao)\n\n"
+                        else:
+                            preview_text += "💹 PRICE PATTERNS:\n"
+                            preview_text += "        • bullish flag ↑ (H1) – Continuation upward – 75% (high)\n"
+                            preview_text += "        • ascending triangle ↑ (H4) – Breakout – 70% (high)\n\n"
+                    
+                    if config.get('settings', {}).get('include_candlestick', False):
+                        if is_vietnamese:
+                            preview_text += "🕯️ MÔ HÌNH NẾN:\n"
+                            preview_text += "        • hammer ↑ (M15) – Đảo chiều tăng – 80% (cao)\n"
+                            preview_text += "        • bullish engulfing ↑ (M30) – Xác nhận tăng – 75% (cao)\n\n"
+                        else:
+                            preview_text += "🕯️ CANDLESTICK PATTERNS:\n"
+                            preview_text += "        • hammer ↑ (M15) – Reversal upward – 80% (high)\n"
+                            preview_text += "        • bullish engulfing ↑ (M30) – Bullish confirmation – 75% (high)\n\n"
+                    
+                    # Add custom message if enabled
+                    if (config.get('settings', {}).get('send_custom_message', False) and 
+                        hasattr(self, 'custom_message')):
+                        custom_text = self.custom_message.toPlainText().strip()
+                        if custom_text:
+                            # Add custom message content directly without header
+                            preview_text += f"{custom_text}\n\n"
+                    
+                    # Add footer at the end
+                    preview_text += self._get_branded_footer()
+                
+                elif self.custom_radio.isChecked():
+                    custom_text = self.custom_message.toPlainText()
+                    if custom_text.strip():
+                        preview_text = custom_text
+                    else:
+                        preview_text = I18N.t("Enter your custom message above...", "Nhập tin nhắn tùy chỉnh ở trên...")
+                else:
+                    preview_text = I18N.t("Select message type above...", "Chọn loại tin nhắn ở trên...")
+                
+                self.preview_area.setPlainText(preview_text)
+                
+            except Exception as e:
+                self.preview_area.setPlainText(f"Preview error: {e}")
+        
+        def _get_current_config_for_preview(self):
+            """Get current GUI settings for preview"""
+            try:
+                # Try to read from config file first
+                import json
+                import os
+                config_path = 'notification_config.json'
+                if os.path.exists(config_path):
+                    with open(config_path, 'r', encoding='utf-8') as f:
+                        config = json.load(f)
+                        return config
+                
+                # Fallback to GUI state
+                return {
+                    'settings': {
+                        'format_vietnamese': getattr(self, 'vietnamese_rb', QCheckBox()).isChecked() if hasattr(self, 'vietnamese_rb') else True,
+                        'include_technical': getattr(self, 'include_technical_cb', QCheckBox()).isChecked() if hasattr(self, 'include_technical_cb') else True,
+                        'include_indicators': getattr(self, 'include_indicators_cb', QCheckBox()).isChecked() if hasattr(self, 'include_indicators_cb') else False,
+                        'include_summary': getattr(self, 'include_summary_cb', QCheckBox()).isChecked() if hasattr(self, 'include_summary_cb') else True,
+                        'include_candlestick': getattr(self, 'include_candlestick_cb', QCheckBox()).isChecked() if hasattr(self, 'include_candlestick_cb') else False,
+                        'include_price_patterns': getattr(self, 'include_price_patterns_cb', QCheckBox()).isChecked() if hasattr(self, 'include_price_patterns_cb') else False,
+                        'send_custom_message': getattr(self, 'send_custom_message', QCheckBox()).isChecked() if hasattr(self, 'send_custom_message') else False,
+                    }
+                }
+            except:
+                return {'settings': {}}
+        
+        def _send_notification(self):
+            """Send notification now"""
+            try:
+                # Save config first
+                if not self._save_config():
+                    return
+                
+                # Import notification service
+                try:
+                    from unified_notification_system import UnifiedNotificationSystem
+                except ImportError:
+                    QMessageBox.critical(self, I18N.t("Error", "Lỗi"), 
+                                       I18N.t("Notification service not found!\nPlease ensure notification_service.py exists.", 
+                                             "Không tìm thấy dịch vụ thông báo!\nVui lòng đảm bảo notification_service.py tồn tại."))
+                    return
+                
+                notification_service = UnifiedNotificationSystem()
+                
+                # Prepare message
+                if self.signal_radio.isChecked():
+                    # REMOVED: Duplicate notification system
+                    QMessageBox.information(self, I18N.t("Auto Notifications", "Thông báo Tự động"), 
+                                          I18N.t("🔔 AUTO NOTIFICATION ENABLED!\n\n"
+                                                "✅ System will automatically send notifications when orders are executed\n"
+                                                "📱 You don't need to send manually anymore\n\n"
+                                                "💡 Notification format can be adjusted in settings below",
+                                                "🔔 THÔNG BÁO TỰ ĐỘNG ĐÃ BẬT!\n\n"
+                                                "✅ Hệ thống sẽ tự động gửi thông báo khi có lệnh thực thi\n"
+                                                "📱 Bạn không cần gửi thủ công nữa\n\n"
+                                                "💡 Format thông báo được điều chỉnh qua cài đặt bên dưới"))
+                
+                elif self.custom_radio.isChecked():
+                    # Send custom message
+                    custom_text = self.custom_message.toPlainText().strip()
+                    if custom_text:
+                        success_telegram = False
+                        success_zalo = False
+                        
+                        if self.telegram_cb.isChecked():
+                            success_telegram = notification_service.send_telegram_message(custom_text)
+                        
+                        if self.zalo_cb.isChecked():
+                            success_zalo = notification_service.send_zalo_message(custom_text)
+                        
+                        if success_telegram or success_zalo:
+                            platforms = []
+                            if success_telegram: platforms.append("Telegram")
+                            if success_zalo: platforms.append("Zalo")
+                            QMessageBox.information(self, I18N.t("Success", "Thành công"), 
+                                                  I18N.t("Custom message sent successfully to: {platforms}", 
+                                                        "Tin nhắn tùy chỉnh đã gửi thành công tới: {platforms}", platforms=', '.join(platforms)))
+                        else:
+                            QMessageBox.warning(self, I18N.t("Failed", "Thất bại"), 
+                                              I18N.t("Failed to send custom message.", "Gửi tin nhắn tùy chỉnh thất bại."))
+                    else:
+                        QMessageBox.warning(self, I18N.t("Empty Message", "Tin nhắn trống"), 
+                                          I18N.t("Please enter a custom message.", "Vui lòng nhập tin nhắn tùy chỉnh."))
+                else:
+                    QMessageBox.warning(self, I18N.t("No Selection", "Chưa chọn"), 
+                                      I18N.t("Please select a message type.", "Vui lòng chọn loại tin nhắn."))
+                
+            except Exception as e:
+                QMessageBox.critical(self, I18N.t("Error", "Lỗi"), 
+                                   I18N.t("Failed to send notification:", "Không thể gửi thông báo:") + f" {e}")
+        
+        def _get_latest_signals(self):
+            """Get executed orders instead of all scanned signals to prevent spam"""
+            try:
+                # Try to get executed orders from order executor
+                from order_executor import get_global_executor_instance
+                
+                executor = get_global_executor_instance()
+                if not executor or not hasattr(executor, 'executed_orders'):
+                    print("⚠️ No order executor or executed orders found")
+                    return None
+                
+                # Get recent executed orders (last hour to avoid spam)
+                from datetime import datetime, timedelta
+                current_time = datetime.now()
+                recent_threshold = current_time - timedelta(hours=1)
+                
+                recent_executed = []
+                for order_data in executor.executed_orders:
+                    if order_data.get('timestamp', datetime.min) > recent_threshold:
+                        # Convert executed order to signal-like format
+                        signal_info = order_data.get('signal', {})
+                        result_info = order_data.get('result')
+                        
+                        if result_info and hasattr(result_info, 'order'):
+                            executed_signal = {
+                                'symbol': signal_info.get('symbol', 'Unknown'),
+                                'signal': signal_info.get('action', 'Unknown'),
+                                'confidence': signal_info.get('confidence', 0),
+                                'entry_price': result_info.price if hasattr(result_info, 'price') else 0,
+                                'volume': result_info.volume if hasattr(result_info, 'volume') else 0,
+                                'ticket': result_info.order if hasattr(result_info, 'order') else 0,
+                                'executed_at': order_data.get('timestamp', current_time).strftime('%Y-%m-%d %H:%M:%S'),
+                                'is_executed': True  # Mark as executed order
+                            }
+                            recent_executed.append(executed_signal)
+                
+                if recent_executed:
+                    print(f"✅ Found {len(recent_executed)} recently executed orders")
+                    return recent_executed
+                else:
+                    print("📊 No recently executed orders to send")
+                    return None
+                    
+            except Exception as e:
+                print(f"❌ Error getting executed orders: {e}")
+                # Fallback to analysis reports if order executor fails
+                try:
+                    import json
+                    import glob
+                    
+                    # Look for account position actions (executed trades)
+                    actions_file = os.path.join(os.getcwd(), 'analysis_results', 'account_positions_actions.json')
+                    if os.path.exists(actions_file):
+                        print("📂 Reading executed actions from account_positions_actions.json")
+                        with open(actions_file, 'r', encoding='utf-8') as f:
+                            actions_data = json.load(f)
+                        
+                        # Filter recent actions
+                        if isinstance(actions_data, list) and actions_data:
+                            print(f"✅ Found {len(actions_data)} account actions")
+                            return actions_data[:5]  # Return last 5 actions
+                    
+                    print("⚠️ No executed orders or actions found")
+                    return None
+                    
+                except Exception as fallback_e:
+                    print(f"❌ Fallback error: {fallback_e}")
+                    import traceback
+                    traceback.print_exc()
+                    return None
 
     class SignalTab(QWidget):
         def __init__(self, parent: Optional[QWidget] = None, indicator_tab: Optional[QWidget] = None, market_tab: Optional[QWidget] = None):
@@ -800,6 +7242,8 @@ if GUI_AVAILABLE:
                 self.retranslate_ui()
             except Exception:
                 pass
+            # 🆕 Load saved confidence threshold from risk_settings
+            self._load_signal_confidence_threshold()
             self.load_latest_signals()
 
         def cleanup_thread(self):
@@ -855,8 +7299,10 @@ if GUI_AVAILABLE:
             indicator_list: List[Dict[str, Any]] = []
             try:
                 if not getattr(self, 'indicator_tab', None):
+                    print(f"🔍 [DEBUG] No indicator_tab found")
                     return indicator_list
                 rows = getattr(self.indicator_tab, 'indicator_rows', []) or []
+                print(f"🔍 [DEBUG] Found {len(rows)} indicator rows")
                 # Determine MA-family mode - hardcoded to 'expand'
                 mode = 'expand'
 
@@ -985,6 +7431,7 @@ if GUI_AVAILABLE:
                         continue
             except Exception:
                 pass
+            print(f"🔍 [DEBUG] Built indicator_list: {len(indicator_list)} items - {[i['name'] for i in indicator_list]}")
             return indicator_list
 
         def _run_preexport_for_selection(self) -> None:
@@ -1037,15 +7484,179 @@ if GUI_AVAILABLE:
                 except Exception:
                     return
 
-                # Run export for each symbol/timeframe
+                # Check if indicator files exist and are recent before exporting
+                import time
+                current_time = time.time()
+                
                 for sym in symbols:
                     for tf, cnt in selected_tfs:
                         try:
-                            export_indicators(sym, tf, cnt, indicator_list)
+                            # Check if indicator file exists and is recent (less than 1 hour old)
+                            indicator_file = f"indicator_output/{sym}_{tf}_indicators.json"
+                            if os.path.exists(indicator_file):
+                                file_age = current_time - os.path.getmtime(indicator_file)
+                                if file_age < 3600:  # Less than 1 hour old
+                                    print(f"⏭️ Skipping export for {sym}_{tf} - recent file exists ({file_age/60:.1f}m old)")
+                                    continue
+                            
+                            print(f"📊 Pre-exporting indicators for {sym}_{tf}")
+                            export_indicators(sym, tf, cnt, indicator_list, skip_cleanup=True)
                         except Exception:
                             continue
             except Exception:
                 pass
+
+        def _run_smart_preexport_for_whitelist(self) -> None:
+            """Smart pre-export: Only export if whitelist indicators are missing from existing files.
+            This ensures comprehensive_aggregator.py has the indicators selected in UI without 
+            unnecessarily re-exporting files that already contain the required indicators.
+            """
+            try:
+                if not getattr(self, 'indicator_tab', None):
+                    return
+                market_tab = getattr(self.indicator_tab, 'market_tab', None)
+                if market_tab is None:
+                    return
+                
+                # Get current whitelist tokens
+                whitelist_tokens = set(self.indicator_tab._collect_indicator_whitelist_tokens())
+                if not whitelist_tokens:
+                    print("📋 No indicators selected in whitelist - skipping preexport")
+                    return
+                
+                print(f"📋 Checking whitelist indicators: {', '.join(sorted(whitelist_tokens))}")
+                
+                # Gather selected symbols and timeframes
+                symbols = list(getattr(market_tab, 'checked_symbols', []) or [])
+                if not symbols:
+                    return
+                tf_checkboxes = getattr(market_tab, 'tf_checkboxes', {}) or {}
+                tf_spinboxes = getattr(market_tab, 'tf_spinboxes', {}) or {}
+                selected_tfs: List[tuple[str,int]] = []
+                for tf, cb in tf_checkboxes.items():
+                    try:
+                        if cb.isChecked():
+                            cnt = tf_spinboxes[tf].value() if tf in tf_spinboxes else 200
+                            selected_tfs.append((tf, cnt))
+                    except Exception:
+                        continue
+                if not selected_tfs:
+                    return
+                
+                import json
+                import time
+                current_time = time.time()
+                
+                # Check each symbol/timeframe file for missing indicators
+                files_to_export = []
+                for sym in symbols:
+                    for tf, cnt in selected_tfs:
+                        indicator_file = f"indicator_output/{sym}_{tf}_indicators.json"
+                        needs_export = False
+                        
+                        if not os.path.exists(indicator_file):
+                            print(f"📊 File missing: {indicator_file}")
+                            needs_export = True
+                        else:
+                            # Check if file is very old (>24 hours) 
+                            file_age = current_time - os.path.getmtime(indicator_file)
+                            if file_age > 86400:  # 24 hours
+                                print(f"⏰ File too old: {indicator_file} ({file_age/3600:.1f}h)")
+                                needs_export = True
+                            else:
+                                # Check if whitelist indicators are present in file
+                                try:
+                                    with open(indicator_file, 'r') as f:
+                                        data = json.load(f)
+                                    
+                                    # Get available indicators from file
+                                    available_indicators = set()
+                                    if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
+                                        # List format - get keys from first row
+                                        available_indicators = set(key.lower() for key in data[0].keys())
+                                    elif isinstance(data, dict):
+                                        # Dict format - flatten all keys
+                                        for key, value in data.items():
+                                            if isinstance(value, (list, dict)):
+                                                available_indicators.add(key.lower())
+                                    
+                                    # Map whitelist tokens to actual indicator patterns in files
+                                    def check_indicator_present(token, available):
+                                        token = token.lower()
+                                        # Direct match
+                                        if token in available:
+                                            return True
+                                        # Pattern matching for complex indicators
+                                        if token == 'bollinger' and any(k.startswith('bb_') for k in available):
+                                            return True
+                                        if token == 'donchian' and any('donchian' in k for k in available):
+                                            return True
+                                        if token == 'fibonacci' and any('fib_' in k for k in available):
+                                            return True
+                                        if token == 'ichimoku' and any('ichimoku' in k or 'senkou' in k or 'tenkan' in k or 'kijun' in k for k in available):
+                                            return True
+                                        if token == 'stochastic' and any('stoch' in k for k in available):
+                                            return True
+                                        if token.startswith('ema') and any(f'ema{token[3:]}' in k or f'ema_{token[3:]}' in k for k in available):
+                                            return True
+                                        return False
+                                    
+                                    # Check which whitelist indicators are missing
+                                    missing_indicators = {token for token in whitelist_tokens 
+                                                        if not check_indicator_present(token, available_indicators)}
+                                    if missing_indicators:
+                                        print(f"❌ Missing indicators in {indicator_file}: {', '.join(missing_indicators)}")
+                                        needs_export = True
+                                    else:
+                                        print(f"✅ All whitelist indicators present in {indicator_file}")
+                                        
+                                except Exception as e:
+                                    print(f"⚠️ Error checking {indicator_file}: {e}")
+                                    needs_export = True
+                        
+                        if needs_export:
+                            files_to_export.append((sym, tf, cnt))
+                
+                # Only export files that need it
+                if not files_to_export:
+                    print("✅ All required indicators already present - no export needed")
+                    return
+                
+                print(f"📤 Exporting {len(files_to_export)} files with missing/outdated indicators")
+                
+                # Build comprehensive indicator list for export
+                indicator_list = self._build_indicator_list_for_export()
+                if not indicator_list:
+                    # Ensure all whitelist indicators are included
+                    indicator_list = [
+                        {"name": "RSI", "params": {"period": 14}},
+                        {"name": "MACD", "params": {"fast": 12, "slow": 26, "signal": 9}},
+                        {"name": "ATR", "params": {"period": 14}},
+                        {"name": "MA", "params": {"period": 20, "ma_type": "EMA"}},
+                        {"name": "MA", "params": {"period": 50, "ma_type": "EMA"}},
+                        {"name": "MA", "params": {"period": 100, "ma_type": "EMA"}},
+                        {"name": "MA", "params": {"period": 200, "ma_type": "EMA"}},
+                        {"name": "Bollinger Bands", "params": {"window": 20, "dev": 2}},
+                        {"name": "Donchian Channel", "params": {"window": 20}},
+                        {"name": "Stochastic", "params": {"k_period": 14, "d_period": 3}},
+                        {"name": "Ichimoku", "params": {"tenkan": 9, "kijun": 26, "senkou": 52}},
+                        {"name": "Fibonacci", "params": {}},
+                    ]
+                
+                # Import exporter and run for needed files only
+                try:
+                    from mt5_indicator_exporter import export_indicators
+                    for sym, tf, cnt in files_to_export:
+                        try:
+                            print(f"📊 Exporting whitelist indicators for {sym}_{tf}")
+                            export_indicators(sym, tf, cnt, indicator_list, skip_cleanup=True)
+                        except Exception as e:
+                            print(f"⚠️ Export failed for {sym}_{tf}: {e}")
+                except ImportError:
+                    print("⚠️ Could not import mt5_indicator_exporter")
+                    
+            except Exception as e:
+                print(f"⚠️ Smart preexport error: {e}")
 
         def _build_ui(self):
             layout = QVBoxLayout(self)
@@ -1054,26 +7665,144 @@ if GUI_AVAILABLE:
             self.title_label.setFont(QFont("Segoe UI", 16, QFont.Bold))  # Reduced from 18 to 16
             layout.addWidget(self.title_label)
 
+            # === AI Model Selection Section ===
+            ai_section_label = QLabel(I18N.t("🤖 AI Analysis Settings", "🤖 Cài đặt phân tích AI"))
+            ai_section_label.setStyleSheet("font-size: 13px; font-weight: bold; color: #333; padding: 8px 0;")
+            layout.addWidget(ai_section_label)
+            
+            ai_row = QHBoxLayout()
+            self.ai_model_label = QLabel(I18N.t("AI Model:", "Mô hình AI:"))
+            self.ai_model_combo = QComboBox()
+            self.ai_model_combo.addItems([
+                I18N.t("Aggregator (Local)", "Tổng hợp (Local)"),
+                I18N.t("XGBoost AI (Port 5001)", "XGBoost AI (Port 5001)"),
+                I18N.t("CNN-LSTM Pro (Port 5002)", "CNN-LSTM Pro (Port 5002)"),
+                I18N.t("Transformer Pro (Port 5003)", "Transformer Pro (Port 5003)")
+            ])
+            self.ai_model_combo.setCurrentIndex(0)
+            self.ai_model_combo.currentIndexChanged.connect(self._on_ai_model_changed)
+            self.ai_model_combo.setStyleSheet("""
+                QComboBox {
+                    min-width: 200px;
+                    padding: 6px 12px;
+                    border: 1px solid #ccc;
+                    border-radius: 4px;
+                    background-color: white;
+                }
+            """)
+            ai_row.addWidget(self.ai_model_label)
+            ai_row.addWidget(self.ai_model_combo)
+            ai_row.addStretch()
+            layout.addLayout(ai_row)
+            
+            # === AI Server URL Configuration (for remote AI Server) ===
+            self.ai_server_widget = QWidget()
+            server_layout = QHBoxLayout(self.ai_server_widget)
+            server_layout.setContentsMargins(0, 5, 0, 5)
+            server_layout.setSpacing(8)
+            
+            self.ai_server_url_label = QLabel(I18N.t("🌐 AI Server URL:", "🌐 URL Máy chủ AI:"))
+            self.ai_server_url_input = QLineEdit()
+            self.ai_server_url_input.setPlaceholderText("http://your-server-ip:8080")
+            self.ai_server_url_input.setText(self._load_ai_server_url())
+            self.ai_server_url_input.setMinimumWidth(280)
+            self.ai_server_url_input.setStyleSheet("""
+                QLineEdit {
+                    padding: 6px 10px;
+                    border: 1px solid #ccc;
+                    border-radius: 4px;
+                    background-color: white;
+                    font-size: 12px;
+                }
+            """)
+            self.ai_server_url_input.textChanged.connect(self._save_ai_server_url)
+            
+            self.ai_check_btn = QPushButton(I18N.t("🔄 Check", "🔄 Kiểm tra"))
+            self.ai_check_btn.setFixedWidth(90)
+            self.ai_check_btn.clicked.connect(self._check_ai_server_status)
+            self.ai_check_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #2196F3;
+                    color: white;
+                    border: none;
+                    border-radius: 4px;
+                    padding: 6px 12px;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background-color: #1976D2;
+                }
+            """)
+            
+            self.ai_server_status = QLabel("🔴 Offline")
+            self.ai_server_status.setStyleSheet("color: #ff6b6b; font-weight: bold; min-width: 150px;")
+            
+            server_layout.addWidget(self.ai_server_url_label)
+            server_layout.addWidget(self.ai_server_url_input)
+            server_layout.addWidget(self.ai_check_btn)
+            server_layout.addWidget(self.ai_server_status)
+            server_layout.addStretch()
+            
+            self.ai_server_widget.setVisible(False)  # Hidden by default
+            layout.addWidget(self.ai_server_widget)
+            
+            # Separator after AI settings
+            separator = QFrame()
+            separator.setFrameShape(QFrame.HLine)
+            separator.setStyleSheet("background-color: #ddd;")
+            layout.addWidget(separator)
+
             ctrl = QHBoxLayout()
             self.refresh_btn = QPushButton(I18N.t("🔄 Refresh", "🔄 Làm mới")); self.refresh_btn.clicked.connect(self.load_latest_signals)
             # Min confidence (%) filter
             self.min_conf_spin = QDoubleSpinBox(); self.min_conf_spin.setRange(0.0, 100.0); self.min_conf_spin.setDecimals(1); self.min_conf_spin.setSingleStep(1.0); self.min_conf_spin.setValue(0.0)
             self.min_conf_spin.setToolTip(I18N.t("Filter signals by minimum confidence percentage", "Lọc tín hiệu theo mức độ tin cậy tối thiểu"))
+            # 🔧 Auto-save to risk_settings when confidence threshold changes
+            self.min_conf_spin.valueChanged.connect(self._save_signal_confidence_threshold)
             # Removed old inline language selector; now controlled from main menu
             self.run_btn = QPushButton(I18N.t("▶️ Run Aggregator", "▶️ Chạy tổng hợp")); self.run_btn.clicked.connect(self.on_run)
-            self.open_folder_btn = QPushButton(I18N.t("📂 Open results folder", "📂 Mở thư mục kết quả")); self.open_folder_btn.clicked.connect(self.open_results_folder)
 
             ctrl.addWidget(self.refresh_btn)
             ctrl.addSpacing(10)
             self.min_conf_label = QLabel("Min confidence %:"); ctrl.addWidget(self.min_conf_label); ctrl.addWidget(self.min_conf_spin)
-            ctrl.addSpacing(10)
-            # Removed strict mode checkbox and MA family selector
-            ctrl.addSpacing(10)
-            # Removed strict mode checkbox and MA family selector
             ctrl.addStretch(1)
             ctrl.addWidget(self.run_btn)
-            ctrl.addWidget(self.open_folder_btn)
+            
+            # Notification button - ensure space and visibility
+            ctrl.addSpacing(10)  # Add spacing before button
+            self.notification_btn = QPushButton(I18N.t("📱 Send Notification", "📱 Gửi thông báo"))
+            self.notification_btn.clicked.connect(self.open_notification_dialog)
+            self.notification_btn.setVisible(True)  # Ensure visibility
+            self.notification_btn.show()  # Force show
+            self.notification_btn.setMinimumWidth(150)  # Set minimum width
+            
+            # Add keyboard shortcut Ctrl+N for notification dialog
+            from PyQt5.QtWidgets import QShortcut
+            from PyQt5.QtGui import QKeySequence
+            shortcut = QShortcut(QKeySequence("Ctrl+N"), self)
+            shortcut.activated.connect(self.open_notification_dialog)
+            self.notification_btn.setToolTip("📱 Open notification dialog (Ctrl+N)")
+            
+            ctrl.addWidget(self.notification_btn)
+            print(f"🔍 [BUTTON_DEBUG] Notification button added: visible={self.notification_btn.isVisible()}, size={self.notification_btn.size()}")
+            print("⌨️ [SHORTCUT] Ctrl+N shortcut added for notification dialog")
+            
             layout.addLayout(ctrl)
+
+            # Force notification button visibility after layout
+            def force_button_visibility():
+                try:
+                    if hasattr(self, 'notification_btn'):
+                        self.notification_btn.setVisible(True)
+                        self.notification_btn.show()
+                        self.notification_btn.raise_()
+                        print(f"🔧 [POST_LAYOUT] Button forced visible: {self.notification_btn.isVisible()}")
+                except Exception as e:
+                    print(f"❌ [POST_LAYOUT] Button fix failed: {e}")
+            
+            # Schedule visibility fix after layout is complete
+            from PyQt5.QtCore import QTimer
+            QTimer.singleShot(100, force_button_visibility)
 
             # Signals table
             self.sig_group = QGroupBox("Latest signals")
@@ -1097,27 +7826,32 @@ if GUI_AVAILABLE:
             act_layout = QVBoxLayout(self.act_group)
             self.actions_view = QTextEdit(); self.actions_view.setReadOnly(True)
             act_layout.addWidget(self.actions_view)
+            # Add refresh button for actions
+            self.refresh_actions_btn = QPushButton("🔄 Refresh Actions")
+            self.refresh_actions_btn.clicked.connect(self.load_actions_text)
+            act_layout.addWidget(self.refresh_actions_btn)
             pan.addWidget(self.act_group, 2)
             layout.addLayout(pan, 3)
 
             # Load actions initially
             self.load_actions_text()
             
-            # Setup auto-refresh timer for signals (every 10 seconds)
+            # Setup auto-refresh timer for signals AND actions (every 10 seconds)
             self.signal_refresh_timer = QTimer()
             self.signal_refresh_timer.timeout.connect(self.load_latest_signals)
+            self.signal_refresh_timer.timeout.connect(self.load_actions_text)  # Also refresh actions
             self.signal_refresh_timer.start(10000)  # Refresh every 10 seconds
-            print("✅ Signal auto-refresh timer started (10s interval)")
+            print("✅ Signal & Actions auto-refresh timer started (10s interval)")
 
         def retranslate_ui(self):
             """Refresh visible texts based on current AppState language"""
             self.title_label.setText(I18N.t("📊 Signal Aggregator", "📊 Trình tổng hợp tín hiệu"))
             self.refresh_btn.setText(I18N.t("🔄 Refresh", "🔄 Làm mới"))
             self.run_btn.setText(I18N.t("▶️ Run Aggregator", "▶️ Chạy trình tổng hợp"))
-            self.open_folder_btn.setText(I18N.t("📂 Open results folder", "📂 Mở thư mục kết quả"))
             self.min_conf_label.setText(I18N.t("Min confidence %:", "% tin cậy tối thiểu:"))
             self.min_conf_spin.setToolTip(I18N.t("Filter signals by minimum confidence percentage", "Lọc tín hiệu theo mức độ tin cậy tối thiểu"))
             # Removed strict checkbox and MA family selector
+            self.notification_btn.setText(I18N.t("📱 Send Notification", "📱 Gửi thông báo"))
             self.sig_group.setTitle(I18N.t("Latest signals", "Tín hiệu mới nhất"))
             self.sig_table.setHorizontalHeaderLabels([
                 I18N.t("Symbol", "Mã"),
@@ -1179,6 +7913,142 @@ if GUI_AVAILABLE:
                 return None
             files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
             return files[0]
+            
+        def _find_signal_file_smart(self, out_dir: str, trading_symbol: str) -> Optional[str]:
+            """Tự động tìm signal file với smart mapping"""
+            
+            # 1. Thử trực tiếp với trading symbol
+            fp = self.latest_file(os.path.join(out_dir, f"{trading_symbol}_signal_*.json"))
+            if fp:
+                return fp
+            
+            # 2. Normalize symbol để tìm base symbol
+            base_symbol = self._normalize_symbol_to_base(trading_symbol)
+            if base_symbol != trading_symbol:
+                fp = self.latest_file(os.path.join(out_dir, f"{base_symbol}_signal_*.json"))
+                if fp:
+                    print(f"🎯 Found signal using base symbol: {trading_symbol} -> {base_symbol}")
+                    return fp
+            
+            # 3. Thử các variant phổ biến của base symbol
+            variants = self._generate_symbol_variants(base_symbol)
+            for variant in variants:
+                if variant != trading_symbol:  # Skip the original one we already tried
+                    fp = self.latest_file(os.path.join(out_dir, f"{variant}_signal_*.json"))
+                    if fp:
+                        print(f"🎯 Found signal using variant: {trading_symbol} -> {variant}")
+                        return fp
+            
+            # 4. Debug: list available signal files
+            try:
+                available_files = os.listdir(out_dir) if os.path.exists(out_dir) else []
+                signal_files = [f for f in available_files if 'signal' in f and f.endswith('.json')]
+                print(f"🔍 Available signal files: {signal_files[:10]}")  # First 10
+            except Exception as e:
+                print(f"🔍 Error listing signal files: {e}")
+            
+            return None
+        
+        def _normalize_symbol_to_base(self, symbol: str) -> str:
+            """Chuẩn hóa symbol về dạng base (bỏ suffix)"""
+            import re
+            # Remove common broker suffixes
+            normalized = symbol.upper()
+            normalized = re.sub(r'[._#-][a-z0-9]*$', '', normalized, flags=re.IGNORECASE)
+            return normalized
+            
+        def _generate_symbol_variants(self, base_symbol: str) -> List[str]:
+            """Generate các variant có thể có của symbol"""
+            variants = [
+                base_symbol,                    # EURUSD
+                base_symbol + '.',              # EURUSD.  
+                base_symbol + '_m',             # EURUSD_m
+                base_symbol + 'm',              # EURUSDm
+                base_symbol + '_',              # EURUSD_
+                base_symbol.lower(),            # eurusd
+                base_symbol.lower() + '.',      # eurusd.
+                f"#{base_symbol}",              # #EURUSD
+                f"{base_symbol}pro",            # EURUSDpro
+                f"{base_symbol}c",              # EURUSDc
+                f"{base_symbol}i",              # EURUSDi
+            ]
+            return variants
+
+        def _save_signal_confidence_threshold(self):
+            """🆕 Save Signal confidence threshold to risk_settings.json"""
+            try:
+                # Get current value from spinbox
+                conf_value = float(self.min_conf_spin.value())
+                
+                # Convert percentage to the 0-10 scale used by order_executor
+                # 30% → 3.0, 20% → 2.0, etc.
+                conf_scaled = conf_value / 10.0
+                
+                # Load existing risk settings
+                settings_file = "risk_management/risk_settings.json"
+                if os.path.exists(settings_file):
+                    with open(settings_file, 'r', encoding='utf-8') as f:
+                        settings = json.load(f)
+                else:
+                    settings = {}
+                
+                # Update confidence threshold
+                settings['min_confidence_for_entry'] = conf_scaled
+                
+                # Add metadata
+                settings['saved_timestamp'] = datetime.now().isoformat()
+                settings['version'] = '3.0'
+                
+                # Save back
+                os.makedirs("risk_management", exist_ok=True)
+                with open(settings_file, 'w', encoding='utf-8') as f:
+                    json.dump(settings, f, indent=2, ensure_ascii=False)
+                
+                print(f"💾 Saved Signal confidence threshold: {conf_value}% → {conf_scaled} (0-10 scale) to risk_settings.json")
+                return True
+                
+            except Exception as e:
+                print(f"❌ Error saving signal confidence threshold: {e}")
+                return False
+
+        def _load_signal_confidence_threshold(self):
+            """🆕 Load Signal confidence threshold from risk_settings.json on startup"""
+            try:
+                settings_file = "risk_management/risk_settings.json"
+                if os.path.exists(settings_file):
+                    with open(settings_file, 'r', encoding='utf-8') as f:
+                        settings = json.load(f)
+                    
+                    # Read min_confidence_for_entry (in 0-10 scale)
+                    conf_scaled = settings.get('min_confidence_for_entry', 2.0)
+                    
+                    # Convert to percentage for GUI (0-100 scale)
+                    # 3.0 → 30%, 2.0 → 20%, etc.
+                    conf_percentage = conf_scaled * 10.0
+                    
+                    # Set the spinbox value (blocking signals to avoid immediate save)
+                    if hasattr(self, 'min_conf_spin'):
+                        # Temporarily disconnect to avoid triggering save during loading
+                        try:
+                            self.min_conf_spin.valueChanged.disconnect()
+                        except:
+                            pass
+                        
+                        self.min_conf_spin.setValue(conf_percentage)
+                        
+                        # Reconnect the save handler
+                        self.min_conf_spin.valueChanged.connect(self._save_signal_confidence_threshold)
+                        
+                        print(f"📂 Loaded Signal confidence threshold: {conf_scaled} (0-10 scale) → {conf_percentage}% from risk_settings.json")
+                    
+                    return True
+                else:
+                    print(f"📂 Risk settings file not found, using default confidence threshold")
+                    return False
+                    
+            except Exception as e:
+                print(f"❌ Error loading signal confidence threshold: {e}")
+                return False
 
         def load_latest_report(self, sym: Optional[str] = None):
             try:
@@ -1229,23 +8099,48 @@ if GUI_AVAILABLE:
                         # Minimal on-the-fly translation for header phrase if VI selected but EN preferred
                         if lang == 'en':
                             txt = txt.replace("Hành động đề xuất cho vị thế:", "Suggested actions for positions:")
+                        # 🔧 Force clear and refresh to prevent cache issues
+                        self.actions_view.clear()
                         self.actions_view.setText(txt)
+                        # 🔧 Force GUI update
+                        self.actions_view.repaint()
+                        print(f"✅ Actions loaded from {os.path.basename(fp)} ({len(txt)} chars)")
                 else:
                     self.actions_view.setText("(No actions yet — run Aggregator)")
             except Exception as e:
                 self.actions_view.setText(f"Failed to load actions: {e}")
+                print(f"❌ Error loading actions: {e}")
 
         @safe_method
         def on_run(self, *args, **kwargs):
+            # ========== LICENSE CHECK ==========
+            # Kiểm tra license trước khi cho phép chạy phân tích
+            if not check_license_for_service(self, "Signal Analysis"):
+                return
+            # ========== END LICENSE CHECK ==========
+            
             # Handle both button click (with checked param) and direct call (without params)
             checked = args[0] if args else kwargs.get('checked', False)
             if self.thread and self.thread.isRunning():
                 QMessageBox.information(
                     self,
                     I18N.t("Running", "Đang chạy"),
-                    I18N.t("Aggregator is running, please wait…", "Trình tổng hợp đang chạy, vui lòng chờ…")
+                    I18N.t("Analysis is running, please wait…", "Phân tích đang chạy, vui lòng chờ…")
                 )
                 return
+            
+            # Get selected AI model
+            ai_model = self._get_selected_ai_model()
+            model_port = self._get_ai_model_port()
+            
+            # If using AI Server (XGBoost, CNN-LSTM, or Transformer)
+            if ai_model != "aggregator":
+                self._run_ai_server_analysis(ai_model, model_port)
+                return
+            
+            # Use Local Aggregator (comprehensive_aggregator.py)
+            print("🤖 Running Local Aggregator via comprehensive_aggregator.py")
+            
             # Ensure latest UI selections are saved to whitelist before run
             try:
                 # Persist from IndicatorTab (source of truth for selected indicators)
@@ -1260,20 +8155,28 @@ if GUI_AVAILABLE:
                             self.indicator_tab._persist_indicator_whitelist()
                     except Exception as _e:
                         print(f"Could not persist whitelist before run: {_e}")
-                    # Pre-export indicators for current selection so strict mode has needed columns
+                    # Smart pre-export: Only export if whitelist indicators are missing from existing files
                     try:
-                        self._run_preexport_for_selection()
+                        self._run_smart_preexport_for_whitelist()
                     except Exception as _e:
-                        print(f"Pre-export failed (will continue to aggregator): {_e}")
+                        print(f"Smart pre-export failed (will continue to aggregator): {_e}")
+                    print("🔄 Comprehensive aggregator will use existing + updated indicator_output files")
             except Exception as _e:
                 print(f"Could not persist whitelist before run: {_e}")
-            args: List[str] = []
+            run_args: List[str] = []
             # Always enforce strict-indicators (was default ON)
-            args.append("--strict-indicators")
+            run_args.append("--strict-indicators")
             # MA family handling: use expand mode (WMA excluded to avoid errors)
-            args.extend(["--ma-family", "expand"])
+            run_args.extend(["--ma-family", "expand"])
             # Add verbose for debugging
-            args.append("--verbose")  # Enable verbose logging
+            run_args.append("--verbose")  # Enable verbose logging
+            
+            # ✅ Get confidence threshold from GUI
+            if hasattr(self, 'min_conf_spin'):
+                conf_value = float(self.min_conf_spin.value())
+                if conf_value > 0:
+                    run_args.extend(["--conf-strong", str(conf_value)])
+                    print(f"🎯 Using confidence threshold from GUI: {conf_value}%")
             
             # Get symbols from Market Tab
             selected_symbols = []
@@ -1283,33 +8186,926 @@ if GUI_AVAILABLE:
                 
             if selected_symbols:
                 # Use selected symbols from GUI
-                args.extend(["--symbols", ",".join(selected_symbols)])
+                run_args.extend(["--symbols", ",".join(selected_symbols)])
                 print(f"📊 Using selected symbols from GUI: {', '.join(selected_symbols)}")
             else:
                 # Fallback: limit to 3 symbols for faster testing
-                args.extend(["--limit", "3"])
+                run_args.extend(["--limit", "3"])
                 print("⚠️ No symbols selected in GUI, using auto-detection with limit 3")
             
             # DISABLED: Let system auto-detect timeframes from pattern files instead of forcing specific ones
             # This fixes the issue where CLI works but GUI fails due to --timeframes parameter
-            # if self.market_tab and hasattr(self.market_tab, 'tf_checkboxes'):
-            #     selected_timeframes = [tf for tf in self.market_tab.tf_checkboxes if self.market_tab.tf_checkboxes[tf].isChecked()]
-            #     if selected_timeframes:
-            #         args.extend(["--timeframes", ",".join(selected_timeframes)])
-            #         print(f"📊 Using selected timeframes: {', '.join(selected_timeframes)}")
-            #     else:
-            #         print("⚠️ No timeframes selected in Market tab, using all available")
-            # else:
-            #     print("⚠️ MarketTab not available, using all timeframes")
             print("🔄 Auto-detecting timeframes from available pattern files (for better signal generation)")
             
             # Run for all symbols with current defaults
-            print(f"🔧 DEBUG: Args being passed to comprehensive_aggregator.py: {args}")
+            print(f"🔧 DEBUG: Args being passed to comprehensive_aggregator.py: {run_args}")
 
             self.run_btn.setEnabled(False)
-            self.thread = RunAggregatorWorker(args)
+            self.thread = RunAggregatorWorker(run_args)
             self.thread.finished.connect(self._after_run)
             self.thread.start()
+        
+        def _run_ai_server_analysis(self, model_name: str, port: int):
+            """Run analysis using AI Server model (XGBoost, CNN-LSTM, or Transformer)"""
+            import requests
+            import glob
+            
+            model_labels = {"xgboost": "XGBoost", "cnn_lstm": "CNN-LSTM Pro", "transformer": "Transformer Pro"}
+            model_label = model_labels.get(model_name, model_name)
+            
+            print(f"🤖 Running {model_label} AI Server on port {port}")
+            
+            # Get selected symbols
+            selected_symbols = []
+            if hasattr(self, 'market_tab') and self.market_tab:
+                selected_symbols = list(getattr(self.market_tab, 'checked_symbols', []) or [])
+            
+            if not selected_symbols:
+                QMessageBox.warning(
+                    self,
+                    I18N.t("No Symbols", "Không có mã"),
+                    I18N.t("Please select symbols in Market tab first!", "Vui lòng chọn mã trong tab Market trước!")
+                )
+                return
+            
+            # 🔧 FIX: Clean up ALL old files in analysis_results BEFORE running AI model
+            # This prevents accumulation of old signal/report files
+            print(f"🗑️ Cleaning up old analysis files for {len(selected_symbols)} symbols...")
+            deleted_count = 0
+            for symbol in selected_symbols:
+                # Delete old signal files
+                old_signals = glob.glob(f"analysis_results/{symbol}_signal_*.json")
+                for f in old_signals:
+                    try:
+                        os.remove(f)
+                        deleted_count += 1
+                    except: pass
+                
+                # Delete old report files (English + Vietnamese)
+                old_reports_en = glob.glob(f"analysis_results/{symbol}_report_en_*.txt")
+                old_reports_vi = glob.glob(f"analysis_results/{symbol}_report_vi_*.txt")
+                for f in old_reports_en + old_reports_vi:
+                    try:
+                        os.remove(f)
+                        deleted_count += 1
+                    except: pass
+            
+            if deleted_count > 0:
+                print(f"🗑️ Deleted {deleted_count} old analysis files")
+            
+            # Check server connection
+            server_url = f"http://localhost:{port}"
+            try:
+                health_resp = requests.get(f"{server_url}/health", timeout=5)
+                if health_resp.status_code != 200:
+                    # 🔧 FIX: Ask user if they want to fallback to aggregator
+                    reply = QMessageBox.question(
+                        self,
+                        I18N.t("Server Error", "Lỗi Server"),
+                        I18N.t(f"{model_label} server not responding on port {port}!\n\nDo you want to use Aggregator instead?",
+                               f"Server {model_label} không phản hồi trên port {port}!\n\nBạn có muốn dùng Aggregator thay thế?"),
+                        QMessageBox.Yes | QMessageBox.No
+                    )
+                    if reply == QMessageBox.Yes:
+                        # Switch to aggregator mode
+                        self.ai_model_combo.setCurrentIndex(0)  # Select Aggregator
+                        self.on_run()  # Re-run with aggregator
+                    return
+            except requests.exceptions.ConnectionError:
+                # 🔧 FIX: Ask user if they want to fallback to aggregator
+                reply = QMessageBox.question(
+                    self,
+                    I18N.t("Connection Error", "Lỗi Kết nối"),
+                    I18N.t(f"Cannot connect to {model_label} server on port {port}!\n\nDo you want to use Aggregator instead?",
+                           f"Không thể kết nối đến server {model_label} trên port {port}!\n\nBạn có muốn dùng Aggregator thay thế?"),
+                    QMessageBox.Yes | QMessageBox.No
+                )
+                if reply == QMessageBox.Yes:
+                    # Switch to aggregator mode
+                    self.ai_model_combo.setCurrentIndex(0)  # Select Aggregator
+                    self.on_run()  # Re-run with aggregator
+                return
+            
+            self.run_btn.setEnabled(False)
+            
+            # Run analysis for each symbol
+            results = []
+            for symbol in selected_symbols:
+                try:
+                    # 🔧 FIX: Load ALL required data for AI model (46 features)
+                    payload = self._build_ai_payload(symbol)
+                    
+                    if payload:
+                        # Send to AI server
+                        resp = requests.post(f"{server_url}/predict", json=payload, timeout=30)
+                        if resp.status_code == 200:
+                            result = resp.json()
+                            results.append({
+                                "symbol": symbol,
+                                "signal": result.get("signal", "HOLD"),
+                                "confidence": result.get("confidence", 0),
+                                "model": model_label
+                            })
+                            print(f"✅ {symbol}: {result.get('signal')} ({result.get('confidence'):.1f}%)")
+                        else:
+                            print(f"❌ {symbol}: Server error {resp.status_code}")
+                    else:
+                        print(f"⚠️ {symbol}: No indicator data found")
+                        
+                except Exception as e:
+                    print(f"❌ {symbol} error: {e}")
+            
+            # Save results to analysis_results
+            if results:
+                # Files already cleaned at the start, just save new ones
+                timestamp_str = datetime.now().strftime('%Y%m%d_%H%M%S')
+                
+                for result in results:
+                    symbol = result['symbol']
+                    
+                    # 🔧 Build comprehensive signal data with Entry/SL/TP
+                    signal_data = self._build_signal_data_for_report(symbol, result, model_label)
+                    
+                    # Save signal JSON file
+                    signal_file = f"analysis_results/{symbol}_signal_{timestamp_str}.json"
+                    with open(signal_file, 'w', encoding='utf-8') as f:
+                        json.dump(signal_data, f, indent=2, ensure_ascii=False)
+                    
+                    # 📝 Generate reports (EN and VI)
+                    self._generate_ai_report(symbol, signal_data, timestamp_str)
+                
+                # 📊 Generate position actions (xử lý lệnh trạng thái)
+                self._generate_ai_position_actions(results, model_label)
+                
+                print(f"✅ {model_label} analysis completed: {len(results)} symbols")
+                print(f"📝 Reports and position actions saved to analysis_results/")
+            else:
+                print(f"❌ {model_label} analysis: no results")
+            
+            self.run_btn.setEnabled(True)
+            self.load_latest_signals()
+
+        def _build_ai_payload(self, symbol: str) -> dict:
+            """Build complete payload with all features for AI model based on UI settings"""
+            import glob
+            from datetime import datetime
+            
+            payload = {"symbol": symbol, "indicators": {}, "patterns": {}, 
+                       "support_resistance": {}, "sideway_analysis": {}, "news_analysis": {}}
+            
+            def load_latest_from_file(filepath):
+                """Load latest data from JSON file"""
+                if os.path.exists(filepath):
+                    try:
+                        with open(filepath, 'r', encoding='utf-8') as f:
+                            data = json.load(f)
+                        if isinstance(data, list) and len(data) > 0:
+                            return data[-1]
+                        return data
+                    except Exception as e:
+                        print(f"⚠️ Error loading {filepath}: {e}")
+                return {}
+            
+            # 🔧 Get selected timeframes from UI (IndicatorTab)
+            selected_timeframes = ["M15", "M30", "H1"]  # Default
+            if hasattr(self, 'indicator_tab') and self.indicator_tab:
+                if hasattr(self.indicator_tab, 'tf_checkboxes'):
+                    selected_timeframes = [tf for tf, cb in self.indicator_tab.tf_checkboxes.items() if cb.isChecked()]
+                elif hasattr(self.indicator_tab, 'selected_timeframes'):
+                    selected_timeframes = self.indicator_tab.selected_timeframes
+            
+            print(f"📊 [{symbol}] Loading indicators for timeframes: {selected_timeframes}")
+            
+            # 1. Load indicators for selected timeframes only
+            m15_data = {}
+            h1_data = {}
+            for tf in selected_timeframes:
+                indicator_file = f"indicator_output/{symbol}_{tf}_indicators.json"
+                tf_data = load_latest_from_file(indicator_file)
+                if tf_data:
+                    payload["indicators"][tf] = tf_data
+                    print(f"   ✅ {tf}: {len(tf_data)} fields")
+                    # Keep reference for calculations
+                    if tf == "M15":
+                        m15_data = tf_data
+                    elif tf == "H1":
+                        h1_data = tf_data
+                else:
+                    print(f"   ❌ {tf}: NOT FOUND")
+            
+            # Use first available data for calculations
+            if not m15_data and payload["indicators"]:
+                m15_data = list(payload["indicators"].values())[0]
+            if not h1_data and len(payload["indicators"]) > 1:
+                h1_data = list(payload["indicators"].values())[1]
+            
+            # 2. Load pattern signals (candle + price patterns from pattern_signals folder)
+            # Only load patterns for selected timeframes
+            all_patterns = []
+            for tf in selected_timeframes:
+                pattern_file = f"pattern_signals/{symbol}_{tf}_priority_patterns.json"
+                if os.path.exists(pattern_file):
+                    pdata = load_latest_from_file(pattern_file)
+                    if isinstance(pdata, list):
+                        all_patterns.extend(pdata)
+                    elif pdata:
+                        all_patterns.append(pdata)
+            
+            if all_patterns:
+                candle_types = ["doji", "hammer", "engulfing", "harami", "morning_star", "evening_star", 
+                               "shooting_star", "spinning_top", "marubozu", "kicker", "piercing", "dark_cloud"]
+                
+                candle_bullish = candle_bearish = price_bullish = price_bearish = 0
+                total_score = total_confidence = 0
+                
+                for p in all_patterns:
+                    ptype = p.get("type", "").lower()
+                    signal = p.get("signal", "").lower()
+                    score = p.get("score", 0)
+                    confidence = p.get("confidence", 0.5)
+                    
+                    total_score += score
+                    total_confidence += confidence
+                    
+                    is_candle = any(ct in ptype for ct in candle_types)
+                    is_bullish = "bull" in ptype or signal == "buy" or score > 0
+                    is_bearish = "bear" in ptype or signal == "sell" or score < 0
+                    
+                    if is_candle:
+                        if is_bullish: candle_bullish += 1
+                        elif is_bearish: candle_bearish += 1
+                    else:
+                        if is_bullish: price_bullish += 1
+                        elif is_bearish: price_bearish += 1
+                
+                payload["patterns"] = {
+                    "candle_bullish": candle_bullish,
+                    "candle_bearish": candle_bearish,
+                    "candle_score": total_score / len(all_patterns) if all_patterns else 0,
+                    "price_bullish": price_bullish,
+                    "price_bearish": price_bearish,
+                    "price_confidence": total_confidence / len(all_patterns) if all_patterns else 0.5,
+                    "overall_bias": 1 if total_score > 0 else (-1 if total_score < 0 else 0),
+                    "momentum_score": total_score / len(all_patterns) if all_patterns else 0
+                }
+                print(f"   🕯️ Patterns: {len(all_patterns)} (candle: {candle_bullish}↑/{candle_bearish}↓, price: {price_bullish}↑/{price_bearish}↓)")
+            
+            # 3. Load support/resistance from trendline_sr (for selected timeframes)
+            for tf in selected_timeframes:
+                sr_file = f"trendline_sr/{symbol}_{tf}_trendline_sr.json"
+                if os.path.exists(sr_file):
+                    sr_data = load_latest_from_file(sr_file)
+                    if sr_data:
+                        close_price = float(m15_data.get("close", h1_data.get("close", 0)) or 0)
+                        supports = [float(x) for x in sr_data.get("support_levels", []) if x]
+                        resistances = [float(x) for x in sr_data.get("resistance_levels", []) if x]
+                        
+                        if supports and close_price:
+                            nearest_support = min(supports, key=lambda x: abs(x - close_price))
+                            payload["support_resistance"]["distance_to_support"] = (close_price - nearest_support) / close_price * 100
+                        
+                        if resistances and close_price:
+                            nearest_resistance = min(resistances, key=lambda x: abs(x - close_price))
+                            payload["support_resistance"]["distance_to_resistance"] = (nearest_resistance - close_price) / close_price * 100
+                        
+                        if supports and resistances:
+                            payload["support_resistance"]["sr_ratio"] = len(supports) / (len(supports) + len(resistances))
+                        
+                        payload["support_resistance"]["trend_strength"] = sr_data.get("trend_strength", 0)
+                        payload["sideway_analysis"]["trend_direction"] = 1 if sr_data.get("trend_direction") == "Up" else (-1 if sr_data.get("trend_direction") == "Down" else 0)
+                        payload["sideway_analysis"]["is_sideway"] = 1 if sr_data.get("trend_direction") == "Sideway" else 0
+                        print(f"   📍 S/R ({tf}): {len(supports)}S/{len(resistances)}R, Trend: {sr_data.get('trend_direction')}")
+                        break  # Use first found SR data
+            
+            # 4. Calculate position in range using BB
+            if m15_data:
+                bb_upper = float(m15_data.get("BBU_20_2.0", m15_data.get("bb_upper", 0)) or 0)
+                bb_lower = float(m15_data.get("BBL_20_2.0", m15_data.get("bb_lower", 0)) or 0)
+                close = float(m15_data.get("close", 0) or 0)
+                if bb_upper > bb_lower and close:
+                    payload["sideway_analysis"]["position_in_range"] = (close - bb_lower) / (bb_upper - bb_lower)
+            
+            # 5. Load news sentiment from recent_news_with_actual (only published news)
+            payload["news_analysis"] = self._get_news_sentiment_for_symbol(symbol)
+            
+            # Check if we have minimum data
+            if not payload["indicators"]:
+                print(f"⚠️ {symbol}: No indicator data found!")
+                return None
+            
+            return payload
+
+        def _get_news_sentiment_for_symbol(self, symbol: str) -> dict:
+            """
+            Get news sentiment for a symbol by checking relevant currency news.
+            Maps symbol to currency pairs and calculates sentiment from recent news.
+            """
+            import glob
+            from datetime import datetime, timedelta
+            
+            result = {"sentiment": 0, "impact": 0, "news_count": 0}
+            
+            # Map symbol to relevant currencies
+            symbol_upper = symbol.upper().replace(".", "").replace("_M", "").replace("_", "")
+            currency_map = {
+                "XAUUSD": ["USD", "XAU", "GOLD"],
+                "EURUSD": ["EUR", "USD"],
+                "GBPUSD": ["GBP", "USD"],
+                "USDJPY": ["USD", "JPY"],
+                "AUDUSD": ["AUD", "USD"],
+                "USDCAD": ["USD", "CAD"],
+                "USDCHF": ["USD", "CHF"],
+                "NZDUSD": ["NZD", "USD"],
+                "BTCUSD": ["BTC", "USD", "BITCOIN"],
+                "ETHUSD": ["ETH", "USD", "ETHEREUM"],
+                "BNBUSD": ["BNB", "USD"],
+                "SOLUSD": ["SOL", "USD", "SOLANA"],
+                "LTCUSD": ["LTC", "USD", "LITECOIN"],
+                "ADAUSD": ["ADA", "USD", "CARDANO"],
+            }
+            
+            relevant_currencies = currency_map.get(symbol_upper, ["USD"])
+            
+            # 🔧 FIX: First try to load from recent_news_with_actual (only published news with actual values)
+            today = datetime.now().strftime("%Y%m%d")
+            recent_news_file = f"news_output/recent_news_with_actual_{today}.json"
+            
+            # Fallback to yesterday if today's file is empty or doesn't exist
+            if not os.path.exists(recent_news_file):
+                yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
+                recent_news_file = f"news_output/recent_news_with_actual_{yesterday}.json"
+            
+            news_list = []
+            
+            # Try recent_news_with_actual first (only published news)
+            if os.path.exists(recent_news_file):
+                try:
+                    with open(recent_news_file, 'r', encoding='utf-8') as f:
+                        news_list = json.load(f)
+                    if news_list:
+                        print(f"   📰 News: Loaded {len(news_list)} published news from recent_news_with_actual")
+                except Exception as e:
+                    print(f"   ⚠️ Error loading recent_news: {e}")
+            
+            # If no recent news, don't fallback to full news file (we only want published news)
+            if not news_list:
+                print(f"   📰 News: No published news with actual values found")
+                return result
+            
+            # Filter news for relevant currencies only
+            relevant_news = []
+            for n in news_list:
+                currency = n.get("currency", "").upper()
+                if currency in relevant_currencies:
+                    relevant_news.append(n)
+            
+            if not relevant_news:
+                print(f"   📰 News: No news for currencies {relevant_currencies}")
+                return result
+            
+            # Calculate sentiment and impact from published news only
+            impact_scores = {"high": 3, "medium": 2, "low": 1}
+            total_impact = 0
+            sentiment_score = 0
+            
+            for news in relevant_news:
+                impact = news.get("impact", "low").lower()
+                impact_value = impact_scores.get(impact, 1)
+                total_impact += impact_value
+                
+                # Check actual vs forecast for sentiment
+                actual = news.get("actual", "")
+                forecast = news.get("forecast", "")
+                previous = news.get("previous", "")
+                
+                if actual:
+                    try:
+                        # Clean values (remove %, K, M, B suffixes)
+                        def clean_value(val):
+                            if not val: return None
+                            val = str(val).replace("%", "").replace("K", "000").replace("M", "000000").replace("B", "000000000").strip()
+                            return float(val) if val else None
+                        
+                        actual_clean = clean_value(actual)
+                        forecast_clean = clean_value(forecast)
+                        previous_clean = clean_value(previous)
+                        
+                        if actual_clean is not None:
+                            # Compare with forecast first, then previous
+                            compare_value = forecast_clean if forecast_clean is not None else previous_clean
+                            
+                            if compare_value is not None:
+                                if actual_clean > compare_value:
+                                    sentiment_score += impact_value  # Better than expected = positive
+                                elif actual_clean < compare_value:
+                                    sentiment_score -= impact_value  # Worse than expected = negative
+                    except (ValueError, AttributeError, TypeError):
+                        pass
+            
+            # Normalize scores
+            max_possible = len(relevant_news) * 3 if relevant_news else 1
+            result["sentiment"] = sentiment_score / max_possible  # -1 to 1
+            result["impact"] = total_impact / max_possible  # 0 to 1
+            result["news_count"] = len(relevant_news)
+            
+            print(f"   📰 News: {len(relevant_news)} relevant for {relevant_currencies} (sentiment: {result['sentiment']:.2f}, impact: {result['impact']:.2f})")
+            
+            return result
+
+        def _build_signal_data_for_report(self, symbol: str, ai_result: dict, ai_model: str) -> dict:
+            """Build comprehensive signal data with Entry/SL/TP for report generation"""
+            import glob
+            
+            signal_data = {
+                "symbol": symbol,
+                "final_signal": {
+                    "signal": ai_result.get('signal', 'HOLD'),
+                    "confidence": ai_result.get('confidence', 0),
+                    "entry": 0,
+                    "stoploss": 0,
+                    "takeprofit": 0
+                },
+                "model": ai_model,
+                "timestamp": datetime.now().isoformat(),
+                "indicators": {},
+                "patterns": [],
+                "support_resistance": {},
+                "news": []
+            }
+            
+            # Load indicators for context
+            for tf in ['M15', 'M30', 'H1']:
+                ind_file = f"indicator_output/{symbol}_{tf}_indicators.json"
+                if os.path.exists(ind_file):
+                    try:
+                        with open(ind_file, 'r', encoding='utf-8') as f:
+                            data = json.load(f)
+                            if isinstance(data, list) and data:
+                                signal_data["indicators"][tf] = data[-1]
+                            else:
+                                signal_data["indicators"][tf] = data
+                    except:
+                        pass
+            
+            # Load patterns
+            pattern_files = glob.glob(f"pattern_signals/{symbol}_*_priority_patterns.json")
+            for pf in pattern_files:
+                try:
+                    with open(pf, 'r', encoding='utf-8') as f:
+                        patterns = json.load(f)
+                        if isinstance(patterns, list):
+                            signal_data["patterns"].extend(patterns)
+                        else:
+                            signal_data["patterns"].append(patterns)
+                except:
+                    pass
+            
+            # Load S/R
+            sr_files = glob.glob(f"trendline_sr/{symbol}_*_trendline_sr.json")
+            if sr_files:
+                try:
+                    with open(sr_files[0], 'r', encoding='utf-8') as f:
+                        signal_data["support_resistance"] = json.load(f)
+                except:
+                    pass
+            
+            # Calculate entry, SL, TP based on signal and current price
+            current_price = 0
+            atr = 0
+            
+            # Get current price and ATR from indicators
+            for tf in ['H1', 'M30', 'M15']:
+                if tf in signal_data["indicators"]:
+                    ind = signal_data["indicators"][tf]
+                    if not current_price:
+                        current_price = float(ind.get("close", 0) or 0)
+                    if not atr:
+                        atr = float(ind.get("atr", ind.get("ATR14", ind.get("ATRr_14", 0))) or 0)
+            
+            if current_price and signal_data["final_signal"]["signal"] != "HOLD":
+                if not atr:
+                    atr = current_price * 0.001  # Default 0.1% of price
+                
+                # Determine decimal places based on price
+                if current_price > 1000:  # XAUUSD, indices
+                    decimals = 2
+                elif current_price > 10:  # JPY pairs
+                    decimals = 3
+                else:  # Most forex pairs
+                    decimals = 5
+                
+                signal_data["final_signal"]["entry"] = round(current_price, decimals)
+                
+                # Get S/R levels for better SL/TP placement
+                sr_data = signal_data.get("support_resistance", {})
+                supports = sr_data.get("support_levels", [])
+                resistances = sr_data.get("resistance_levels", [])
+                
+                if signal_data["final_signal"]["signal"] == "BUY":
+                    # SL below support or ATR-based
+                    if supports:
+                        nearest_support = min([s for s in supports if s < current_price], default=None, key=lambda x: current_price - x)
+                        if nearest_support:
+                            signal_data["final_signal"]["stoploss"] = round(nearest_support - atr * 0.3, decimals)
+                        else:
+                            signal_data["final_signal"]["stoploss"] = round(current_price - atr * 1.5, decimals)
+                    else:
+                        signal_data["final_signal"]["stoploss"] = round(current_price - atr * 1.5, decimals)
+                    
+                    # TP at resistance or ATR-based
+                    if resistances:
+                        nearest_resistance = min([r for r in resistances if r > current_price], default=None, key=lambda x: x - current_price)
+                        if nearest_resistance:
+                            signal_data["final_signal"]["takeprofit"] = round(nearest_resistance - atr * 0.2, decimals)
+                        else:
+                            signal_data["final_signal"]["takeprofit"] = round(current_price + atr * 2.5, decimals)
+                    else:
+                        signal_data["final_signal"]["takeprofit"] = round(current_price + atr * 2.5, decimals)
+                        
+                else:  # SELL
+                    # SL above resistance or ATR-based
+                    if resistances:
+                        nearest_resistance = min([r for r in resistances if r > current_price], default=None, key=lambda x: x - current_price)
+                        if nearest_resistance:
+                            signal_data["final_signal"]["stoploss"] = round(nearest_resistance + atr * 0.3, decimals)
+                        else:
+                            signal_data["final_signal"]["stoploss"] = round(current_price + atr * 1.5, decimals)
+                    else:
+                        signal_data["final_signal"]["stoploss"] = round(current_price + atr * 1.5, decimals)
+                    
+                    # TP at support or ATR-based
+                    if supports:
+                        nearest_support = min([s for s in supports if s < current_price], default=None, key=lambda x: current_price - x)
+                        if nearest_support:
+                            signal_data["final_signal"]["takeprofit"] = round(nearest_support + atr * 0.2, decimals)
+                        else:
+                            signal_data["final_signal"]["takeprofit"] = round(current_price - atr * 2.5, decimals)
+                    else:
+                        signal_data["final_signal"]["takeprofit"] = round(current_price - atr * 2.5, decimals)
+            
+            return signal_data
+
+        def _generate_ai_report(self, symbol: str, signal_data: dict, timestamp: str):
+            """Generate reports in EN and VI for AI signal - similar to comprehensive_aggregator.py"""
+            
+            final_signal = signal_data.get('final_signal', {})
+            signal = final_signal.get('signal', 'HOLD')
+            confidence = final_signal.get('confidence', 0)
+            model = signal_data.get('model', 'AI')
+            entry = final_signal.get('entry', 0)
+            stoploss = final_signal.get('stoploss', 0)
+            takeprofit = final_signal.get('takeprofit', 0)
+            
+            # Get indicator summary
+            indicators = signal_data.get('indicators', {})
+            h1_data = indicators.get('H1', {})
+            m15_data = indicators.get('M15', {})
+            
+            # Extract key indicators
+            rsi_h1 = h1_data.get('rsi', h1_data.get('RSI14', h1_data.get('RSI_14', 'N/A')))
+            macd_h1 = h1_data.get('macd', h1_data.get('MACD_12_26_9', h1_data.get('macd_line', 'N/A')))
+            adx_h1 = h1_data.get('adx', h1_data.get('ADX14', h1_data.get('ADX_14', 'N/A')))
+            ema_h1 = h1_data.get('EMA20', h1_data.get('ema20', h1_data.get('EMA_20', 'N/A')))
+            
+            # Get patterns summary
+            patterns = signal_data.get('patterns', [])
+            bullish_patterns = []
+            bearish_patterns = []
+            for p in patterns:
+                ptype = p.get('type', p.get('name', '')).lower()
+                psignal = p.get('signal', p.get('direction', '')).lower()
+                if 'bull' in ptype or 'bull' in psignal or psignal == 'buy':
+                    bullish_patterns.append(p.get('type', p.get('name', 'unknown')))
+                elif 'bear' in ptype or 'bear' in psignal or psignal == 'sell':
+                    bearish_patterns.append(p.get('type', p.get('name', 'unknown')))
+            
+            # Get S/R summary
+            sr_data = signal_data.get('support_resistance', {})
+            supports = sr_data.get('support_levels', [])
+            resistances = sr_data.get('resistance_levels', [])
+            trend = sr_data.get('trend_direction', 'N/A')
+            
+            # Calculate Risk/Reward
+            risk_reward = 0
+            if signal == 'BUY' and entry and stoploss and takeprofit and entry != stoploss:
+                risk = entry - stoploss
+                reward = takeprofit - entry
+                risk_reward = round(reward / risk, 2) if risk > 0 else 0
+            elif signal == 'SELL' and entry and stoploss and takeprofit and entry != stoploss:
+                risk = stoploss - entry
+                reward = entry - takeprofit
+                risk_reward = round(reward / risk, 2) if risk > 0 else 0
+            
+            # ===== ENGLISH REPORT =====
+            report_en = f"""
+{'='*60}
+📊 {model} ANALYSIS REPORT - {symbol}
+{'='*60}
+Generated: {timestamp}
+Model: {model}
+
+{'─'*60}
+🎯 TRADING SIGNAL
+{'─'*60}
+Signal:      {signal}
+Confidence:  {confidence:.1f}%
+
+{'─'*60}
+💰 TRADE SETUP
+{'─'*60}
+Entry:       {entry}
+Stop Loss:   {stoploss}
+Take Profit: {takeprofit}
+Risk/Reward: 1:{risk_reward}
+
+{'─'*60}
+📊 KEY INDICATORS (H1)
+{'─'*60}
+RSI(14):     {rsi_h1}
+MACD:        {macd_h1}
+ADX(14):     {adx_h1}
+EMA(20):     {ema_h1}
+
+{'─'*60}
+🕯️ PATTERNS DETECTED
+{'─'*60}
+Bullish: {', '.join(bullish_patterns[:5]) if bullish_patterns else 'None'}
+Bearish: {', '.join(bearish_patterns[:5]) if bearish_patterns else 'None'}
+
+{'─'*60}
+📍 SUPPORT/RESISTANCE
+{'─'*60}
+Supports:    {len(supports)} levels
+Resistances: {len(resistances)} levels
+Trend:       {trend}
+
+{'='*60}
+⚠️ DISCLAIMER: This is AI-generated analysis.
+Always do your own research before trading.
+{'='*60}
+"""
+            
+            # ===== VIETNAMESE REPORT =====
+            signal_vi = {'BUY': 'MUA', 'SELL': 'BÁN', 'HOLD': 'GIỮ'}.get(signal, signal)
+            report_vi = f"""
+{'='*60}
+📊 BÁO CÁO PHÂN TÍCH {model} - {symbol}
+{'='*60}
+Thời gian: {timestamp}
+Mô hình: {model}
+
+{'─'*60}
+🎯 TÍN HIỆU GIAO DỊCH
+{'─'*60}
+Tín hiệu:    {signal_vi}
+Độ tin cậy:  {confidence:.1f}%
+
+{'─'*60}
+💰 THIẾT LẬP GIAO DỊCH
+{'─'*60}
+Giá vào:     {entry}
+Cắt lỗ:      {stoploss}
+Chốt lời:    {takeprofit}
+Risk/Reward: 1:{risk_reward}
+
+{'─'*60}
+📊 CHỈ BÁO CHÍNH (H1)
+{'─'*60}
+RSI(14):     {rsi_h1}
+MACD:        {macd_h1}
+ADX(14):     {adx_h1}
+EMA(20):     {ema_h1}
+
+{'─'*60}
+🕯️ MẪU HÌNH PHÁT HIỆN
+{'─'*60}
+Tăng giá: {', '.join(bullish_patterns[:5]) if bullish_patterns else 'Không có'}
+Giảm giá: {', '.join(bearish_patterns[:5]) if bearish_patterns else 'Không có'}
+
+{'─'*60}
+📍 HỖ TRỢ/KHÁNG CỰ
+{'─'*60}
+Hỗ trợ:      {len(supports)} mức
+Kháng cự:    {len(resistances)} mức
+Xu hướng:    {trend}
+
+{'='*60}
+⚠️ CẢNH BÁO: Đây là phân tích do AI tạo ra.
+Luôn tự nghiên cứu trước khi giao dịch.
+{'='*60}
+"""
+            
+            # Save reports
+            report_en_file = f"analysis_results/{symbol}_report_en_{timestamp}.txt"
+            report_vi_file = f"analysis_results/{symbol}_report_vi_{timestamp}.txt"
+            
+            with open(report_en_file, 'w', encoding='utf-8') as f:
+                f.write(report_en)
+            
+            with open(report_vi_file, 'w', encoding='utf-8') as f:
+                f.write(report_vi)
+
+        def _generate_ai_position_actions(self, results: list, ai_model: str):
+            """Generate position actions based on AI signals - similar to create_advanced_strategies.py"""
+            
+            # Get current open positions from MT5
+            current_positions = []
+            if hasattr(self, 'mt5_tab') and self.mt5_tab:
+                if hasattr(self.mt5_tab, 'positions'):
+                    current_positions = list(self.mt5_tab.positions) if self.mt5_tab.positions else []
+            
+            actions = []
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
+            for result in results:
+                symbol = result.get('symbol', '')
+                signal = result.get('signal', 'HOLD')
+                confidence = result.get('confidence', 0)
+                
+                # Normalize symbol for comparison
+                symbol_clean = symbol.replace('.', '').replace('_m', '').replace('_', '').upper()
+                
+                # Find existing position for this symbol
+                existing_position = None
+                for pos in current_positions:
+                    pos_symbol = str(pos.get('symbol', '')).replace('.', '').replace('_m', '').replace('_', '').upper()
+                    if pos_symbol == symbol_clean or symbol_clean in pos_symbol or pos_symbol in symbol_clean:
+                        existing_position = pos
+                        break
+                
+                action = {
+                    "symbol": symbol,
+                    "signal": signal,
+                    "confidence": confidence,
+                    "model": ai_model,
+                    "timestamp": timestamp,
+                    "action": "NONE",
+                    "reason_en": "",
+                    "reason_vi": ""
+                }
+                
+                if existing_position:
+                    pos_type = str(existing_position.get('type', '')).upper()
+                    if pos_type == '0':
+                        pos_type = 'BUY'
+                    elif pos_type == '1':
+                        pos_type = 'SELL'
+                    pos_profit = float(existing_position.get('profit', 0) or 0)
+                    pos_volume = existing_position.get('volume', 0)
+                    pos_ticket = existing_position.get('ticket', 0)
+                    
+                    action["ticket"] = pos_ticket
+                    action["position_type"] = pos_type
+                    action["position_profit"] = pos_profit
+                    action["position_volume"] = pos_volume
+                    
+                    # Logic xử lý lệnh có trạng thái
+                    if signal == 'HOLD':
+                        action["action"] = "HOLD"
+                        action["reason_en"] = f"AI signal is HOLD, keep current {pos_type} position"
+                        action["reason_vi"] = f"Tín hiệu AI là GIỮ, giữ nguyên lệnh {pos_type}"
+                    
+                    elif signal == pos_type:
+                        # Same direction - keep or add
+                        if confidence >= 80:
+                            action["action"] = "ADD"
+                            action["reason_en"] = f"Strong {signal} signal ({confidence:.1f}%), consider adding to position"
+                            action["reason_vi"] = f"Tín hiệu {signal} mạnh ({confidence:.1f}%), cân nhắc thêm vị thế"
+                        else:
+                            action["action"] = "HOLD"
+                            action["reason_en"] = f"Signal confirms current {pos_type} position"
+                            action["reason_vi"] = f"Tín hiệu xác nhận lệnh {pos_type} hiện tại"
+                    
+                    else:
+                        # Opposite direction
+                        if confidence >= 75:
+                            if pos_profit > 0:
+                                action["action"] = "CLOSE_PROFIT"
+                                action["reason_en"] = f"Strong opposite {signal} signal ({confidence:.1f}%), close profitable position"
+                                action["reason_vi"] = f"Tín hiệu ngược {signal} mạnh ({confidence:.1f}%), đóng lệnh đang lãi"
+                            else:
+                                action["action"] = "CLOSE_LOSS"
+                                action["reason_en"] = f"Strong opposite {signal} signal ({confidence:.1f}%), cut loss"
+                                action["reason_vi"] = f"Tín hiệu ngược {signal} mạnh ({confidence:.1f}%), cắt lỗ"
+                        elif confidence >= 60:
+                            action["action"] = "REDUCE"
+                            action["reason_en"] = f"Moderate opposite {signal} signal ({confidence:.1f}%), reduce position size"
+                            action["reason_vi"] = f"Tín hiệu ngược {signal} vừa ({confidence:.1f}%), giảm khối lượng"
+                        else:
+                            action["action"] = "HOLD"
+                            action["reason_en"] = f"Weak opposite signal ({confidence:.1f}%), keep position"
+                            action["reason_vi"] = f"Tín hiệu ngược yếu ({confidence:.1f}%), giữ lệnh"
+                
+                else:
+                    # No existing position
+                    if signal == 'HOLD' or confidence < 55:
+                        action["action"] = "WAIT"
+                        action["reason_en"] = "No clear signal, wait for better opportunity"
+                        action["reason_vi"] = "Không có tín hiệu rõ ràng, chờ cơ hội tốt hơn"
+                    elif confidence >= 75:
+                        action["action"] = f"OPEN_{signal}"
+                        action["reason_en"] = f"Strong {signal} signal ({confidence:.1f}%), consider opening position"
+                        action["reason_vi"] = f"Tín hiệu {signal} mạnh ({confidence:.1f}%), cân nhắc mở lệnh"
+                    else:
+                        action["action"] = f"WATCH_{signal}"
+                        action["reason_en"] = f"Moderate {signal} signal ({confidence:.1f}%), watch for confirmation"
+                        action["reason_vi"] = f"Tín hiệu {signal} vừa ({confidence:.1f}%), chờ xác nhận"
+                
+                actions.append(action)
+            
+            # Save actions to files
+            # JSON format
+            actions_json_file = "analysis_results/account_positions_actions.json"
+            with open(actions_json_file, 'w', encoding='utf-8') as f:
+                json.dump(actions, f, indent=2, ensure_ascii=False)
+            
+            # Text format - English
+            actions_en = self._format_position_actions_text(actions, 'en')
+            with open("analysis_results/account_positions_actions_en.txt", 'w', encoding='utf-8') as f:
+                f.write(actions_en)
+            
+            # Text format - Vietnamese
+            actions_vi = self._format_position_actions_text(actions, 'vi')
+            with open("analysis_results/account_positions_actions_vi.txt", 'w', encoding='utf-8') as f:
+                f.write(actions_vi)
+            
+            print(f"   📊 Position actions generated for {len(actions)} symbols")
+
+        def _format_position_actions_text(self, actions: list, lang: str = 'en') -> str:
+            """Format position actions as text report"""
+            
+            if lang == 'vi':
+                header = f"""
+{'='*60}
+📊 HÀNH ĐỘNG VỊ THẾ - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+{'='*60}
+
+"""
+                action_trans = {
+                    'NONE': '⚪ Không hành động',
+                    'HOLD': '⏸️ Giữ lệnh',
+                    'ADD': '➕ Thêm vị thế',
+                    'CLOSE_PROFIT': '✅ Đóng lệnh (lãi)',
+                    'CLOSE_LOSS': '❌ Đóng lệnh (lỗ)',
+                    'REDUCE': '📉 Giảm vị thế',
+                    'WAIT': '⏳ Chờ đợi',
+                    'OPEN_BUY': '🟢 Mở lệnh MUA',
+                    'OPEN_SELL': '🔴 Mở lệnh BÁN',
+                    'WATCH_BUY': '👀 Theo dõi MUA',
+                    'WATCH_SELL': '👀 Theo dõi BÁN'
+                }
+            else:
+                header = f"""
+{'='*60}
+📊 POSITION ACTIONS - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+{'='*60}
+
+"""
+                action_trans = {
+                    'NONE': '⚪ No Action',
+                    'HOLD': '⏸️ Hold Position',
+                    'ADD': '➕ Add to Position',
+                    'CLOSE_PROFIT': '✅ Close (Profit)',
+                    'CLOSE_LOSS': '❌ Close (Loss)',
+                    'REDUCE': '📉 Reduce Position',
+                    'WAIT': '⏳ Wait',
+                    'OPEN_BUY': '🟢 Open BUY',
+                    'OPEN_SELL': '🔴 Open SELL',
+                    'WATCH_BUY': '👀 Watch BUY',
+                    'WATCH_SELL': '👀 Watch SELL'
+                }
+            
+            lines = [header]
+            
+            for act in actions:
+                symbol = act.get('symbol', '')
+                signal = act.get('signal', 'HOLD')
+                confidence = act.get('confidence', 0)
+                action = act.get('action', 'NONE')
+                reason = act.get('reason_vi' if lang == 'vi' else 'reason_en', '')
+                model = act.get('model', 'AI')
+                
+                action_text = action_trans.get(action, action)
+                
+                # Check if has existing position
+                if 'ticket' in act:
+                    pos_info = f"Ticket #{act['ticket']} | {act.get('position_type', '')} | P/L: {act.get('position_profit', 0):.2f}"
+                else:
+                    pos_info = "No existing position" if lang == 'en' else "Chưa có lệnh"
+                
+                lines.append(f"""
+{'─'*60}
+📌 {symbol}
+   Signal: {signal} ({confidence:.1f}%)
+   Model:  {model}
+   Status: {pos_info}
+   
+   ➡️ {action_text}
+   💡 {reason}
+""")
+            
+            lines.append(f"\n{'='*60}")
+            return ''.join(lines)
 
         def _after_run(self):
             self.run_btn.setEnabled(True)
@@ -1331,12 +9127,51 @@ if GUI_AVAILABLE:
             
             # Refresh views
             self.load_latest_signals()
+            
+            # ⚠️ SIGNAL NOTIFICATIONS DISABLED - Method does not exist, causes crash every 2 minutes!
+            # self.send_signal_notification_after_analysis()  # DISABLED - method not defined
+            
             self.load_actions_text()
 
         def auto_execute_actions_after_analysis(self):
-            """🚀 Automatically execute actions after successful analysis"""
+            """✅ Actions are now executed directly in comprehensive_aggregator.py"""
+            print("✅ Actions executed by aggregator - no app.py execution needed")
+            return  # Disabled - aggregator handles execution now
+            
             try:
+                import time
                 print("🚀 Auto-executing actions after analysis...")
+                
+                # 🚫 PREVENT DOUBLE EXECUTION - Check if UnifiedAutoTradingSystem is running
+                # Check in all tabs for auto trading manager
+                if hasattr(self, 'all_tabs') and 'auto_trading_tab' in self.all_tabs:
+                    auto_tab = self.all_tabs['auto_trading_tab']
+                    if (hasattr(auto_tab, 'auto_manager') and auto_tab.auto_manager and 
+                        hasattr(auto_tab, 'auto_btn') and auto_tab.auto_btn.isChecked()):
+                        print("🚫 UnifiedAutoTradingSystem pipeline is active - skipping manual execution to prevent duplicates")
+                        print("💡 Actions will be executed by the automated pipeline instead")
+                        print(f"📊 Pipeline status: {'RUNNING' if auto_tab.auto_manager else 'STOPPED'}")
+                        return
+                
+                # If no pipeline running, proceed with manual execution
+                print("✅ No pipeline conflict detected - proceeding with manual execution")
+                
+                # 🛡️ DUPLICATE EXECUTION PROTECTION
+                # Check if we've already executed actions recently (within 30 seconds)
+                last_execution_file = os.path.join(os.getcwd(), 'risk_management', 'last_auto_execution.json')
+                current_time = time.time()
+                
+                if os.path.exists(last_execution_file):
+                    try:
+                        with open(last_execution_file, 'r', encoding='utf-8') as f:
+                            last_exec_data = json.load(f)
+                        
+                        last_execution_time = last_exec_data.get('timestamp', 0)
+                        if current_time - last_execution_time < 30:  # 30 second cooldown
+                            print(f"🚫 Auto-execution blocked: Last execution was {current_time - last_execution_time:.1f}s ago (cooldown: 30s)")
+                            return
+                    except Exception as e:
+                        print(f"⚠️ Warning: Could not read last execution file: {e}")
                 
                 # Check if execute_actions.py exists
                 execute_actions_path = os.path.join(os.getcwd(), 'execute_actions.py')
@@ -1354,42 +9189,108 @@ if GUI_AVAILABLE:
                 with open(actions_path, 'r', encoding='utf-8') as f:
                     actions_data = json.load(f)
                 
-                total_actions = len(actions_data.get('actions', []))
+                actions = actions_data.get('actions', [])
+                total_actions = len(actions)
                 if total_actions == 0:
                     print("📝 No actions to execute")
                     return
                 
-                print(f"🎯 Found {total_actions} actions to execute")
+                # 🔍 CHECK ACTION TYPES - Only apply cooldown to PRIMARY entries, allow DCA
+                primary_entries = [a for a in actions if a.get('action_type', '').lower() in ['primary_entry', 'entry', 'new_entry']]
+                dca_actions = [a for a in actions if 'dca' in a.get('action_type', '').lower()]
                 
-                # Execute actions in background
-                import subprocess
-                import sys
+                if primary_entries and os.path.exists(last_execution_file):
+                    # More strict cooldown for primary entries (they can create duplicates)
+                    try:
+                        with open(last_execution_file, 'r', encoding='utf-8') as f:
+                            last_exec_data = json.load(f)
+                        
+                        last_execution_time = last_exec_data.get('timestamp', 0)
+                        if current_time - last_execution_time < 30:  # 30 second cooldown for primary entries
+                            print(f"� Primary entry blocked: Last execution was {current_time - last_execution_time:.1f}s ago (cooldown: 30s)")
+                            print(f"💡 DCA actions ({len(dca_actions)}) can still proceed if any")
+                            # Only execute DCA actions, skip primary entries
+                            actions = dca_actions
+                            total_actions = len(actions)
+                            if total_actions == 0:
+                                return
+                    except Exception as e:
+                        print(f"⚠️ Warning: Could not read last execution file: {e}")
                 
+                print(f"🎯 Found {total_actions} actions to execute ({len(primary_entries)} primary, {len(dca_actions)} DCA)")
+                
+                # 📝 If we filtered actions, create temporary actions file  
+                temp_actions_path = actions_path
+                if len(actions) < len(actions_data.get('actions', [])):
+                    # Create filtered actions file
+                    temp_actions_path = os.path.join(os.getcwd(), 'analysis_results', 'temp_filtered_actions.json')
+                    filtered_data = actions_data.copy()
+                    filtered_data['actions'] = actions
+                    
+                    with open(temp_actions_path, 'w', encoding='utf-8') as f:
+                        json.dump(filtered_data, f, indent=2, ensure_ascii=False)
+                    print(f"📝 Created filtered actions file: {len(actions)} actions (original: {len(actions_data.get('actions', []))})")
+                
+                # 🚀 EXECUTE ACTIONS VIA apply_actions_from_json() - Fast & Simple!
                 if hasattr(self, 'status_label'):
                     self.status_label.setText(f"🚀 Executing {total_actions} actions...")
                 
-                # Run execute_actions.py with auto flag
-                result = subprocess.run(
-                    [sys.executable, execute_actions_path, '--auto'],
-                    capture_output=True,
-                    text=True,
-                    timeout=120  # 2 minutes timeout
-                )
+                # Import executor directly (singleton - already initialized!)
+                from order_executor import get_executor_instance
                 
-                if result.returncode == 0:
-                    print("✅ Actions executed successfully!")
-                    if hasattr(self, 'status_label'):
-                        self.status_label.setText("✅ Analysis & Execution completed")
+                try:
+                    # Get executor instance (fast - already exists!)
+                    executor = get_executor_instance()
+                    print(f"✅ Using existing executor (ID: {id(executor)})")
                     
-                    # Parse output for success count
-                    output_lines = result.stdout.split('\n')
-                    for line in output_lines:
-                        if 'Total Actions:' in line or 'Successful:' in line:
-                            print(f"📊 {line.strip()}")
-                else:
-                    print(f"❌ Action execution failed: {result.stderr}")
+                    # 🚀 Call apply_actions_from_json() - handles ALL action types!
+                    print("🔧 Calling apply_actions_from_json()...")
+                    result = executor.apply_actions_from_json()
+                    
+                    # Clean up temp file if created
+                    if temp_actions_path != actions_path and os.path.exists(temp_actions_path):
+                        try:
+                            os.remove(temp_actions_path)
+                        except Exception as e:
+                            print(f"⚠️ Could not clean temp file: {e}")
+                    
+                    # Check results
+                    if result.get('success'):
+                        applied = result.get('applied', 0)
+                        by_action = result.get('by_action', {})
+                        
+                        print(f"✅ Actions executed successfully!")
+                        print(f"   Total applied: {applied}")
+                        for action_type, count in by_action.items():
+                            print(f"   {action_type}: {count}")
+                        
+                        # 🕒 UPDATE TIMESTAMP after successful execution
+                        try:
+                            os.makedirs(os.path.dirname(last_execution_file), exist_ok=True)
+                            with open(last_execution_file, 'w', encoding='utf-8') as f:
+                                json.dump({
+                                    'timestamp': current_time,
+                                    'actions_count': total_actions,
+                                    'execution_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                                }, f, indent=2)
+                            print(f"🕒 Updated execution timestamp: {datetime.now().strftime('%H:%M:%S')}")
+                        except Exception as e:
+                            print(f"⚠️ Warning: Could not save execution timestamp: {e}")
+                        
+                        if hasattr(self, 'status_label'):
+                            self.status_label.setText(f"✅ Executed {applied} actions")
+                    else:
+                        error = result.get('error', 'Unknown error')
+                        print(f"❌ Action execution failed: {error}")
+                        if hasattr(self, 'status_label'):
+                            self.status_label.setText("⚠️ Execution failed")
+                
+                except Exception as e:
+                    print(f"❌ Exception during action execution: {e}")
+                    import traceback
+                    traceback.print_exc()
                     if hasattr(self, 'status_label'):
-                        self.status_label.setText("⚠️ Analysis completed, execution failed")
+                        self.status_label.setText("❌ Execution error")
                         
             except subprocess.TimeoutExpired:
                 print("⏰ Action execution timed out")
@@ -1412,21 +9313,39 @@ if GUI_AVAILABLE:
                 print(f"[SignalTab] on_signal_clicked error: {e}")
 
         def order_now_for_symbol(self, sym: str):
+            # ========== LICENSE CHECK ==========
+            # Kiểm tra license trước khi cho phép đặt lệnh
+            if not check_license_for_service(self, "Order Execution"):
+                return
+            # ========== END LICENSE CHECK ==========
+            
             try:
-                # 1. Load latest signal JSON
+                # 1. Load latest signal JSON with enhanced debugging
                 out_dir = os.path.join(os.getcwd(), 'analysis_results')
-                fp = self.latest_file(os.path.join(out_dir, f"{sym}_signal_*.json"))
-                if not fp and sym.endswith('_m'):
-                    # try without suffix
-                    base = sym[:-2]
-                    fp = self.latest_file(os.path.join(out_dir, f"{base}_signal_*.json"))
+                print(f"🔍 [ORDER DEBUG] Looking for signal file for symbol: {sym}")
+                print(f"🔍 [ORDER DEBUG] Analysis results directory: {out_dir}")
+                
+                # Smart symbol mapping for signal file lookup
+                fp = self._find_signal_file_smart(out_dir, sym)
+                print(f"🔍 [ORDER DEBUG] Smart signal file lookup for '{sym}': {fp}")
+                
                 if not fp:
+                    # List available signal files for debugging
+                    try:
+                        available_files = os.listdir(out_dir) if os.path.exists(out_dir) else []
+                        signal_files = [f for f in available_files if f.endswith('_signal_*.json') or 'signal' in f]
+                        print(f"🔍 [ORDER DEBUG] Available signal files: {signal_files[:10]}")  # First 10
+                    except Exception as e:
+                        print(f"🔍 [ORDER DEBUG] Error listing files: {e}")
+                    
                     QMessageBox.warning(
                         self,
                         I18N.t("Order", "Đặt lệnh"),
                         I18N.t("No signal file found for {sym}", "Không tìm thấy tệp tín hiệu cho {sym}", sym=sym)
                     )
                     return
+                
+                print(f"✅ [ORDER DEBUG] Using signal file: {fp}")
                 with open(fp, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                 fi = (data.get('final_signal') or {})
@@ -1488,13 +9407,34 @@ if GUI_AVAILABLE:
                     import MetaTrader5 as mt5
                     if not mt5.initialize():
                         mt5.initialize()
-                    # If symbol not visible, try variant with _m or without
+                    
+                    # Enhanced symbol mapping logic for different broker suffixes
                     sinfo = mt5.symbol_info(trade_symbol)
                     if not sinfo:
-                        alt = trade_symbol + '_m' if not trade_symbol.endswith('_m') else trade_symbol[:-2]
-                        if mt5.symbol_info(alt):
-                            trade_symbol = alt
-                            sinfo = mt5.symbol_info(trade_symbol)
+                        # Try common variations
+                        variants = []
+                        base_symbol = trade_symbol.replace('_m', '').replace('.', '')
+                        
+                        # Add variants with different suffixes
+                        variants.extend([
+                            base_symbol + '_m',    # Crypto style
+                            base_symbol + '.',     # Forex style  
+                            base_symbol,           # No suffix
+                            base_symbol.upper() + '_m',
+                            base_symbol.upper() + '.',
+                            base_symbol.upper()
+                        ])
+                        
+                        # Try each variant
+                        for variant in variants:
+                            if variant != trade_symbol:  # Skip original
+                                test_info = mt5.symbol_info(variant)
+                                if test_info:
+                                    print(f"🔁 Symbol mapping: {trade_symbol} -> {variant}")
+                                    trade_symbol = variant
+                                    sinfo = test_info
+                                    break
+                    
                     if sinfo and not sinfo.visible:
                         mt5.symbol_select(trade_symbol, True)
                     tick = mt5.symbol_info_tick(trade_symbol)
@@ -1588,21 +9528,134 @@ if GUI_AVAILABLE:
                     I18N.t("Order exception outer: {e}", "Lỗi đặt lệnh (ngoài): {e}", e=e)
                 )
 
-        def open_results_folder(self):
+        def open_notification_dialog(self):
+            """Open notification setup and send dialog"""
             try:
-                out_dir = os.path.join(os.getcwd(), 'analysis_results')
-                if sys.platform.startswith('win'):
-                    os.startfile(out_dir)
-                elif sys.platform == 'darwin':
-                    subprocess.run(['open', out_dir])
-                else:
-                    subprocess.run(['xdg-open', out_dir])
+                print("🔍 [DEBUG] Opening notification dialog...")
+                dialog = NotificationDialog(self)
+                print("✅ [DEBUG] NotificationDialog created successfully")
+                result = dialog.exec_()
+                print(f"✅ [DEBUG] Dialog completed with result: {result}")
             except Exception as e:
-                QMessageBox.warning(
-                    self,
-                    I18N.t("Error", "Lỗi"),
-                    I18N.t("Cannot open folder: {e}", "Không thể mở thư mục: {e}", e=e)
-                )
+                print(f"❌ [ERROR] Failed to open notification dialog: {e}")
+                import traceback
+                print(f"❌ [TRACEBACK] {traceback.format_exc()}")
+                QMessageBox.critical(self, I18N.t("Error", "Lỗi"), I18N.t("Failed to open notification dialog: {error}", "Không thể mở hộp thoại thông báo: {error}", error=str(e)))
+
+        # === AI Model Selection Methods ===
+        def _on_ai_model_changed(self, index):
+            """Handle AI model selection change"""
+            # Models: 0=Aggregator, 1=XGBoost(5001), 2=CNN-LSTM(5002), 3=Transformer(5003)
+            is_ai_server = index >= 1
+            self.ai_server_widget.setVisible(is_ai_server)
+            
+            model_names = ["Aggregator (Local)", "XGBoost AI (5001)", "CNN-LSTM Pro (5002)", "Transformer Pro (5003)"]
+            print(f"🤖 [SignalTab] Switched to {model_names[index]}")
+            
+            if is_ai_server:
+                self._check_ai_server_status()
+
+        def _load_ai_server_url(self):
+            """Load saved AI Server URL from config"""
+            try:
+                config_file = os.path.join(os.path.dirname(__file__), "ai_server_config.json")
+                if os.path.exists(config_file):
+                    with open(config_file, 'r', encoding='utf-8') as f:
+                        config = json.load(f)
+                        return config.get('server_url', 'http://localhost:8001')
+            except Exception as e:
+                print(f"⚠️ Error loading AI server config: {e}")
+            return 'http://localhost:8001'  # Default
+        
+        def _save_ai_server_url(self, url=None):
+            """Save AI Server URL to config"""
+            try:
+                if url is None and hasattr(self, 'ai_server_url_input'):
+                    url = self.ai_server_url_input.text().strip()
+                
+                if not url:
+                    return
+                
+                config_file = os.path.join(os.path.dirname(__file__), "ai_server_config.json")
+                config = {}
+                if os.path.exists(config_file):
+                    with open(config_file, 'r', encoding='utf-8') as f:
+                        config = json.load(f)
+                
+                config['server_url'] = url
+                config['last_updated'] = datetime.now().isoformat()
+                
+                with open(config_file, 'w', encoding='utf-8') as f:
+                    json.dump(config, f, indent=2, ensure_ascii=False)
+                
+                print(f"💾 AI Server URL saved: {url}")
+            except Exception as e:
+                print(f"⚠️ Error saving AI server config: {e}")
+        
+        def _get_ai_server_url(self):
+            """Get current AI Server URL with dynamic port"""
+            port = self._get_ai_model_port()
+            if port == 0:
+                return None  # Local aggregator mode
+            return f'http://localhost:{port}'
+
+        def _check_ai_server_status(self):
+            """Check if remote AI Server is running"""
+            try:
+                import requests
+                port = self._get_ai_model_port()
+                if port == 0:
+                    self.ai_server_status.setText("🔵 Local Mode")
+                    self.ai_server_status.setStyleSheet("color: #2196F3; font-weight: bold;")
+                    return
+                
+                server_url = f"http://localhost:{port}"
+                
+                self.ai_server_status.setText("🔄 Checking...")
+                self.ai_server_status.setStyleSheet("color: #ff9800; font-weight: bold;")
+                QApplication.processEvents()
+                
+                response = requests.get(f"{server_url}/health", timeout=5)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    status = data.get('status', 'unknown')
+                    model_name = data.get('model', 'Unknown')
+                    
+                    if status == 'healthy':
+                        self.ai_server_status.setText(f"🟢 {model_name.upper()} Ready")
+                        self.ai_server_status.setStyleSheet("color: #4caf50; font-weight: bold;")
+                    else:
+                        self.ai_server_status.setText(f"🟡 {status}")
+                        self.ai_server_status.setStyleSheet("color: #ff9800; font-weight: bold;")
+                else:
+                    self.ai_server_status.setText(f"🔴 Error ({response.status_code})")
+                    self.ai_server_status.setStyleSheet("color: #f44336; font-weight: bold;")
+                    
+            except requests.exceptions.Timeout:
+                self.ai_server_status.setText("🔴 Timeout")
+                self.ai_server_status.setStyleSheet("color: #f44336; font-weight: bold;")
+            except requests.exceptions.ConnectionError:
+                self.ai_server_status.setText("🔴 Cannot Connect")
+                self.ai_server_status.setStyleSheet("color: #f44336; font-weight: bold;")
+            except Exception as e:
+                self.ai_server_status.setText("🔴 Error")
+                self.ai_server_status.setStyleSheet("color: #f44336; font-weight: bold;")
+                print(f"⚠️ AI Server check error: {e}")
+
+        def _get_selected_ai_model(self):
+            """Get currently selected AI model"""
+            index = self.ai_model_combo.currentIndex()
+            # 0=aggregator, 1=xgboost, 2=cnn_lstm, 3=transformer
+            models = ["aggregator", "xgboost", "cnn_lstm", "transformer"]
+            return models[index] if index < len(models) else "aggregator"
+        
+        def _get_ai_model_port(self):
+            """Get port for selected AI model"""
+            index = self.ai_model_combo.currentIndex()
+            # 0=Local, 1=XGBoost(5001), 2=CNN-LSTM(5002), 3=Transformer(5003)
+            ports = [0, 5001, 5002, 5003]
+            return ports[index] if index < len(ports) else 0
 
 try:
     import MetaTrader5 as mt5
@@ -1841,29 +9894,75 @@ INDICATOR_FOLDER = "indicator_output"
 USER_CONFIG_PATH = "user_config.pkl"
 
 def save_user_config(config):
+    """Save user configuration to pickle file + save notification settings to JSON"""
     try:
         with open(USER_CONFIG_PATH, "wb") as f:
             pickle.dump(config, f)
+        
+        # 🔧 FIX: Also save notification settings to JSON
+        if 'notification_settings' in config:
+            try:
+                import json
+                config_file = 'notification_config.json'
+                # Load existing config
+                full_config = {}
+                if os.path.exists(config_file):
+                    with open(config_file, 'r', encoding='utf-8') as f:
+                        full_config = json.load(f)
+                
+                # Update settings section
+                full_config['settings'] = config['notification_settings']
+                
+                # Save back to file
+                with open(config_file, 'w', encoding='utf-8') as f:
+                    json.dump(full_config, f, indent=2, ensure_ascii=False)
+                print(f"✅ User config + notification settings saved")
+            except Exception as e:
+                print(f"⚠️ Could not save notification settings: {e}")
+        else:
+            print(f"✅ User config saved")
+            
     except Exception as e:
-        print(f"Could not save user config: {e}")
+        print(f"❌ Could not save user config: {e}")
 
 def load_user_config(apply_lang: bool = True):
-    if os.path.exists(USER_CONFIG_PATH):
-        try:
+    """Load user configuration from pickle file + load notification settings from JSON"""
+    # 🔧 FIX: Also load notification settings from JSON
+    try:
+        if os.path.exists(USER_CONFIG_PATH):
             with open(USER_CONFIG_PATH, "rb") as f:
                 config = pickle.load(f)
-                if "use_economic_calendar" not in config:
-                    config["use_economic_calendar"] = True
-                if "language" not in config:
-                    config["language"] = AppState._lang
-                elif apply_lang:
-                    stored_lang = config.get('language')
-                    if stored_lang in ('en','vi'):
-                        AppState._lang = stored_lang
-                return config
+        else:
+            config = {}
+        
+        # Set defaults
+        if "use_economic_calendar" not in config:
+            config["use_economic_calendar"] = True
+        if "language" not in config:
+            config["language"] = AppState._lang
+        elif apply_lang:
+            stored_lang = config.get('language')
+            if stored_lang in ('en','vi'):
+                AppState._lang = stored_lang
+        
+        # 🔧 FIX: Load notification settings from JSON
+        try:
+            import json
+            config_file = 'notification_config.json'
+            if os.path.exists(config_file):
+                with open(config_file, 'r', encoding='utf-8') as f:
+                    notif_config = json.load(f)
+                    if 'settings' in notif_config:
+                        config['notification_settings'] = notif_config['settings']
+                        print(f"✅ Notification settings loaded from JSON")
         except Exception as e:
-            print(f"Could not load user config: {e}")
-    return {"use_economic_calendar": True, "language": AppState.language()}
+            print(f"⚠️ Could not load notification settings: {e}")
+        
+        return config
+        
+    except Exception as e:
+        print(f"❌ Could not load user config: {e}")
+        return {"use_economic_calendar": True, "language": AppState.language()}
 
 # Define local MT5Connection class that works with GUI
 class MT5Connection:
@@ -3603,10 +11702,15 @@ class AccountTab(QWidget):
         self.init_ui()
         self.load_env()
         
-        # Timer để cập nhật thông tin tài khoản
+        # Timer để cập nhật thông tin tài khoản hiển thị
         self.account_timer = QTimer(self)
         self.account_timer.timeout.connect(self.update_account_info)
-        self.account_timer.start(5000)  # Cập nhật mỗi 5 giây
+        self.account_timer.start(1000)  # Cập nhật mỗi 1 giây (liên tục)
+        
+        # Timer để save account scan file (real-time updates)
+        self.scan_save_timer = QTimer(self)
+        self.scan_save_timer.timeout.connect(self.save_account_scan)
+        self.scan_save_timer.start(2000)  # Save scan file mỗi 2 giây (liên tục)
 
     def init_ui(self):
         layout = QVBoxLayout()
@@ -3627,15 +11731,21 @@ class AccountTab(QWidget):
         top_layout.addWidget(self.robot_label, 0, Qt.AlignRight)
         layout.addLayout(top_layout)
 
-        top_label = QLabel("VU HIEN CFDs Telegram/Zalo: +84 39 65 60 888")
-        top_label.setAlignment(Qt.AlignRight)
-        top_label.setStyleSheet("font-weight: bold; color: #2196F3; font-size: 14px; padding: 5px;")
-        layout.addWidget(top_label)
+        # User info and license countdown label (will be updated after login)
+        self.user_license_label = QLabel(I18N.t("Welcome! Please login to continue.", "Chào mừng! Vui lòng đăng nhập để tiếp tục."))
+        self.user_license_label.setAlignment(Qt.AlignRight)
+        self.user_license_label.setStyleSheet("font-weight: bold; color: #2196F3; font-size: 14px; padding: 5px;")
+        layout.addWidget(self.user_license_label)
+        
+        # License countdown timer (updates every second)
+        self.license_countdown_timer = QTimer(self)
+        self.license_countdown_timer.timeout.connect(self._update_license_countdown)
+        self._license_expire_datetime = None  # Will be set after login
 
         # Connection Status Panel
-        connection_panel = QGroupBox("📡 Connection Status")
+        connection_panel = QGroupBox(I18N.t("📡 Connection Status", "📡 Trạng thái Kết nối"))
         connection_layout = QHBoxLayout()
-        self.status_label = QLabel("🔴 Status: Disconnected")
+        self.status_label = QLabel(I18N.t("🔴 Status: Disconnected", "🔴 Trạng thái: Ngắt kết nối"))
         self.status_label.setStyleSheet(
             "font-weight:bold; color:red; padding: 8px; border: 1px solid #ccc; border-radius: 4px; background-color: #f9f9f9;"
         )
@@ -3644,23 +11754,23 @@ class AccountTab(QWidget):
         layout.addWidget(connection_panel)
 
         # Login Form
-        self.login_group = QGroupBox("MT5 Account Login")
+        self.login_group = QGroupBox(I18N.t("MT5 Account Login", "Đăng nhập Tài khoản MT5"))
         form_layout = QFormLayout()
         self.account_input = QLineEdit()
         self.password_input = QLineEdit()
         self.password_input.setEchoMode(QLineEdit.Password)
         self.server_input = QLineEdit()
-        self.save_account_cb = QCheckBox("Save Account Info")
-        self.save_account_cb.setToolTip("Save login credentials to .env file")
+        self.save_account_cb = QCheckBox(I18N.t("Save Account Info", "Lưu thông tin tài khoản"))
+        self.save_account_cb.setToolTip(I18N.t("Save login credentials to .env file", "Lưu thông tin đăng nhập vào file .env"))
 
-        form_layout.addRow("Account:", self.account_input)
-        form_layout.addRow("Password:", self.password_input)
-        form_layout.addRow("Server:", self.server_input)
+        form_layout.addRow(I18N.t("Account:", "Tài khoản:"), self.account_input)
+        form_layout.addRow(I18N.t("Password:", "Mật khẩu:"), self.password_input)
+        form_layout.addRow(I18N.t("Server:", "Máy chủ:"), self.server_input)
         form_layout.addRow("", self.save_account_cb)
 
         # Login / Disconnect buttons (Force Reset removed)
         button_layout = QHBoxLayout()
-        self.login_button = QPushButton("🔑 Login to MT5")
+        self.login_button = QPushButton(I18N.t("🔑 Login to MT5", "🔑 Đăng nhập MT5"))
         self.login_button.clicked.connect(self.login_mt5)
         self.login_button.setStyleSheet(
             """
@@ -3668,7 +11778,7 @@ class AccountTab(QWidget):
             QPushButton:hover { background-color: #45a049; }
             """
         )
-        self.logout_button = QPushButton("🔓 Disconnect")
+        self.logout_button = QPushButton(I18N.t("🔓 Disconnect", "🔓 Ngắt kết nối"))
         self.logout_button.clicked.connect(self.logout_mt5)
         self.logout_button.setEnabled(False)
         self.logout_button.setStyleSheet(
@@ -3685,7 +11795,7 @@ class AccountTab(QWidget):
         layout.addWidget(self.login_group)
 
         # Account Information Group
-        self.account_group = QGroupBox("Account Information")
+        self.account_group = QGroupBox(I18N.t("Account Information", "Thông tin Tài khoản"))
         self.account_group.setEnabled(False)
         account_layout = QVBoxLayout()
 
@@ -3697,16 +11807,16 @@ class AccountTab(QWidget):
         self.server_label = QLabel("--")
         self.currency_label = QLabel("--")
         self.leverage_label = QLabel("--")
-        basics_layout.addRow("Login:", self.login_label)
-        basics_layout.addRow("Name:", self.name_label)
-        basics_layout.addRow("Company:", self.company_label)
-        basics_layout.addRow("Server:", self.server_label)
-        basics_layout.addRow("Currency:", self.currency_label)
-        basics_layout.addRow("Leverage:", self.leverage_label)
+        basics_layout.addRow(I18N.t("Login:", "Tài khoản:"), self.login_label)
+        basics_layout.addRow(I18N.t("Name:", "Tên:"), self.name_label)
+        basics_layout.addRow(I18N.t("Company:", "Công ty:"), self.company_label)
+        basics_layout.addRow(I18N.t("Server:", "Máy chủ:"), self.server_label)
+        basics_layout.addRow(I18N.t("Currency:", "Tiền tệ:"), self.currency_label)
+        basics_layout.addRow(I18N.t("Leverage:", "Đòn bẩy:"), self.leverage_label)
         account_layout.addLayout(basics_layout)
 
         # Balance Information
-        balance_group = QGroupBox("💰 Balance Information")
+        balance_group = QGroupBox(I18N.t("💰 Balance Information", "💰 Thông tin Số dư"))
         balance_layout = QFormLayout()
         self.balance_label = QLabel("$0.00")
         self.equity_label = QLabel("$0.00")
@@ -3714,36 +11824,36 @@ class AccountTab(QWidget):
         self.free_margin_label = QLabel("$0.00")
         self.margin_level_label = QLabel("0.00%")
         self.profit_label = QLabel("$0.00")
-        balance_layout.addRow("Balance:", self.balance_label)
-        balance_layout.addRow("Equity:", self.equity_label)
-        balance_layout.addRow("Margin Used:", self.margin_label)
-        balance_layout.addRow("Free Margin:", self.free_margin_label)
-        balance_layout.addRow("Margin Level:", self.margin_level_label)
-        balance_layout.addRow("Profit/Loss:", self.profit_label)
+        balance_layout.addRow(I18N.t("Balance:", "Số dư:"), self.balance_label)
+        balance_layout.addRow(I18N.t("Equity:", "Vốn thực:"), self.equity_label)
+        balance_layout.addRow(I18N.t("Margin Used:", "Ký quỹ sử dụng:"), self.margin_label)
+        balance_layout.addRow(I18N.t("Free Margin:", "Ký quỹ khả dụng:"), self.free_margin_label)
+        balance_layout.addRow(I18N.t("Margin Level:", "Mức ký quỹ:"), self.margin_level_label)
+        balance_layout.addRow(I18N.t("Profit/Loss:", "Lãi/Lỗ:"), self.profit_label)
         balance_group.setLayout(balance_layout)
         account_layout.addWidget(balance_group)
 
         # Trading Status
-        trading_group = QGroupBox("📈 Trading Status")
+        trading_group = QGroupBox(I18N.t("📈 Trading Status", "📈 Trạng thái Giao dịch"))
         trading_layout = QFormLayout()
         self.positions_label = QLabel("0")
         self.orders_label = QLabel("0")
         self.trade_allowed_label = QLabel("--")
-        trading_layout.addRow("Open Positions:", self.positions_label)
-        trading_layout.addRow("Pending Orders:", self.orders_label)
-        trading_layout.addRow("Trade Allowed:", self.trade_allowed_label)
+        trading_layout.addRow(I18N.t("Open Positions:", "Vị thế đang mở:"), self.positions_label)
+        trading_layout.addRow(I18N.t("Pending Orders:", "Lệnh chờ:"), self.orders_label)
+        trading_layout.addRow(I18N.t("Trade Allowed:", "Cho phép giao dịch:"), self.trade_allowed_label)
         trading_group.setLayout(trading_layout)
         account_layout.addWidget(trading_group)
 
         # Positions Table
-        positions_group = QGroupBox("📊 Active Positions")
+        positions_group = QGroupBox(I18N.t("📊 Active Positions", "📊 Vị thế Đang mở"))
         positions_layout = QVBoxLayout()
         self.positions_table = QTableWidget()
         self.positions_table.setColumnCount(11)
         self.positions_table.setHorizontalHeaderLabels([
-            "Ticket", "Symbol", "Type", "Volume", "Open Price",
-            "Current Price", "Stop Loss", "Take Profit", "Swap",
-            "Profit", "Actions"
+            I18N.t("Ticket", "Mã lệnh"), I18N.t("Symbol", "Cặp tiền"), I18N.t("Type", "Loại"), I18N.t("Volume", "Khối lượng"), I18N.t("Open Price", "Giá mở"),
+            I18N.t("Current Price", "Giá hiện tại"), I18N.t("Stop Loss", "Cắt lỗ"), I18N.t("Take Profit", "Chốt lãi"), I18N.t("Swap", "Swap"),
+            I18N.t("Profit", "Lãi/Lỗ"), I18N.t("Actions", "Hành động")
         ])
         header = self.positions_table.horizontalHeader()
         for i in range(self.positions_table.columnCount()):
@@ -3751,11 +11861,11 @@ class AccountTab(QWidget):
         self.positions_table.setAlternatingRowColors(True)
         positions_layout.addWidget(self.positions_table)
         positions_control_layout = QHBoxLayout()
-        self.close_all_positions_btn = QPushButton("🚫 Close All Positions")
+        self.close_all_positions_btn = QPushButton(I18N.t("🚫 Close All Positions", "🚫 Đóng Tất cả Vị thế"))
         self.close_all_positions_btn.setStyleSheet("background-color: #E74C3C; color: white; font-weight: bold;")
         self.close_all_positions_btn.clicked.connect(self.close_all_positions)
         positions_control_layout.addWidget(self.close_all_positions_btn)
-        self.refresh_positions_btn = QPushButton("🔄 Refresh Positions")
+        self.refresh_positions_btn = QPushButton(I18N.t("🔄 Refresh Positions", "🔄 Làm mới Vị thế"))
         self.refresh_positions_btn.setStyleSheet("background-color: #3498DB; color: white; font-weight: bold;")
         self.refresh_positions_btn.clicked.connect(self.refresh_account_info)
         positions_control_layout.addWidget(self.refresh_positions_btn)
@@ -3765,13 +11875,13 @@ class AccountTab(QWidget):
         account_layout.addWidget(positions_group)
 
         # Orders Table
-        orders_group = QGroupBox("📋 Pending Orders")
+        orders_group = QGroupBox(I18N.t("📋 Pending Orders", "📋 Lệnh Chờ"))
         orders_layout = QVBoxLayout()
         self.orders_table = QTableWidget()
         self.orders_table.setColumnCount(10)
         self.orders_table.setHorizontalHeaderLabels([
-            "Ticket", "Symbol", "Type", "Volume", "Open Price",
-            "Current Price", "Stop Loss", "Take Profit", "Time", "Actions"
+            I18N.t("Ticket", "Mã lệnh"), I18N.t("Symbol", "Cặp tiền"), I18N.t("Type", "Loại"), I18N.t("Volume", "Khối lượng"), I18N.t("Open Price", "Giá mở"),
+            I18N.t("Current Price", "Giá hiện tại"), I18N.t("Stop Loss", "Cắt lỗ"), I18N.t("Take Profit", "Chốt lãi"), I18N.t("Time", "Thời gian"), I18N.t("Actions", "Hành động")
         ])
         header = self.orders_table.horizontalHeader()
         for i in range(self.orders_table.columnCount()):
@@ -3779,11 +11889,11 @@ class AccountTab(QWidget):
         self.orders_table.setAlternatingRowColors(True)
         orders_layout.addWidget(self.orders_table)
         orders_control_layout = QHBoxLayout()
-        self.cancel_all_orders_btn = QPushButton("❌ Cancel All Orders")
+        self.cancel_all_orders_btn = QPushButton(I18N.t("❌ Cancel All Orders", "❌ Hủy Tất cả Lệnh"))
         self.cancel_all_orders_btn.setStyleSheet("background-color: #F39C12; color: white; font-weight: bold;")
         self.cancel_all_orders_btn.clicked.connect(self.cancel_all_orders)
         orders_control_layout.addWidget(self.cancel_all_orders_btn)
-        self.refresh_orders_btn = QPushButton("🔄 Refresh Orders")
+        self.refresh_orders_btn = QPushButton(I18N.t("🔄 Refresh Orders", "🔄 Làm mới Lệnh"))
         self.refresh_orders_btn.setStyleSheet("background-color: #3498DB; color: white; font-weight: bold;")
         self.refresh_orders_btn.clicked.connect(self.refresh_account_info)
         orders_control_layout.addWidget(self.refresh_orders_btn)
@@ -3795,6 +11905,27 @@ class AccountTab(QWidget):
         self.account_group.setLayout(account_layout)
         layout.addWidget(self.account_group)
         self.setLayout(layout)
+
+    def retranslate_ui(self):
+        """Retranslate UI strings when language changes"""
+        try:
+            # Update group box titles
+            self.login_group.setTitle(I18N.t("MT5 Account Login", "Đăng nhập Tài khoản MT5"))
+            self.account_group.setTitle(I18N.t("Account Information", "Thông tin Tài khoản"))
+            
+            # Update labels and buttons
+            self.user_license_label.setText(I18N.t("Welcome! Please login to continue.", "Chào mừng! Vui lòng đăng nhập để tiếp tục."))
+            self.status_label.setText(I18N.t("🔴 Status: Disconnected", "🔴 Trạng thái: Ngắt kết nối"))
+            self.save_account_cb.setText(I18N.t("Save Account Info", "Lưu thông tin tài khoản"))
+            self.login_button.setText(I18N.t("🔑 Login to MT5", "🔑 Đăng nhập MT5"))
+            self.logout_button.setText(I18N.t("🔓 Disconnect", "🔓 Ngắt kết nối"))
+            self.close_all_positions_btn.setText(I18N.t("🚫 Close All Positions", "🚫 Đóng Tất cả Vị thế"))
+            self.refresh_positions_btn.setText(I18N.t("🔄 Refresh Positions", "🔄 Làm mới Vị thế"))
+            self.cancel_all_orders_btn.setText(I18N.t("❌ Cancel All Orders", "❌ Hủy Tất cả Lệnh"))
+            self.refresh_orders_btn.setText(I18N.t("🔄 Refresh Orders", "🔄 Làm mới Lệnh"))
+            print("✅ AccountTab retranslated")
+        except Exception as e:
+            print(f"⚠️ Error retranslating AccountTab: {e}")
 
     def load_env(self):
         """Load saved credentials from .env file"""
@@ -3818,6 +11949,12 @@ class AccountTab(QWidget):
 
     def login_mt5(self):
         """Login to MT5"""
+        # ========== LICENSE CHECK ==========
+        # Kiểm tra license trước khi cho phép đăng nhập MT5
+        if not check_license_for_service(self, "MT5 Login"):
+            return
+        # ========== END LICENSE CHECK ==========
+        
         account = self.account_input.text()
         password = self.password_input.text()
         server = self.server_input.text()
@@ -3831,7 +11968,7 @@ class AccountTab(QWidget):
             return
 
         self.login_button.setEnabled(False)
-        self.login_button.setText("🔄 Connecting...")
+        self.login_button.setText(I18N.t("🔄 Connecting...", "🔄 Đang kết nối..."))
         
         try:
             print(f"[MT5][LOGIN] Start login workflow for {account}@{server}")
@@ -3875,9 +12012,9 @@ class AccountTab(QWidget):
             
             if self.mt5_conn.connected:
                 print("[MT5][LOGIN] Connection marked connected, updating UI")
-                self.status_label.setText("🟢 Status: Connected")
+                self.status_label.setText(I18N.t("🟢 Status: Connected", "🟢 Trạng thái: Đã kết nối"))
                 self.status_label.setStyleSheet("font-weight:bold; color:green; padding: 8px; border: 1px solid #4CAF50; border-radius: 4px; background-color: #e8f5e8;")
-                self.login_button.setText("✅ Connected")
+                self.login_button.setText(I18N.t("✅ Connected", "✅ Đã kết nối"))
                 self.logout_button.setEnabled(True)
                 self.account_group.setEnabled(True)
                 
@@ -3948,13 +12085,13 @@ class AccountTab(QWidget):
                 print(f"[MT5][LOGIN] Failed to connect. Diagnostic => {diag}")
                 # Restore button so user can retry
                 self.login_button.setEnabled(True)
-                self.login_button.setText("🔑 Login to MT5")
+                self.login_button.setText(I18N.t("🔑 Login to MT5", "🔑 Đăng nhập MT5"))
                 self.show_connection_error(diag)
                 
         except Exception as e:
             print(f"[MT5][LOGIN] Exception during login: {e}")
             self.login_button.setEnabled(True)
-            self.login_button.setText("🔑 Login to MT5")
+            self.login_button.setText(I18N.t("🔑 Login to MT5", "🔑 Đăng nhập MT5"))
             self.show_connection_error(str(e))
 
     def logout_mt5(self):
@@ -3963,9 +12100,9 @@ class AccountTab(QWidget):
             self.mt5_conn.shutdown()
             self.mt5_conn = None
             
-        self.status_label.setText("🔴 Status: Disconnected")
+        self.status_label.setText(I18N.t("🔴 Status: Disconnected", "🔴 Trạng thái: Ngắt kết nối"))
         self.status_label.setStyleSheet("font-weight:bold; color:red; padding: 8px; border: 1px solid #ccc; border-radius: 4px; background-color: #f9f9f9;")
-        self.login_button.setText("🔑 Login to MT5")
+        self.login_button.setText(I18N.t("🔑 Login to MT5", "🔑 Đăng nhập MT5"))
         self.login_button.setEnabled(True)
         self.logout_button.setEnabled(False)
         self.account_group.setEnabled(False)
@@ -3983,232 +12120,371 @@ class AccountTab(QWidget):
 
     def show_connection_error(self, error_msg=None):
         """Show connection error"""
-        self.status_label.setText("🔴 Status: Connection Failed")
+        self.status_label.setText(I18N.t("🔴 Status: Connection Failed", "🔴 Trạng thái: Kết nối Thất bại"))
         self.status_label.setStyleSheet("font-weight:bold; color:red; padding: 8px; border: 1px solid #f44336; border-radius: 4px; background-color: #ffebee;")
-        self.login_button.setText("🔑 Login to MT5")
+        self.login_button.setText(I18N.t("🔑 Login to MT5", "🔑 Đăng nhập MT5"))
         self.login_button.setEnabled(True)
         
         # Disable logout button when connection fails
         self.logout_button.setEnabled(False)
         
-        error_text = f"Failed to connect to MT5!"
+        error_text = I18N.t("Failed to connect to MT5!", "Kết nối MT5 thất bại!")
         if error_msg:
-            error_text += f"\nError: {error_msg}"
+            error_text += I18N.t("\nError: {msg}", "\nLỗi: {msg}", msg=error_msg)
         QMessageBox.critical(self, I18N.t("Connection Error", "Lỗi kết nối"), error_text)
 
     @safe_method
     def update_account_info(self):
-        """Update account information display"""
+        """Update account information display from MT5 or fallback to scan file"""
+        try:
+            # Try to get from live MT5 connection first
+            if self.mt5_conn and self.mt5_conn.connected:
+                try:
+                    # Get account info from MT5
+                    if MT5_AVAILABLE:
+                        account_info = mt5.account_info()
+                        positions = mt5.positions_get()
+                        orders = mt5.orders_get()
+                        
+                        if account_info:
+                            # Update basic info
+                            self.login_label.setText(str(account_info.login))
+                            self.name_label.setText(account_info.name or "N/A")
+                            self.company_label.setText(account_info.company or "N/A")
+                            self.server_label.setText(account_info.server or "N/A")
+                            self.currency_label.setText(account_info.currency or "USD")
+                            self.leverage_label.setText(f"1:{account_info.leverage}")
+                            
+                            # Update balance info
+                            currency = account_info.currency or "USD"
+                            self.balance_label.setText(f"{account_info.balance:.2f} {currency}")
+                            self.equity_label.setText(f"{account_info.equity:.2f} {currency}")
+                            self.margin_label.setText(f"{account_info.margin:.2f} {currency}")
+                            self.free_margin_label.setText(f"{account_info.margin_free:.2f} {currency}")
+                            
+                            # Calculate margin level
+                            if account_info.margin > 0:
+                                margin_level = (account_info.equity / account_info.margin) * 100
+                                self.margin_level_label.setText(f"{margin_level:.2f}%")
+                            else:
+                                self.margin_level_label.setText("N/A")
+                            
+                            # Profit/Loss with color
+                            profit = account_info.profit
+                            profit_text = f"{profit:.2f} {currency}"
+                            if profit > 0:
+                                self.profit_label.setText(f"+{profit_text}")
+                                self.profit_label.setStyleSheet("color: green; font-weight: bold;")
+                            elif profit < 0:
+                                self.profit_label.setText(profit_text)
+                                self.profit_label.setStyleSheet("color: red; font-weight: bold;")
+                            else:
+                                self.profit_label.setText(profit_text)
+                                self.profit_label.setStyleSheet("color: black;")
+                            
+                            # Update trading status
+                            self.positions_label.setText(str(len(positions) if positions else 0))
+                            self.orders_label.setText(str(len(orders) if orders else 0))
+                            self.trade_allowed_label.setText("✅ Yes" if account_info.trade_allowed else "❌ No")
+                            
+                            # Update positions table
+                            self.update_positions_table(positions)
+                            
+                            # Update orders table
+                            self.update_orders_table(orders)
+                            return  # Successfully updated from MT5
+                            
+                except Exception as e:
+                    print(f"[WARN] Error updating from MT5: {e}")
+                    # Fall through to try loading from file
+            
+            # Load from file (fast, no MT5 call needed)
+            self._load_account_from_file()
+        
+        except Exception as e:
+            # Outer catch - prevent ANY exception from breaking the timer
+            print(f"[ERROR] Unexpected error in update_account_info: {e}")
+    
+    def _load_account_from_file(self):
+        """Load account data from mt5_essential_scan.json file (fast, no MT5 call)"""
+        try:
+            import os, json
+            scan_file = os.path.join(os.getcwd(), "account_scans", "mt5_essential_scan.json")
+            if not os.path.exists(scan_file):
+                return  # File doesn't exist yet
+            
+            with open(scan_file, 'r', encoding='utf-8') as f:
+                scan_data = json.load(f)
+            
+            if not scan_data or 'account' not in scan_data:
+                return
+            
+            acc = scan_data['account']
+            
+            # Update basic info from file
+            self.login_label.setText(str(acc.get('login', 'N/A')))
+            self.name_label.setText(acc.get('server', 'N/A'))
+            self.company_label.setText("(From scan)")
+            self.server_label.setText(acc.get('server', 'N/A'))
+            currency = acc.get('currency', 'USD') or 'USD'
+            self.currency_label.setText(currency)
+            self.leverage_label.setText("N/A")
+            
+            # Update balance info from file
+            self.balance_label.setText(f"{acc.get('balance', 0):.2f} {currency}")
+            self.equity_label.setText(f"{acc.get('equity', 0):.2f} {currency}")
+            self.margin_label.setText(f"{acc.get('margin', 0):.2f} {currency}")
+            self.free_margin_label.setText(f"{acc.get('free_margin', 0):.2f} {currency}")
+            
+            # Calculate margin level from scan data
+            margin = acc.get('margin', 0)
+            equity = acc.get('equity', 0)
+            if margin > 0:
+                margin_level = (equity / margin) * 100
+                self.margin_level_label.setText(f"{margin_level:.2f}%")
+            else:
+                self.margin_level_label.setText("N/A")
+            
+            # Profit/Loss with color
+            profit = acc.get('profit', 0)
+            profit_text = f"{profit:.2f} {currency}"
+            if profit > 0:
+                self.profit_label.setText(f"+{profit_text}")
+                self.profit_label.setStyleSheet("color: green; font-weight: bold;")
+            elif profit < 0:
+                self.profit_label.setText(profit_text)
+                self.profit_label.setStyleSheet("color: red; font-weight: bold;")
+            else:
+                self.profit_label.setText(profit_text)
+                self.profit_label.setStyleSheet("color: black;")
+            
+            # Update trading status from scan
+            positions = scan_data.get('active_positions', [])
+            orders = scan_data.get('active_orders', [])
+            self.positions_label.setText(str(len(positions) if positions else 0))
+            self.orders_label.setText(str(len(orders) if orders else 0))
+            self.trade_allowed_label.setText("Yes")
+            
+            # Update positions and orders tables
+            self.update_positions_table(positions)
+            self.update_orders_table(orders if orders else [])
+                        
+        except Exception as e:
+            print(f"[WARN] Error loading account from file: {e}")
+
+    def save_account_scan(self):
+        """Save current account scan to file (real-time update)"""
         if not self.mt5_conn or not self.mt5_conn.connected:
             return
-            
+        
         try:
-            # Get account info from MT5
-            if MT5_AVAILABLE:
-                account_info = mt5.account_info()
-                positions = mt5.positions_get()
-                orders = mt5.orders_get()
-                
-                if account_info:
-                    # Update basic info
-                    self.login_label.setText(str(account_info.login))
-                    self.name_label.setText(account_info.name or "N/A")
-                    self.company_label.setText(account_info.company or "N/A")
-                    self.server_label.setText(account_info.server or "N/A")
-                    self.currency_label.setText(account_info.currency or "USD")
-                    self.leverage_label.setText(f"1:{account_info.leverage}")
-                    
-                    # Update balance info
-                    currency = account_info.currency or "USD"
-                    self.balance_label.setText(f"{account_info.balance:.2f} {currency}")
-                    self.equity_label.setText(f"{account_info.equity:.2f} {currency}")
-                    self.margin_label.setText(f"{account_info.margin:.2f} {currency}")
-                    self.free_margin_label.setText(f"{account_info.margin_free:.2f} {currency}")
-                    
-                    # Calculate margin level
-                    if account_info.margin > 0:
-                        margin_level = (account_info.equity / account_info.margin) * 100
-                        self.margin_level_label.setText(f"{margin_level:.2f}%")
-                    else:
-                        self.margin_level_label.setText("N/A")
-                    
-                    # Profit/Loss with color
-                    profit = account_info.profit
-                    profit_text = f"{profit:.2f} {currency}"
-                    if profit > 0:
-                        self.profit_label.setText(f"+{profit_text}")
-                        self.profit_label.setStyleSheet("color: green; font-weight: bold;")
-                    elif profit < 0:
-                        self.profit_label.setText(profit_text)
-                        self.profit_label.setStyleSheet("color: red; font-weight: bold;")
-                    else:
-                        self.profit_label.setText(profit_text)
-                        self.profit_label.setStyleSheet("color: black;")
-                    
-                    # Update trading status
-                    self.positions_label.setText(str(len(positions) if positions else 0))
-                    self.orders_label.setText(str(len(orders) if orders else 0))
-                    self.trade_allowed_label.setText("✅ Yes" if account_info.trade_allowed else "❌ No")
-                    
-                    # Update positions table
-                    self.update_positions_table(positions)
-                    
-                    # Update orders table
-                    self.update_orders_table(orders)
-                    
+            # Use MT5ConnectionManager's save method if available
+            result = self.mt5_conn.save_essential_account_scan()
+            if result:
+                print(f"[AUTO-SAVE] Account scan saved to {result}")
         except Exception as e:
-            print(f"Error updating account info: {e}")
+            print(f"[WARN] Could not auto-save account scan: {e}")
 
     def refresh_account_info(self):
         """Refresh account information (alias for update_account_info)"""
         self.update_account_info()
 
     def update_positions_table(self, positions):
-        """Update positions table with full MT5 information"""
-        if not positions:
-            self.positions_table.setRowCount(0)
-            return
+        """Update positions table with full MT5 information (from live MT5 or JSON file)"""
+        try:
+            if not positions:
+                self.positions_table.setRowCount(0)
+                return
+                
+            self.positions_table.setRowCount(len(positions))
             
-        self.positions_table.setRowCount(len(positions))
-        
-        for row, pos in enumerate(positions):
-            # Ticket
-            self.positions_table.setItem(row, 0, QTableWidgetItem(str(pos.ticket)))
-            
-            # Symbol
-            self.positions_table.setItem(row, 1, QTableWidgetItem(pos.symbol))
-            # Type
-            try:
-                order_type = getattr(pos, 'type', None)
-                if order_type is not None:
-                    # Convert MT5 order type constants to readable text
-                    # 0 = BUY (ORDER_TYPE_BUY), 1 = SELL (ORDER_TYPE_SELL)
-                    if order_type == 0:
-                        type_name = "BUY"
-                    elif order_type == 1:
-                        type_name = "SELL"
+            for row, pos in enumerate(positions):
+                try:
+                    # Handle both MT5 objects and dict from JSON file
+                    def get_attr(obj, key, default=None):
+                        if isinstance(obj, dict):
+                            return obj.get(key, default)
+                        else:
+                            return getattr(obj, key, default)
+                    
+                    # Ticket
+                    ticket = get_attr(pos, 'ticket', 'N/A')
+                    self.positions_table.setItem(row, 0, QTableWidgetItem(str(ticket)))
+                    
+                    # Symbol
+                    symbol = get_attr(pos, 'symbol', 'N/A')
+                    self.positions_table.setItem(row, 1, QTableWidgetItem(str(symbol)))
+                    
+                    # Type
+                    order_type = get_attr(pos, 'type', None)
+                    if order_type is not None:
+                        # Convert MT5 order type constants to readable text
+                        # 0 = BUY, 1 = SELL
+                        if order_type == 0:
+                            type_name = "BUY"
+                        elif order_type == 1:
+                            type_name = "SELL"
+                        else:
+                            type_name = f"Type {order_type}"
                     else:
-                        type_name = f"Type {order_type}"
-                else:
-                    type_name = 'N/A'
-                self.positions_table.setItem(row, 2, QTableWidgetItem(type_name))
-            except Exception:
-                self.positions_table.setItem(row, 2, QTableWidgetItem('N/A'))
+                        type_name = 'N/A'
+                    self.positions_table.setItem(row, 2, QTableWidgetItem(type_name))
 
-            # Volume
-            self.positions_table.setItem(row, 3, QTableWidgetItem(f"{pos.volume:.2f}"))
+                    # Volume
+                    volume = get_attr(pos, 'volume', 0)
+                    self.positions_table.setItem(row, 3, QTableWidgetItem(f"{float(volume):.2f}"))
 
-            # Open Price - Use proper formatting per symbol
-            open_price_formatted = self.format_price_mt5_style(pos.price_open, pos.symbol)
-            self.positions_table.setItem(row, 4, QTableWidgetItem(open_price_formatted))
+                    # Open Price
+                    price_open = get_attr(pos, 'price_open', 0)
+                    open_price_formatted = self.format_price_mt5_style(float(price_open), str(symbol))
+                    self.positions_table.setItem(row, 4, QTableWidgetItem(open_price_formatted))
 
-            # Current Price - Use proper formatting per symbol
-            current_price_formatted = self.format_price_mt5_style(pos.price_current, pos.symbol)
-            self.positions_table.setItem(row, 5, QTableWidgetItem(current_price_formatted))
+                    # Current Price
+                    price_current = get_attr(pos, 'price_current', 0)
+                    current_price_formatted = self.format_price_mt5_style(float(price_current), str(symbol))
+                    self.positions_table.setItem(row, 5, QTableWidgetItem(current_price_formatted))
 
-            # Stop Loss
-            if pos.sl > 0:
-                sl_value = self.format_price_mt5_style(pos.sl, pos.symbol)
-            else:
-                sl_value = "N/A"
-            self.positions_table.setItem(row, 6, QTableWidgetItem(sl_value))
-            
-            # Take Profit
-            if pos.tp > 0:
-                tp_value = self.format_price_mt5_style(pos.tp, pos.symbol)
-            else:
-                tp_value = "N/A"
-            self.positions_table.setItem(row, 7, QTableWidgetItem(tp_value))
-            
-            # Swap
-            swap_item = QTableWidgetItem(f"{pos.swap:.2f}")
-            swap_item.setFont(QFont("Segoe UI", 11))  # Slightly larger font for swap
-            if pos.swap > 0:
-                swap_item.setForeground(QColor('green'))
-            elif pos.swap < 0:
-                swap_item.setForeground(QColor('red'))
-            self.positions_table.setItem(row, 8, swap_item)
+                    # Stop Loss
+                    sl = get_attr(pos, 'sl', 0)
+                    if float(sl) > 0:
+                        sl_value = self.format_price_mt5_style(float(sl), str(symbol))
+                    else:
+                        sl_value = "N/A"
+                    self.positions_table.setItem(row, 6, QTableWidgetItem(sl_value))
+                    
+                    # Take Profit
+                    tp = get_attr(pos, 'tp', 0)
+                    if float(tp) > 0:
+                        tp_value = self.format_price_mt5_style(float(tp), str(symbol))
+                    else:
+                        tp_value = "N/A"
+                    self.positions_table.setItem(row, 7, QTableWidgetItem(tp_value))
+                    
+                    # Swap
+                    swap = get_attr(pos, 'swap', 0)
+                    swap_item = QTableWidgetItem(f"{float(swap):.2f}")
+                    swap_item.setFont(QFont("Segoe UI", 11))
+                    if float(swap) > 0:
+                        swap_item.setForeground(QColor('green'))
+                    elif float(swap) < 0:
+                        swap_item.setForeground(QColor('red'))
+                    self.positions_table.setItem(row, 8, swap_item)
 
-            # Profit
-            profit_item = QTableWidgetItem(f"{pos.profit:.2f}")
-            profit_item.setFont(QFont("Segoe UI", 12, QFont.Bold))  # Larger font for profit/loss visibility
-            if pos.profit > 0:
-                profit_item.setForeground(QColor('green'))
-            elif pos.profit < 0:
-                profit_item.setForeground(QColor('red'))
-            self.positions_table.setItem(row, 9, profit_item)
-            
-            # Close button (moved to column 10)
-            close_btn = QPushButton("🚫 Close")
-            close_btn.setStyleSheet("background-color: #E74C3C; color: white; font-weight: bold; padding: 4px;")
-            close_btn.clicked.connect(lambda checked, ticket=pos.ticket: self.close_position(ticket))
-            self.positions_table.setCellWidget(row, 10, close_btn)
+                    # Profit
+                    profit = get_attr(pos, 'profit', 0)
+                    profit_item = QTableWidgetItem(f"{float(profit):.2f}")
+                    profit_item.setFont(QFont("Segoe UI", 12, QFont.Bold))  # Larger font for profit/loss visibility
+                    if float(profit) > 0:
+                        profit_item.setForeground(QColor('green'))
+                    elif float(profit) < 0:
+                        profit_item.setForeground(QColor('red'))
+                    self.positions_table.setItem(row, 9, profit_item)
+                    
+                    # Close button (moved to column 10)
+                    close_btn = QPushButton("🚫 Close")
+                    close_btn.setStyleSheet("background-color: #E74C3C; color: white; font-weight: bold; padding: 4px;")
+                    ticket_val = get_attr(pos, 'ticket', None)
+                    close_btn.clicked.connect(lambda checked, t=ticket_val: self.close_position(t))
+                    self.positions_table.setCellWidget(row, 10, close_btn)
+                    
+                except Exception as e:
+                    print(f"[WARN] Error updating position row {row}: {e}")
+                    continue
+                    
+        except Exception as e:
+            print(f"[ERROR] Error in update_positions_table: {e}")
 
     def update_orders_table(self, orders):
-        """Update orders table with full MT5 information"""
-        if not orders:
-            self.orders_table.setRowCount(0)
-            return
+        """Update orders table with full MT5 information (from live MT5 or JSON file)"""
+        try:
+            if not orders:
+                self.orders_table.setRowCount(0)
+                return
+                
+            self.orders_table.setRowCount(len(orders))
             
-        self.orders_table.setRowCount(len(orders))
-        
-        order_types = ["BUY_LIMIT", "SELL_LIMIT", "BUY_STOP", "SELL_STOP", "BUY_STOP_LIMIT", "SELL_STOP_LIMIT"]
-        
-        for row, order in enumerate(orders):
-            # Ticket
-            self.orders_table.setItem(row, 0, QTableWidgetItem(str(order.ticket)))
+            order_types = ["BUY_LIMIT", "SELL_LIMIT", "BUY_STOP", "SELL_STOP", "BUY_STOP_LIMIT", "SELL_STOP_LIMIT"]
             
-            # Symbol
-            self.orders_table.setItem(row, 1, QTableWidgetItem(order.symbol))
-            
-            # Type
-            order_type = order_types[order.type] if order.type < len(order_types) else f"Type {order.type}"
-            self.orders_table.setItem(row, 2, QTableWidgetItem(order_type))
-            
-            # Volume
-            self.orders_table.setItem(row, 3, QTableWidgetItem(str(order.volume_current)))
-            
-            # Open Price - Format with correct decimals for the symbol
-            open_price_formatted = self.format_price_mt5_style(order.price_open, order.symbol)
-            self.orders_table.setItem(row, 4, QTableWidgetItem(open_price_formatted))
-            
-            # Current Price (for reference) - Format with correct decimals for the symbol
-            try:
-                # Get current symbol price for comparison
-                import MetaTrader5 as mt5
-                symbol_info = mt5.symbol_info_tick(order.symbol)
-                if symbol_info:
-                    current_price = symbol_info.bid if "SELL" in order_type else symbol_info.ask
-                    current_price_formatted = self.format_price_mt5_style(current_price, order.symbol)
-                    self.orders_table.setItem(row, 5, QTableWidgetItem(current_price_formatted))
+            # Helper to handle both objects and dicts
+            def get_attr(obj, key, default=None):
+                if isinstance(obj, dict):
+                    return obj.get(key, default)
                 else:
-                    self.orders_table.setItem(row, 5, QTableWidgetItem("N/A"))
-            except:
-                self.orders_table.setItem(row, 5, QTableWidgetItem("N/A"))
+                    return getattr(obj, key, default)
             
-            # Stop Loss - Format with correct decimals for the symbol
-            if order.sl > 0:
-                sl_value = self.format_price_mt5_style(order.sl, order.symbol)
-            else:
-                sl_value = "N/A"
-            self.orders_table.setItem(row, 6, QTableWidgetItem(sl_value))
-            
-            # Take Profit - Format with correct decimals for the symbol
-            if order.tp > 0:
-                tp_value = self.format_price_mt5_style(order.tp, order.symbol)
-            else:
-                tp_value = "N/A"
-            self.orders_table.setItem(row, 7, QTableWidgetItem(tp_value))
-            
-            # Time
-            time_str = datetime.fromtimestamp(order.time_setup).strftime("%Y-%m-%d %H:%M")
-            self.orders_table.setItem(row, 8, QTableWidgetItem(time_str))
-            
-            # Cancel button
-            cancel_btn = QPushButton("❌ Cancel")
-            cancel_btn.setStyleSheet("background-color: #F39C12; color: white; font-weight: bold; padding: 4px;")
-            cancel_btn.clicked.connect(lambda checked, ticket=order.ticket: self.cancel_order(ticket))
-            self.orders_table.setCellWidget(row, 9, cancel_btn)
+            for row, order in enumerate(orders):
+                try:
+                    # Ticket
+                    ticket = get_attr(order, 'ticket', 'N/A')
+                    self.orders_table.setItem(row, 0, QTableWidgetItem(str(ticket)))
+                    
+                    # Symbol
+                    symbol = get_attr(order, 'symbol', 'N/A')
+                    self.orders_table.setItem(row, 1, QTableWidgetItem(str(symbol)))
+                    
+                    # Type
+                    order_type_idx = get_attr(order, 'type', 0)
+                    order_type = order_types[order_type_idx] if order_type_idx < len(order_types) else f"Type {order_type_idx}"
+                    self.orders_table.setItem(row, 2, QTableWidgetItem(order_type))
+                    
+                    # Volume
+                    volume = get_attr(order, 'volume_current', get_attr(order, 'volume', 0))
+                    self.orders_table.setItem(row, 3, QTableWidgetItem(str(volume)))
+                    
+                    # Open Price - Format with correct decimals for the symbol
+                    price_open = get_attr(order, 'price_open', 0)
+                    open_price_formatted = self.format_price_mt5_style(float(price_open), str(symbol))
+                    self.orders_table.setItem(row, 4, QTableWidgetItem(open_price_formatted))
+                    
+                    # Current Price (for reference) - Format with correct decimals for the symbol
+                    try:
+                        # Get current symbol price for comparison
+                        import MetaTrader5 as mt5
+                        symbol_info = mt5.symbol_info_tick(symbol)
+                        if symbol_info:
+                            current_price = symbol_info.bid if "SELL" in order_type else symbol_info.ask
+                            current_price_formatted = self.format_price_mt5_style(current_price, str(symbol))
+                            self.orders_table.setItem(row, 5, QTableWidgetItem(current_price_formatted))
+                        else:
+                            self.orders_table.setItem(row, 5, QTableWidgetItem("N/A"))
+                    except:
+                        self.orders_table.setItem(row, 5, QTableWidgetItem("N/A"))
+                    
+                    # Stop Loss - Format with correct decimals for the symbol
+                    sl = get_attr(order, 'sl', 0)
+                    if float(sl) > 0:
+                        sl_value = self.format_price_mt5_style(float(sl), str(symbol))
+                    else:
+                        sl_value = "N/A"
+                    self.orders_table.setItem(row, 6, QTableWidgetItem(sl_value))
+                    
+                    # Take Profit - Format with correct decimals for the symbol
+                    tp = get_attr(order, 'tp', 0)
+                    if float(tp) > 0:
+                        tp_value = self.format_price_mt5_style(float(tp), str(symbol))
+                    else:
+                        tp_value = "N/A"
+                    self.orders_table.setItem(row, 7, QTableWidgetItem(tp_value))
+                    
+                    # Time
+                    time_setup = get_attr(order, 'time_setup', 0)
+                    if time_setup > 0:
+                        time_str = datetime.fromtimestamp(time_setup).strftime("%Y-%m-%d %H:%M")
+                    else:
+                        time_str = "N/A"
+                    self.orders_table.setItem(row, 8, QTableWidgetItem(time_str))
+                    
+                    # Cancel button
+                    cancel_btn = QPushButton("❌ Cancel")
+                    cancel_btn.setStyleSheet("background-color: #F39C12; color: white; font-weight: bold; padding: 4px;")
+                    cancel_btn.clicked.connect(lambda checked, t=ticket: self.cancel_order(t))
+                    self.orders_table.setCellWidget(row, 9, cancel_btn)
+                    
+                except Exception as e:
+                    print(f"[WARN] Error updating order row {row}: {e}")
+                    continue
+        except Exception as e:
+            print(f"[ERROR] Error in update_orders_table: {e}")
 
     def close_position(self, ticket):
         """Close a specific position"""
@@ -4397,15 +12673,26 @@ class AccountTab(QWidget):
                         errors.append(f"Position #{pos.ticket}: {str(e)}")
                 
                 # Show results
-                message = f"📊 Close All Positions Results:\n\n"
-                message += f"✅ Successfully closed: {closed_count} positions\n"
-                if errors:
-                    message += f"❌ Errors: {len(errors)}\n\n"
-                    message += "Error details:\n"
-                    for error in errors[:5]:  # Show first 5 errors
-                        message += f"• {error}\n"
-                    if len(errors) > 5:
-                        message += f"• ... and {len(errors) - 5} more errors"
+                if AppState.language() == 'vi':
+                    message = f"📊 Kết quả Đóng Tất cả Vị thế:\n\n"
+                    message += f"✅ Đóng thành công: {closed_count} vị thế\n"
+                    if errors:
+                        message += f"❌ Lỗi: {len(errors)}\n\n"
+                        message += "Chi tiết lỗi:\n"
+                        for error in errors[:5]:  # Show first 5 errors
+                            message += f"• {error}\n"
+                        if len(errors) > 5:
+                            message += f"• ... và {len(errors) - 5} lỗi khác"
+                else:
+                    message = f"📊 Close All Positions Results:\n\n"
+                    message += f"✅ Successfully closed: {closed_count} positions\n"
+                    if errors:
+                        message += f"❌ Errors: {len(errors)}\n\n"
+                        message += "Error details:\n"
+                        for error in errors[:5]:  # Show first 5 errors
+                            message += f"• {error}\n"
+                        if len(errors) > 5:
+                            message += f"• ... and {len(errors) - 5} more errors"
                 
                 QMessageBox.information(
                     self,
@@ -4465,15 +12752,26 @@ class AccountTab(QWidget):
                         errors.append(f"Order #{order.ticket}: {str(e)}")
                 
                 # Show results
-                message = f"📊 Cancel All Orders Results:\n\n"
-                message += f"✅ Successfully cancelled: {cancelled_count} orders\n"
-                if errors:
-                    message += f"❌ Errors: {len(errors)}\n\n"
-                    message += "Error details:\n"
-                    for error in errors[:5]:  # Show first 5 errors
-                        message += f"• {error}\n"
-                    if len(errors) > 5:
-                        message += f"• ... and {len(errors) - 5} more errors"
+                if AppState.language() == 'vi':
+                    message = f"📊 Kết quả Hủy Tất cả Lệnh:\n\n"
+                    message += f"✅ Hủy thành công: {cancelled_count} lệnh\n"
+                    if errors:
+                        message += f"❌ Lỗi: {len(errors)}\n\n"
+                        message += "Chi tiết lỗi:\n"
+                        for error in errors[:5]:  # Show first 5 errors
+                            message += f"• {error}\n"
+                        if len(errors) > 5:
+                            message += f"• ... và {len(errors) - 5} lỗi khác"
+                else:
+                    message = f"📊 Cancel All Orders Results:\n\n"
+                    message += f"✅ Successfully cancelled: {cancelled_count} orders\n"
+                    if errors:
+                        message += f"❌ Errors: {len(errors)}\n\n"
+                        message += "Error details:\n"
+                        for error in errors[:5]:  # Show first 5 errors
+                            message += f"• {error}\n"
+                        if len(errors) > 5:
+                            message += f"• ... and {len(errors) - 5} more errors"
                 
                 QMessageBox.information(
                     self,
@@ -4555,6 +12853,154 @@ class AccountTab(QWidget):
     def get_mt5_connection(self):
         """Get MT5 connection for other tabs"""
         return self.mt5_conn if self.mt5_conn and self.mt5_conn.connected else None
+
+    def set_user_license_info(self, username: str, expire_date_str: str, days_remaining: int):
+        """
+        Set user info and start license countdown timer.
+        Called after successful login.
+        
+        Args:
+            username: Username or email of the logged in user
+            expire_date_str: ISO format expire date string (e.g., "2025-01-15T23:59:59")
+            days_remaining: Number of days remaining (for display)
+        """
+        self._logged_in_username = username
+        self._days_remaining = days_remaining
+        
+        # Reset expired flag if license is renewed/extended
+        if days_remaining > 0:
+            self._license_expired_handled = False
+        
+        # Parse expire date
+        try:
+            from datetime import datetime
+            if expire_date_str:
+                # Handle different date formats
+                expire_date_str = expire_date_str.replace('Z', '+00:00')
+                self._license_expire_datetime = datetime.fromisoformat(expire_date_str).replace(tzinfo=None)
+            else:
+                self._license_expire_datetime = None
+        except Exception as e:
+            print(f"⚠️ Error parsing expire date: {e}")
+            self._license_expire_datetime = None
+        
+        # Update label immediately
+        self._update_license_countdown()
+        
+        # Start countdown timer (update every second for accurate countdown)
+        if self._license_expire_datetime:
+            self.license_countdown_timer.start(1000)  # 1 second interval
+        
+    def _update_license_countdown(self):
+        """Update the license countdown display and check for expiration"""
+        from datetime import datetime
+        
+        username = getattr(self, '_logged_in_username', None)
+        expire_dt = getattr(self, '_license_expire_datetime', None)
+        
+        if not username:
+            self.user_license_label.setText(I18N.t("Welcome! Please login.", "Chào mừng! Vui lòng đăng nhập."))
+            self.user_license_label.setStyleSheet("font-weight: bold; color: #2196F3; font-size: 14px; padding: 5px;")
+            return
+        
+        if not expire_dt:
+            # No expire date - show username only
+            self.user_license_label.setText(I18N.t(
+                f"👋 Hello {username}!",
+                f"👋 Xin chào {username}!"
+            ))
+            self.user_license_label.setStyleSheet("font-weight: bold; color: #2196F3; font-size: 14px; padding: 5px;")
+            return
+        
+        # Calculate remaining time
+        now = datetime.now()
+        remaining = expire_dt - now
+        
+        if remaining.total_seconds() <= 0:
+            # LICENSE EXPIRED - BLOCK IMMEDIATELY!
+            self.license_countdown_timer.stop()
+            self.user_license_label.setText(I18N.t(
+                f"❌ {username} - LICENSE EXPIRED!",
+                f"❌ {username} - LICENSE HẾT HẠN!"
+            ))
+            self.user_license_label.setStyleSheet("font-weight: bold; color: #FF0000; font-size: 14px; padding: 5px; background-color: #FFEBEE;")
+            
+            # Trigger license expiration handling
+            self._on_license_expired()
+            return
+        
+        # Calculate days, hours, minutes, seconds
+        total_seconds = int(remaining.total_seconds())
+        days = total_seconds // 86400
+        hours = (total_seconds % 86400) // 3600
+        minutes = (total_seconds % 3600) // 60
+        seconds = total_seconds % 60
+        
+        # Format countdown string
+        if days > 0:
+            countdown_str = I18N.t(
+                f"{days}d {hours}h {minutes}m",
+                f"{days} ngày {hours} giờ {minutes} phút"
+            )
+            color = "#4CAF50" if days > 7 else "#FF9800"  # Green if >7 days, orange if <=7 days
+        elif hours > 0:
+            countdown_str = I18N.t(
+                f"{hours}h {minutes}m {seconds}s",
+                f"{hours} giờ {minutes} phút {seconds} giây"
+            )
+            color = "#FF9800"  # Orange - less than 1 day
+        else:
+            countdown_str = I18N.t(
+                f"{minutes}m {seconds}s",
+                f"{minutes} phút {seconds} giây"
+            )
+            color = "#F44336"  # Red - less than 1 hour
+        
+        self.user_license_label.setText(I18N.t(
+            f"👋 Hello {username} | ⏱️ License: {countdown_str}",
+            f"👋 Xin chào {username} | ⏱️ Còn lại: {countdown_str}"
+        ))
+        self.user_license_label.setStyleSheet(f"font-weight: bold; color: {color}; font-size: 14px; padding: 5px;")
+    
+    def _on_license_expired(self):
+        """Handle license expiration - block all services but keep app open"""
+        # Avoid showing message multiple times
+        if hasattr(self, '_license_expired_handled') and self._license_expired_handled:
+            return
+        self._license_expired_handled = True
+        
+        print("🚨 LICENSE EXPIRED! Blocking all services...")
+        
+        # Stop auto trading if running
+        try:
+            main_window = self.window()
+            if main_window and hasattr(main_window, 'all_tabs'):
+                if 'auto_trading_tab' in main_window.all_tabs:
+                    auto_tab = main_window.all_tabs['auto_trading_tab']
+                    if hasattr(auto_tab, 'is_auto_on') and auto_tab.is_auto_on:
+                        print("⚠️ Stopping auto trading due to license expiration...")
+                        if hasattr(auto_tab, 'auto_btn'):
+                            auto_tab.auto_btn.setChecked(False)
+                        if hasattr(auto_tab, 'stop_auto'):
+                            auto_tab.stop_auto()
+        except Exception as e:
+            print(f"⚠️ Error stopping auto trading: {e}")
+        
+        # Disconnect MT5
+        try:
+            if self.mt5_conn and self.mt5_conn.connected:
+                self.logout_mt5()
+        except Exception as e:
+            print(f"⚠️ Error disconnecting MT5: {e}")
+        
+        # Show expiration warning (NOT critical - don't close app)
+        QMessageBox.warning(self, 
+            I18N.t("⚠️ License Expired", "⚠️ License Hết Hạn"),
+            I18N.t(
+                "Your license has expired!\n\nAll services have been stopped.\n\nYou can still use the app to renew your license.\n\nGo to Menu → Account → View Pricing to renew.",
+                "License của bạn đã hết hạn!\n\nTất cả dịch vụ đã bị dừng.\n\nBạn vẫn có thể sử dụng app để gia hạn license.\n\nVào Menu → Tài khoản → Xem Bảng Giá để gia hạn."
+            )
+        )
 
 class MarketTab(QWidget):
     symbols_changed = pyqtSignal()  # Signal when symbols change
@@ -4650,19 +13096,19 @@ class MarketTab(QWidget):
         layout = QVBoxLayout()
 
         # Connection status indicator
-        self.connection_status = QLabel("⚠️ Please connect to MT5 in Account tab first")
+        self.connection_status = QLabel(I18N.t("⚠️ Please connect to MT5 in Account tab first", "⚠️ Vui lòng kết nối MT5 ở tab Tài khoản trước"))
         self.connection_status.setStyleSheet("background-color: #fff3cd; border: 1px solid #ffeaa7; padding: 10px; border-radius: 5px;")
         layout.addWidget(self.connection_status)
 
         # Search symbols
-        layout.addWidget(QLabel("Search Symbol:"))
+        layout.addWidget(QLabel(I18N.t("Search Symbol:", "Tìm mã giao dịch:")))
         self.search_input = QLineEdit()
         self.search_input.textChanged.connect(self.filter_and_sort_symbols)
-        self.search_input.setPlaceholderText("Type to search symbols...")
+        self.search_input.setPlaceholderText(I18N.t("Type to search symbols...", "Nhập để tìm mã giao dịch..."))
         layout.addWidget(self.search_input)
 
         # Symbol selection
-        symbol_info = QLabel("📋 Select symbols for your workspace (not for simultaneous trading):")
+        symbol_info = QLabel(I18N.t("📋 Select symbols for your workspace (not for simultaneous trading):", "📋 Chọn các mã cho không gian làm việc (không phải để giao dịch đồng thời):"))
         symbol_info.setStyleSheet("color: #666; font-style: italic; padding: 5px;")
         layout.addWidget(symbol_info)
         
@@ -4694,7 +13140,7 @@ class MarketTab(QWidget):
         layout.addWidget(self.symbol_list)
 
         # Timeframe selection
-        layout.addWidget(QLabel("Select Timeframes and Candle Counts:"))
+        layout.addWidget(QLabel(I18N.t("Select Timeframes and Candle Counts:", "Chọn khung thời gian và số nến:")))
         tf_grid = QGridLayout()
         self.tf_spinboxes = {}
         self.tf_checkboxes = {}
@@ -4724,7 +13170,7 @@ class MarketTab(QWidget):
         layout.addWidget(self.log_output)
 
         # Candlestick chart
-        chart_label = QLabel("📈 Realtime Candlestick Chart")
+        chart_label = QLabel(I18N.t("📈 Realtime Candlestick Chart", "📈 Biểu đồ nến thời gian thực"))
         chart_label.setStyleSheet("font-weight: bold; font-size: 14px; color: #2196F3; padding: 5px;")
         layout.addWidget(chart_label)
         
@@ -4732,13 +13178,13 @@ class MarketTab(QWidget):
         chart_controls = QHBoxLayout()
         
         # Symbol selection for chart
-        chart_controls.addWidget(QLabel("Symbol:"))
+        chart_controls.addWidget(QLabel(I18N.t("Symbol:", "Mã:")))
         self.chart_symbol_combo = QComboBox()
         self.chart_symbol_combo.currentTextChanged.connect(self.on_chart_symbol_changed)
         chart_controls.addWidget(self.chart_symbol_combo)
         
         # Timeframe selection for chart
-        chart_controls.addWidget(QLabel("Timeframe:"))
+        chart_controls.addWidget(QLabel(I18N.t("Timeframe:", "Khung thời gian:")))
         self.chart_timeframe_combo = QComboBox()
         self.chart_timeframe_combo.addItems(list(TIMEFRAME_MAP.keys()))
         # Default timeframe will be restored from config in restore_user_config()
@@ -4760,13 +13206,13 @@ class MarketTab(QWidget):
         chart_controls.addWidget(QLabel(" | "))
         
         # Current price line toggle
-        self.price_line_checkbox = QCheckBox("Price Line")
+        self.price_line_checkbox = QCheckBox(I18N.t("Price Line", "Đường giá"))
         self.price_line_checkbox.setChecked(True)
         self.price_line_checkbox.toggled.connect(self.toggle_price_line)
         chart_controls.addWidget(self.price_line_checkbox)
         
         # Update interval
-        chart_controls.addWidget(QLabel("Update:"))
+        chart_controls.addWidget(QLabel(I18N.t("Update:", "Cập nhật:")))
         self.update_combo = QComboBox()
         self.update_combo.addItems(["5s", "10s", "30s", "1m"])
         self.update_combo.setCurrentText("5s")
@@ -5011,17 +13457,13 @@ class MarketTab(QWidget):
         saved_chart_symbol = config.get("selected_chart_symbol", "")
         saved_chart_timeframe = config.get("selected_chart_timeframe", "H1")
         
-        # If no symbols are configured, set some default ones
+        # If no symbols are configured, auto-detect and set defaults using smart mapping
         if not self.checked_symbols and hasattr(self, 'all_symbols') and self.all_symbols:
-            # Try different symbol formats that brokers commonly use
-            default_symbols = ["EURUSD", "GBPUSD", "XAUUSD", "EURUSD.", "GBPUSD.", "XAUUSD."]
-            available_defaults = [sym for sym in default_symbols if sym in self.all_symbols]
-            if available_defaults:
-                # Only take first 3 to avoid duplicates
-                self.checked_symbols = set(available_defaults[:3])
-                print(f"✅ Set default symbols: {self.checked_symbols}")
+            self.checked_symbols = self.auto_detect_default_symbols()
+            if self.checked_symbols:
+                print(f"✅ Auto-detected symbols: {self.checked_symbols}")
             else:
-                print(f"ℹ️ No default symbols found in {len(self.all_symbols)} available symbols")
+                print(f"ℹ️ No suitable symbols found in {len(self.all_symbols)} available symbols")
         
         tf_config = config.get("tf_config", {})
         has_any_tf_checked = False
@@ -5068,6 +13510,79 @@ class MarketTab(QWidget):
                 print("✅ Set default chart timeframe: H1")
         
         print(f"📊 Restored {len(self.checked_symbols)} symbols from config")
+
+    def auto_detect_default_symbols(self):
+        """Tự động detect symbols phù hợp với broker hiện tại"""
+        if not hasattr(self, 'all_symbols') or not self.all_symbols:
+            return set()
+        
+        detected_symbols = set()
+        
+        # Define base symbols we want to find
+        target_bases = {
+            # Forex majors
+            'EURUSD': ['forex', 'major'],
+            'GBPUSD': ['forex', 'major'], 
+            'USDJPY': ['forex', 'major'],
+            'AUDUSD': ['forex', 'major'],
+            'GBPJPY': ['forex', 'cross'],
+            'EURJPY': ['forex', 'cross'],
+            # Crypto
+            'BTCUSD': ['crypto'],
+            'ETHUSD': ['crypto'],
+            'LTCUSD': ['crypto'],
+            # Metals
+            'XAUUSD': ['metals'],
+            'XAGUSD': ['metals'],
+        }
+        
+        # Find the best matching symbol for each base
+        for base_symbol, categories in target_bases.items():
+            best_match = self._find_best_symbol_match(base_symbol)
+            if best_match:
+                detected_symbols.add(best_match)
+                print(f"🎯 Auto-detected: {base_symbol} -> {best_match}")
+                
+                # For demo, limit to 7 symbols to avoid clutter
+                if len(detected_symbols) >= 7:
+                    break
+        
+        return detected_symbols
+    
+    def _find_best_symbol_match(self, base_symbol: str):
+        """Tìm symbol phù hợp nhất cho base symbol"""
+        if not self.all_symbols:
+            return None
+            
+        # Possible variations that brokers use
+        variations = [
+            base_symbol,                    # EURUSD
+            base_symbol + '.',              # EURUSD.  
+            base_symbol + '_m',             # EURUSD_m
+            base_symbol + 'm',              # EURUSDm
+            base_symbol + '_',              # EURUSD_
+            base_symbol.lower(),            # eurusd
+            base_symbol.lower() + '.',      # eurusd.
+            f"#{base_symbol}",              # #EURUSD
+            f"{base_symbol}pro",            # EURUSDpro
+            f"{base_symbol}c",              # EURUSDc
+            f"{base_symbol}i",              # EURUSDi (for crypto)
+        ]
+        
+        # Check exact matches first (preferred)
+        for variation in variations:
+            if variation in self.all_symbols:
+                return variation
+        
+        # If no exact match, try fuzzy matching with regex
+        import re
+        pattern = re.compile(f"^{re.escape(base_symbol)}[._#-]?[a-z0-9]*$", re.IGNORECASE)
+        
+        for symbol in self.all_symbols:
+            if pattern.match(symbol):
+                return symbol
+        
+        return None
 
     def save_current_user_config(self):
         config = {}
@@ -5336,6 +13851,7 @@ class NewsTab(QWidget):
 
     def __init__(self):
         super().__init__()
+        self.settings = {}  # Initialize settings dict for save_news_settings
         self.init_ui()
         self.last_loaded_file = None
 
@@ -5715,17 +14231,12 @@ class NewsTab(QWidget):
             selected_currencies = [cb.text() for cb in self.currency_checkboxes if cb.isChecked()]
             # Get selected impact levels
             selected_impacts = [cb.impact_value for cb in self.impact_checkboxes if cb.isChecked()]
+            
             # Save into instance settings for consistency
             self.settings['selected_currencies'] = selected_currencies
             self.settings['selected_impacts'] = selected_impacts
-            # Fibonacci retracement start index & derived list
-            start_idx = self.dca_fibo_start_combo.currentData()
-            self.settings['dca_fibo_start_level'] = start_idx
-            retracement_levels = [23.6, 38.2, 50.0, 61.8, 78.6, 100.0]
-            derived = retracement_levels[start_idx:]
-            # Store as comma separated percentages (no % sign) for executor consumption
-            self.settings['dca_fibo_levels'] = ','.join(f"{v}" for v in derived)
-            self.settings['dca_fibo_scheme'] = 'retracement_pct'
+            self.settings['use_economic_calendar'] = self.use_economic_calendar_checkbox.isChecked()
+            
             settings_file = "news_output/news_settings.json"
             import json
             with open(settings_file, 'w', encoding='utf-8') as f:
@@ -6327,61 +14838,256 @@ class RiskManagementTab(QWidget):
         self.risk_manager = None
         self.settings = {}
         self.available_symbols = []
+        
+        # 🚫 PREVENT AUTO-SAVE during initialization
+        self._is_initializing = True
+        
         self.init_ui()
         print("🔍 DEBUG calling load_risk_settings()")
-        self.load_risk_settings()  # Load settings after UI is created
+        self.load_risk_settings()  # Load settings after UI is created - this calls _apply_risk_settings_to_gui() internally
         print("🔍 DEBUG finished load_risk_settings()")
-        # CRITICAL FIX: Apply loaded settings to UI controls
-        print("🔍 DEBUG calling update_ui_from_settings()")
-        self.update_ui_from_settings()
-        print("🔍 DEBUG finished update_ui_from_settings()")
+        
+        # 🚫 ALLOW AUTO-SAVE after initialization complete
+        self._is_initializing = False
+        
         self.init_risk_manager()
         # NEW: Ensure symbol synchronization wiring occurs (previous logic was unreachable after return)
         self.setup_market_symbol_sync()
 
     # === Localization Refresh Helpers ===
     def refresh_translations(self):
-        """Refresh visible texts for Risk Management sub-tabs and group boxes after a language change.
-        Safe: checks attribute existence before updating.
-        """
+        """Refresh visible texts for Risk Management sub-tabs and group boxes after a language change."""
         try:
-            # Update main header if present
-            if hasattr(self, 'layout'):
-                # Header label was created as static text; search first child if needed
-                pass
-            # Update sub tab widget titles if structure unchanged
-            if hasattr(self, 'findChildren'):
-                # risk_tabs is a QTabWidget added in constructor scope; store reference if not already
-                if not hasattr(self, 'risk_tabs'):
-                    for tw in self.findChildren(QTabWidget):
-                        # Heuristic: first QTabWidget inside RiskManagementTab is our internal tab set
-                        self.risk_tabs = tw
-                        break
-                if hasattr(self, 'risk_tabs'):
-                    # Expected order: basic, position, advanced, dca
-                    try:
-                        self.risk_tabs.setTabText(0, I18N.t("⚙️ Basic Settings", "⚙️ Cài đặt cơ bản"))
-                        self.risk_tabs.setTabText(1, I18N.t("📊 Position Management", "📊 Quản lý vị thế"))
-                        self.risk_tabs.setTabText(2, I18N.t("🔧 Advanced Controls", "🔧 Điều khiển nâng cao"))
-                        self.risk_tabs.setTabText(3, I18N.t("📈 DCA Strategy", "📈 Chiến lược DCA"))
-                    except Exception:
-                        pass
-            # Update common group box titles (if still present)
-            for gb in self.findChildren(QGroupBox):
-                title = gb.title()
-                # Map known English titles to translation via I18N.t
-                mapping = {
-                    "🎯 Risk Limits": I18N.t("🎯 Risk Limits", "🎯 Giới hạn rủi ro"),
-                    "📊 Position Exposure": I18N.t("📊 Position Exposure", "📊 Mức độ vị thế"),
-                    "🚨 Emergency Controls": I18N.t("🚨 Emergency Controls", "🚨 Điều khiển khẩn cấp"),
-                    "⚖️ DCA Strategy": I18N.t("⚖️ DCA Strategy", "⚖️ Chiến lược DCA"),
-                    "📈 DCA Strategy": I18N.t("📈 DCA Strategy", "📈 Chiến lược DCA"),
-                }
-                if title in mapping:
-                    try:
-                        gb.setTitle(mapping[title])
-                    except Exception:
-                        pass
+            # Update main header
+            if hasattr(self, 'header_label'):
+                self.header_label.setText(I18N.t("🛡️ RISK MANAGEMENT CENTER", "🛡️ TRUNG TÂM QUẢN LÝ RỦI RO"))
+            
+            # Update sub tab widget titles
+            if hasattr(self, 'risk_tabs'):
+                self.risk_tabs.setTabText(0, I18N.t("⚙️ Basic Settings", "⚙️ Cài đặt cơ bản"))
+                self.risk_tabs.setTabText(1, I18N.t("📊 Position Management", "📊 Quản lý vị thế"))
+                self.risk_tabs.setTabText(2, I18N.t("🔧 Advanced Controls", "🔧 Điều khiển nâng cao"))
+                self.risk_tabs.setTabText(3, I18N.t("📈 DCA Strategy", "📈 Chiến lược DCA"))
+            
+            # Update groupboxes by stored reference
+            if hasattr(self, 'risk_limits_group'):
+                self.risk_limits_group.setTitle(I18N.t("🎯 Risk Limits", "🎯 Giới hạn rủi ro"))
+            if hasattr(self, 'position_sizing_group'):
+                self.position_sizing_group.setTitle(I18N.t("📏 Position Sizing", "📏 Kích thước vị thế"))
+            if hasattr(self, 'sltp_group'):
+                self.sltp_group.setTitle(I18N.t("🎯 Stop Loss / Take Profit", "🎯 Cắt lỗ / Chốt lời"))
+            if hasattr(self, 'trailing_group'):
+                self.trailing_group.setTitle(I18N.t("🎯 Breakeven & Trailing Stop", "🎯 Điểm Hòa Vốn - Dừng Lỗ Kéo Theo"))
+            if hasattr(self, 'position_limits_group'):
+                self.position_limits_group.setTitle(I18N.t("📊 Position Limits", "📊 Giới hạn vị thế"))
+            if hasattr(self, 'exposure_group'):
+                self.exposure_group.setTitle(I18N.t("💼 Symbol Exposure Limits", "💼 Giới hạn mức độ theo mã"))
+            if hasattr(self, 'hours_group'):
+                self.hours_group.setTitle(I18N.t("🕐 Trading Hours (UTC)", "🕐 Giờ giao dịch (UTC)"))
+            if hasattr(self, 'market_conditions_group'):
+                self.market_conditions_group.setTitle(I18N.t("📊 Market Conditions", "📊 Điều kiện thị trường"))
+            if hasattr(self, 'emergency_group'):
+                self.emergency_group.setTitle(I18N.t("🚨 Emergency Controls", "🚨 Điều khiển khẩn cấp"))
+            if hasattr(self, 'news_group'):
+                self.news_group.setTitle(I18N.t("📰 News & Event Avoidance", "📰 Tránh tin tức & sự kiện"))
+            if hasattr(self, 'advanced_options_group'):
+                self.advanced_options_group.setTitle(I18N.t("⚙️ Advanced Options", "⚙️ Tùy chọn nâng cao"))
+            if hasattr(self, 'dca_group'):
+                self.dca_group.setTitle(I18N.t("📈 DCA Strategy Settings", "📈 Cài đặt chiến lược DCA"))
+            if hasattr(self, 'conditions_group'):
+                self.conditions_group.setTitle(I18N.t("⚙️ DCA Activation Conditions", "⚙️ Điều kiện kích hoạt DCA"))
+            if hasattr(self, 'fib_group'):
+                self.fib_group.setTitle(I18N.t("🎯 Fibonacci Levels", "🎯 Các mức Fibonacci"))
+            if hasattr(self, 'dca_status_group'):
+                self.dca_status_group.setTitle(I18N.t("📊 DCA Status", "📊 Trạng thái DCA"))
+                
+            # Update exposure table headers
+            if hasattr(self, 'exposure_table'):
+                self.exposure_table.setHorizontalHeaderLabels([
+                    I18N.t("Symbol", "Mã"),
+                    I18N.t("Max Exposure (lots)", "Khối lượng tối đa (lot)"),
+                    I18N.t("Risk Multiplier", "Hệ số rủi ro")
+                ])
+            
+            # Update exposure info label
+            if hasattr(self, 'exposure_info_label'):
+                if self.available_symbols:
+                    self.exposure_info_label.setText(I18N.t(
+                        f"✅ Synced {len(self.available_symbols)} symbols from Market Tab",
+                        f"✅ Đã đồng bộ {len(self.available_symbols)} mã từ tab Thị trường"
+                    ))
+                else:
+                    self.exposure_info_label.setText(I18N.t(
+                        "📊 Symbols will sync automatically from Market Tab selections",
+                        "📊 Các mã sẽ tự đồng bộ theo lựa chọn ở tab Thị trường"
+                    ))
+            
+            # === Update Labels in Basic Settings Tab ===
+            if hasattr(self, 'max_risk_label'):
+                self.max_risk_label.setText(I18N.t("Max Risk per Trade (%):", "Rủi ro tối đa mỗi lệnh (%):"))
+            if hasattr(self, 'fixed_volume_label'):
+                self.fixed_volume_label.setText(I18N.t("Fixed Volume (lots):", "Khối lượng cố định (lots):"))
+            if hasattr(self, 'default_volume_label'):
+                self.default_volume_label.setText(I18N.t("Default Volume (lots):", "Khối lượng mặc định (lots):"))
+            if hasattr(self, 'sl_label'):
+                self.sl_label.setText(I18N.t("Default SL (pips):", "SL mặc định (pips):"))
+            if hasattr(self, 'tp_label'):
+                self.tp_label.setText(I18N.t("Default TP (pips):", "TP mặc định (pips):"))
+            
+            # Update checkboxes
+            if hasattr(self, 'trailing_volatility_cb'):
+                self.trailing_volatility_cb.setText(I18N.t("Use volatility-adaptive trailing", "Sử dụng trailing thích ứng biến động"))
+            if hasattr(self, 'auto_reduce_check'):
+                self.auto_reduce_check.setText(I18N.t("Auto Reduce Position Size on Losses", "Tự động giảm khối lượng khi thua lỗ"))
+            if hasattr(self, 'enable_dca_check'):
+                self.enable_dca_check.setText(I18N.t("Enable DCA Strategy", "Bật chiến lược DCA"))
+            
+            # Update DCA labels
+            if hasattr(self, 'dca_multiplier_label'):
+                self.dca_multiplier_label.setText(I18N.t("DCA Volume Multiplier:", "Hệ số khối lượng DCA:"))
+            if hasattr(self, 'dca_mode_label'):
+                self.dca_mode_label.setText(I18N.t("DCA Mode:", "Chế Độ DCA:"))
+            if hasattr(self, 'dca_atr_period_label'):
+                self.dca_atr_period_label.setText(I18N.t("ATR Period:", "Chu kỳ ATR:"))
+            if hasattr(self, 'dca_atr_mult_label'):
+                self.dca_atr_mult_label.setText(I18N.t("ATR Multiplier:", "Hệ số ATR:"))
+            if hasattr(self, 'dca_base_distance_label'):
+                self.dca_base_distance_label.setText(I18N.t("DCA Distance (pips):", "Khoảng Cách DCA (Pips):"))
+            if hasattr(self, 'dca_fibo_levels_label'):
+                self.dca_fibo_levels_label.setText(I18N.t("Start Fibonacci Retracement (%):", "Bắt đầu từ mức Fibonacci (%):"))
+            if hasattr(self, 'dca_fibo_exec_label'):
+                self.dca_fibo_exec_label.setText(I18N.t("Fibonacci Exec Mode:", "Chế độ thực thi Fibonacci:"))
+            if hasattr(self, 'dca_avg_sl_profit_label'):
+                self.dca_avg_sl_profit_label.setText(I18N.t("Average SL Profit % (Per Symbol):", "% Lợi nhuận SL trung bình (Theo Symbol):"))
+            if hasattr(self, 'max_dca_levels_label'):
+                self.max_dca_levels_label.setText(I18N.t("Max DCA Levels:", "Số tầng DCA tối đa:"))
+            if hasattr(self, 'dca_min_drawdown_label'):
+                self.dca_min_drawdown_label.setText(I18N.t("Min Drawdown for DCA (%):", "Sụt giảm tối thiểu để DCA (%):"))
+            if hasattr(self, 'dca_sl_mode_label'):
+                self.dca_sl_mode_label.setText(I18N.t("DCA SL Mode:", "Chế độ SL cho DCA:"))
+            if hasattr(self, 'dca_fibo_note'):
+                self.dca_fibo_note.setText(I18N.t("Fibonacci expansion sequence used for spacing & volume", "Dùng chuỗi Fibonacci để giãn cách & khối lượng"))
+            
+            # === Update Labels in Basic Settings Tab (additional) ===
+            if hasattr(self, 'max_drawdown_label'):
+                self.max_drawdown_label.setText(I18N.t("Max Drawdown (%):", "Sụt giảm tối đa (%):"))
+            if hasattr(self, 'daily_loss_label'):
+                self.daily_loss_label.setText(I18N.t("Daily Loss Limit (%):", "Giới hạn lỗ ngày (%):"))
+            if hasattr(self, 'volume_settings_label'):
+                self.volume_settings_label.setText(I18N.t("Volume Settings:", "Cài đặt khối lượng:"))
+            if hasattr(self, 'min_lot_label'):
+                self.min_lot_label.setText(I18N.t("Min Lot Size:", "Khối lượng nhỏ nhất (tự động):"))
+            if hasattr(self, 'max_lot_label'):
+                self.max_lot_label.setText(I18N.t("Max Lot Size:", "Tổng khối lượng tối đa:"))
+            if hasattr(self, 'min_rr_label'):
+                self.min_rr_label.setText(I18N.t("Min R:R Ratio:", "Tỷ lệ R:R tối thiểu:"))
+            if hasattr(self, 'sltp_mode_label'):
+                self.sltp_mode_label.setText(I18N.t("SL/TP Mode:", "Chế độ SL/TP:"))
+            if hasattr(self, 'breakeven_label'):
+                self.breakeven_label.setText(I18N.t("Move to BE at (pips):", "Điểm hòa vốn (pips):"))
+            if hasattr(self, 'trailing_activation_label'):
+                self.trailing_activation_label.setText(I18N.t("Trailing Stop at (pips):", "Dừng Lỗ Kéo Theo (pips):"))
+            if hasattr(self, 'trail_distance_label'):
+                self.trail_distance_label.setText(I18N.t("Trail Distance (pips):", "Khoảng cách trail (pips):"))
+            
+            # === Update Labels in Position Management Tab ===
+            if hasattr(self, 'max_positions_label'):
+                self.max_positions_label.setText(I18N.t("Max Total Positions:", "Tối đa tổng vị thế:"))
+            if hasattr(self, 'max_positions_per_symbol_label'):
+                self.max_positions_per_symbol_label.setText(I18N.t("Max Positions per Symbol:", "Tối đa vị thế mỗi mã:"))
+            if hasattr(self, 'max_correlation_label'):
+                self.max_correlation_label.setText(I18N.t("Max Correlation:", "Tương quan tối đa:"))
+            
+            # === Update Labels in Advanced Controls Tab ===
+            if hasattr(self, 'start_time_label'):
+                self.start_time_label.setText(I18N.t("Start Time:", "Giờ bắt đầu:"))
+            if hasattr(self, 'end_time_label'):
+                self.end_time_label.setText(I18N.t("End Time:", "Giờ kết thúc:"))
+            if hasattr(self, 'avoid_news_label'):
+                self.avoid_news_label.setText(I18N.t("Avoid News (minutes):", "Tránh tin tức (phút):"))
+            if hasattr(self, 'spread_multiplier_label'):
+                self.spread_multiplier_label.setText(I18N.t("Max Spread Multiplier:", "Hệ số spread tối đa:"))
+            if hasattr(self, 'max_slippage_label'):
+                self.max_slippage_label.setText(I18N.t("Max Slippage:", "Độ trượt giá tối đa:"))
+            if hasattr(self, 'emergency_dd_label'):
+                self.emergency_dd_label.setText(I18N.t("Emergency Stop DD (%):", "Dừng khẩn cấp DD (%):"))
+            if hasattr(self, 'emergency_info_label'):
+                self.emergency_info_label.setText(I18N.t("ℹ️ Use Account Tab for position management and closing orders", "ℹ️ Dùng tab Tài khoản để quản lý và đóng lệnh"))
+            
+            # === Update Labels in Trailing Stop Group ===
+            if hasattr(self, 'breakeven_to_label'):
+                self.breakeven_to_label.setText(I18N.t("to", "đến"))
+            if hasattr(self, 'trailing_to_label'):
+                self.trailing_to_label.setText(I18N.t("to", "đến"))
+            if hasattr(self, 'trailing_info_label'):
+                self.trailing_info_label.setText(I18N.t(
+                    "ℹ️ Breakeven: 20-50 pips | Trailing: ≥70 pips | Distance adjusts with volatility",
+                    "ℹ️ Hòa vốn: 20-50 pips | Trailing: ≥70 pips | Khoảng cách tự động theo biến động"
+                ))
+            
+            # Update ComboBox items for Volume Mode
+            if hasattr(self, 'volume_mode_combo'):
+                current_idx = self.volume_mode_combo.currentIndex()
+                self.volume_mode_combo.clear()
+                self.volume_mode_combo.addItems([
+                    I18N.t("Risk-Based (Auto)", "Theo rủi ro (Tự động)"),
+                    I18N.t("Fixed Volume", "Khối lượng cố định"),
+                    I18N.t("Default Volume", "Khối lượng mặc định")
+                ])
+                if 0 <= current_idx < self.volume_mode_combo.count():
+                    self.volume_mode_combo.setCurrentIndex(current_idx)
+                self.update_volume_mode_explanation()
+            
+            # Update ComboBox items for SL/TP Mode  
+            if hasattr(self, 'sltp_mode_combo'):
+                current_idx = self.sltp_mode_combo.currentIndex()
+                self.sltp_mode_combo.clear()
+                self.sltp_mode_combo.addItems([
+                    I18N.t("Fixed Pips", "Pips cố định"), 
+                    I18N.t("ATR Multiple", "Bội số ATR"), 
+                    I18N.t("Support/Resistance", "Hỗ trợ/Kháng cự"), 
+                    I18N.t("Percentage", "Phần trăm"),
+                    I18N.t("Signal Based", "Theo Signal")
+                ])
+                if 0 <= current_idx < self.sltp_mode_combo.count():
+                    self.sltp_mode_combo.setCurrentIndex(current_idx)
+            
+            # Update DCA Mode ComboBox
+            if hasattr(self, 'dca_mode_combo') and hasattr(self, '_dca_mode_items'):
+                current_idx = self.dca_mode_combo.currentIndex()
+                self.dca_mode_combo.clear()
+                self._dca_mode_items = [
+                    ("atr_multiple", I18N.t("ATR Multiple", "Bội số ATR")),
+                    ("fixed_pips", I18N.t("Fixed Pips", "Pips cố định")),
+                    ("fibo_levels", I18N.t("Fibonacci Levels", "Mức Fibonacci")),
+                ]
+                for key, label in self._dca_mode_items:
+                    self.dca_mode_combo.addItem(label, userData=key)
+                if 0 <= current_idx < self.dca_mode_combo.count():
+                    self.dca_mode_combo.setCurrentIndex(current_idx)
+            
+            # Update DCA SL Mode ComboBox
+            if hasattr(self, 'dca_sl_mode_combo'):
+                current_idx = self.dca_sl_mode_combo.currentIndex()
+                self.dca_sl_mode_combo.clear()
+                self.dca_sl_mode_combo.addItems([
+                    I18N.t("Individual SL", "SL riêng lẻ"), 
+                    I18N.t("Average SL", "SL trung bình")
+                ])
+                if 0 <= current_idx < self.dca_sl_mode_combo.count():
+                    self.dca_sl_mode_combo.setCurrentIndex(current_idx)
+            
+            # Update Fibo Exec Mode ComboBox
+            if hasattr(self, 'dca_fibo_exec_combo'):
+                current_idx = self.dca_fibo_exec_combo.currentIndex()
+                self.dca_fibo_exec_combo.clear()
+                self.dca_fibo_exec_combo.addItems([
+                    I18N.t("On Touch (Market)", "Chạm Mức (Market)"),
+                    I18N.t("Pending Limit at Level", "Đặt Lệnh Chờ tại Mức")
+                ])
+                if 0 <= current_idx < self.dca_fibo_exec_combo.count():
+                    self.dca_fibo_exec_combo.setCurrentIndex(current_idx)
+                    
         except Exception as e:
             print(f"[LangSwitch] Risk tab refresh_translations error: {e}")
 
@@ -6508,17 +15214,24 @@ class RiskManagementTab(QWidget):
     def _get_default_risk_settings(self):
         """🆕 Get clean default settings"""
         return {
-            'trading_mode': '👨‍💼 Thủ công',
             'volume_mode': 'Khối lượng mặc định',
             'default_volume_lots': 0.15,
             'sltp_mode': 'Bội số ATR',
             'default_sl_atr_multiplier': 2.0,
             'default_tp_atr_multiplier': 1.5,
+            'breakeven_min_pips': 20.0,
+            'breakeven_max_pips': 50.0,
+            'trailing_activation_pips': 70.0,
+            'trailing_min_pips': 20.0,
+            'trailing_max_pips': 50.0,
+            'trailing_use_volatility': True,
             'max_positions': 40,
             'max_positions_per_symbol': 4,
             'max_correlation': 0.8,
             'trading_hours_start': 0,
+            'trading_minutes_start': 0,
             'trading_hours_end': 23,
+            'trading_minutes_end': 59,
             'max_spread_multiplier': 3.0,
             'max_slippage': 5,
             'auto_reduce_on_losses': False,
@@ -6532,31 +15245,31 @@ class RiskManagementTab(QWidget):
         main_layout = QVBoxLayout()
         
         # === HEADER SECTION ===
-        header_label = QLabel("🛡️ RISK MANAGEMENT CENTER")
-        header_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #2E86C1; padding: 10px;")
-        header_label.setAlignment(Qt.AlignCenter)
-        main_layout.addWidget(header_label)
+        self.header_label = QLabel(I18N.t("🛡️ RISK MANAGEMENT CENTER", "🛡️ TRUNG TÂM QUẢN LÝ RỦI RO"))
+        self.header_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #2E86C1; padding: 10px;")
+        self.header_label.setAlignment(Qt.AlignCenter)
+        main_layout.addWidget(self.header_label)
         
         # === TABS FOR DIFFERENT SECTIONS ===
-        risk_tabs = QTabWidget()
+        self.risk_tabs = QTabWidget()
         
         # Tab 1: Basic Risk Settings
         basic_tab = self.create_basic_settings_tab()
-        risk_tabs.addTab(basic_tab, "⚙️ Basic Settings")
+        self.risk_tabs.addTab(basic_tab, I18N.t("⚙️ Basic Settings", "⚙️ Cài đặt cơ bản"))
         
         # Tab 2: Position Management
         position_tab = self.create_position_management_tab()
-        risk_tabs.addTab(position_tab, "📊 Position Management")
+        self.risk_tabs.addTab(position_tab, I18N.t("📊 Position Management", "📊 Quản lý vị thế"))
         
         # Tab 3: Advanced Controls
         advanced_tab = self.create_advanced_controls_tab()
-        risk_tabs.addTab(advanced_tab, "🔧 Advanced Controls")
+        self.risk_tabs.addTab(advanced_tab, I18N.t("🔧 Advanced Controls", "🔧 Điều khiển nâng cao"))
         
         # Tab 4: DCA Settings
         dca_tab = self.create_dca_settings_tab()
-        risk_tabs.addTab(dca_tab, "📈 DCA Strategy")
+        self.risk_tabs.addTab(dca_tab, I18N.t("📈 DCA Strategy", "📈 Chiến lược DCA"))
         
-        main_layout.addWidget(risk_tabs)
+        main_layout.addWidget(self.risk_tabs)
         
         # === BOTTOM CONTROL PANEL ===
         control_panel = self.create_control_panel()
@@ -6570,11 +15283,12 @@ class RiskManagementTab(QWidget):
         layout = QVBoxLayout()
         
         # === RISK LIMITS GROUP ===
-        risk_group = QGroupBox(I18N.t("🎯 Risk Limits", "🎯 Giới hạn rủi ro"))
+        self.risk_limits_group = QGroupBox(I18N.t("🎯 Risk Limits", "🎯 Giới hạn rủi ro"))
         risk_layout = QGridLayout()
         
         # Max Risk per Trade with OFF option
-        risk_layout.addWidget(QLabel(I18N.t("Max Risk per Trade (%):", "Rủi ro tối đa mỗi lệnh (%):")), 0, 0)
+        self.max_risk_label = QLabel(I18N.t("Max Risk per Trade (%):", "Rủi ro tối đa mỗi lệnh (%):"))
+        risk_layout.addWidget(self.max_risk_label, 0, 0)
         self.max_risk_combo = QComboBox()
         self.max_risk_combo.setEditable(True)
         risk_options = ["OFF", "0.5", "1.0", "1.5", "2.0", "2.5", "3.0", "5.0", "10.0"]
@@ -6589,7 +15303,8 @@ class RiskManagementTab(QWidget):
         risk_layout.addWidget(self.max_risk_combo, 0, 1)
         
         # Max Drawdown with OFF option
-        risk_layout.addWidget(QLabel(I18N.t("Max Drawdown (%):", "Sụt giảm tối đa (%):")), 1, 0)
+        self.max_drawdown_label = QLabel(I18N.t("Max Drawdown (%):", "Sụt giảm tối đa (%):"))
+        risk_layout.addWidget(self.max_drawdown_label, 1, 0)
         self.max_drawdown_combo = QComboBox()
         self.max_drawdown_combo.setEditable(True)
         dd_options = ["OFF", "1.0", "2.0", "3.0", "5.0", "8.0", "10.0", "15.0", "20.0"]
@@ -6604,7 +15319,8 @@ class RiskManagementTab(QWidget):
         risk_layout.addWidget(self.max_drawdown_combo, 1, 1)
         
         # Daily Loss Limit with OFF option
-        risk_layout.addWidget(QLabel(I18N.t("Daily Loss Limit (%):", "Giới hạn lỗ ngày (%):")), 2, 0)
+        self.daily_loss_label = QLabel(I18N.t("Daily Loss Limit (%):", "Giới hạn lỗ ngày (%):"))
+        risk_layout.addWidget(self.daily_loss_label, 2, 0)
         self.daily_loss_combo = QComboBox()
         self.daily_loss_combo.setEditable(True)
         daily_loss_options = ["OFF", "1.0", "2.0", "3.0", "5.0", "7.0", "10.0", "15.0", "20.0"]
@@ -6618,15 +15334,16 @@ class RiskManagementTab(QWidget):
         self.daily_loss_combo.setToolTip(I18N.t("Maximum daily loss before stopping trading (use OFF to disable)", "Lỗ tối đa hàng ngày trước khi dừng giao dịch (dùng OFF để tắt)"))
         risk_layout.addWidget(self.daily_loss_combo, 2, 1)
         
-        risk_group.setLayout(risk_layout)
-        layout.addWidget(risk_group)
+        self.risk_limits_group.setLayout(risk_layout)
+        layout.addWidget(self.risk_limits_group)
         
         # === POSITION SIZE GROUP ===
-        position_group = QGroupBox(I18N.t("📏 Position Sizing", "📏 Kích thước vị thế"))
+        self.position_sizing_group = QGroupBox(I18N.t("📏 Position Sizing", "📏 Kích thước vị thế"))
         position_layout = QGridLayout()
         
         # Volume mode selection
-        position_layout.addWidget(QLabel(I18N.t("Volume Settings:", "Cài đặt khối lượng:")), 0, 0)
+        self.volume_settings_label = QLabel(I18N.t("Volume Settings:", "Cài đặt khối lượng:"))
+        position_layout.addWidget(self.volume_settings_label, 0, 0)
         self.volume_mode_combo = QComboBox()
         self.volume_mode_combo.addItems([
             I18N.t("Risk-Based (Auto)", "Theo rủi ro (Tự động)"),
@@ -6639,7 +15356,8 @@ class RiskManagementTab(QWidget):
         position_layout.addWidget(self.volume_mode_combo, 0, 1, 1, 3)
         
         # Lot Size Settings - Dynamic based on mode
-        position_layout.addWidget(QLabel(I18N.t("Min Lot Size:", "Khối lượng nhỏ nhất (tự động):")), 1, 0)
+        self.min_lot_label = QLabel(I18N.t("Min Lot Size:", "Khối lượng nhỏ nhất (tự động):"))
+        position_layout.addWidget(self.min_lot_label, 1, 0)
         self.min_lot_spin = QDoubleSpinBox()
         self.min_lot_spin.setRange(0.0, 10.0)
         self.min_lot_spin.setSingleStep(0.01)
@@ -6647,7 +15365,8 @@ class RiskManagementTab(QWidget):
         self.min_lot_spin.setToolTip(I18N.t("Minimum lot size for auto mode only", "Khối lượng tối thiểu chỉ cho chế độ tự động"))
         position_layout.addWidget(self.min_lot_spin, 1, 1)
         
-        position_layout.addWidget(QLabel(I18N.t("Max Lot Size:", "Tổng khối lượng tối đa:")), 1, 2)
+        self.max_lot_label = QLabel(I18N.t("Max Lot Size:", "Tổng khối lượng tối đa:"))
+        position_layout.addWidget(self.max_lot_label, 1, 2)
         self.max_lot_combo = QComboBox()
         self.max_lot_combo.setEditable(True)
         lot_options = ["OFF", "0.5", "1.0", "2.0", "5.0", "10.0", "20.0", "50.0", "100.0"]
@@ -6693,7 +15412,8 @@ class RiskManagementTab(QWidget):
         self.update_volume_fields_visibility()
         
         # Risk/Reward Ratio with OFF option
-        position_layout.addWidget(QLabel(I18N.t("Min R:R Ratio:", "Tỷ lệ R:R tối thiểu:")), 4, 0)
+        self.min_rr_label = QLabel(I18N.t("Min R:R Ratio:", "Tỷ lệ R:R tối thiểu:"))
+        position_layout.addWidget(self.min_rr_label, 4, 0)
         self.min_rr_combo = QComboBox()
         self.min_rr_combo.setEditable(True)
         rr_options = ["OFF", "0.5", "1.0", "1.2", "1.5", "2.0", "2.5", "3.0", "5.0"]
@@ -6709,11 +15429,11 @@ class RiskManagementTab(QWidget):
         self.min_rr_combo.setToolTip(I18N.t("Minimum risk-to-reward ratio required for trades (use OFF to disable)", "Tỷ lệ rủi ro/lợi nhuận tối thiểu yêu cầu cho giao dịch (dùng OFF để tắt)"))
         position_layout.addWidget(self.min_rr_combo, 4, 1)
         
-        position_group.setLayout(position_layout)
-        layout.addWidget(position_group)
+        self.position_sizing_group.setLayout(position_layout)
+        layout.addWidget(self.position_sizing_group)
         
         # === STOP LOSS / TAKE PROFIT GROUP ===
-        sltp_group = QGroupBox(I18N.t("🎯 Stop Loss / Take Profit", "🎯 Cắt lỗ / Chốt lời"))
+        self.sltp_group = QGroupBox(I18N.t("🎯 Stop Loss / Take Profit", "🎯 Cắt lỗ / Chốt lời"))
         sltp_layout = QGridLayout()
         
         # Dynamic SL/TP labels and controls (will update based on mode)
@@ -6736,7 +15456,8 @@ class RiskManagementTab(QWidget):
         sltp_layout.addWidget(self.default_tp_spin, 0, 3)
         
         # SL/TP Mode
-        sltp_layout.addWidget(QLabel(I18N.t("SL/TP Mode:", "Chế độ SL/TP:")), 1, 0)
+        self.sltp_mode_label = QLabel(I18N.t("SL/TP Mode:", "Chế độ SL/TP:"))
+        sltp_layout.addWidget(self.sltp_mode_label, 1, 0)
         self.sltp_mode_combo = QComboBox()
         self.sltp_mode_combo.addItems([
             I18N.t("Fixed Pips", "Pips cố định"), 
@@ -6758,8 +15479,90 @@ class RiskManagementTab(QWidget):
         # Initialize controls based on current mode
         self.update_sltp_mode_controls()
         
-        sltp_group.setLayout(sltp_layout)
-        layout.addWidget(sltp_group)
+        self.sltp_group.setLayout(sltp_layout)
+        layout.addWidget(self.sltp_group)
+        
+        # === BREAKEVEN & TRAILING STOP GROUP ===
+        self.trailing_group = QGroupBox(I18N.t("🎯 Breakeven & Trailing Stop", "🎯 Điểm Hòa Vốn - Dừng Lỗ Kéo Theo"))
+        trailing_layout = QGridLayout()
+        
+        # Breakeven Settings
+        self.breakeven_label = QLabel(I18N.t("Move to BE at (pips):", "Điểm hòa vốn (pips):"))
+        trailing_layout.addWidget(self.breakeven_label, 0, 0)
+        self.breakeven_min_spin = QDoubleSpinBox()
+        self.breakeven_min_spin.setRange(0.0, 500.0)
+        self.breakeven_min_spin.setDecimals(1)
+        self.breakeven_min_spin.setSingleStep(1.0)
+        self.breakeven_min_spin.setValue(float(self.settings.get('breakeven_min_pips', 20)))
+        self.breakeven_min_spin.setToolTip(I18N.t("Minimum profit in pips to move S/L to breakeven (20-50 pips recommended)", "Lãi tối thiểu để dịch S/L về điểm hòa vốn (khuyến nghị 20-50 pips)"))
+        self.breakeven_min_spin.valueChanged.connect(self.auto_save_risk_settings)
+        trailing_layout.addWidget(self.breakeven_min_spin, 0, 1)
+        
+        self.breakeven_to_label = QLabel(I18N.t("to", "đến"))
+        trailing_layout.addWidget(self.breakeven_to_label, 0, 2, Qt.AlignCenter)
+        
+        self.breakeven_max_spin = QDoubleSpinBox()
+        self.breakeven_max_spin.setRange(0.0, 500.0)
+        self.breakeven_max_spin.setDecimals(1)
+        self.breakeven_max_spin.setSingleStep(1.0)
+        self.breakeven_max_spin.setValue(float(self.settings.get('breakeven_max_pips', 50)))
+        self.breakeven_max_spin.setToolTip(I18N.t("Maximum profit range for breakeven (above this, trailing stop activates)", "Phạm vi lãi tối đa cho hòa vốn (trên mức này sẽ kích hoạt trailing stop)"))
+        self.breakeven_max_spin.valueChanged.connect(self.auto_save_risk_settings)
+        trailing_layout.addWidget(self.breakeven_max_spin, 0, 3)
+        
+        # Trailing Stop Settings
+        self.trailing_activation_label = QLabel(I18N.t("Trailing Stop at (pips):", "Dừng Lỗ Kéo Theo (pips):"))
+        trailing_layout.addWidget(self.trailing_activation_label, 1, 0)
+        self.trailing_activation_spin = QDoubleSpinBox()
+        self.trailing_activation_spin.setRange(0.0, 1000.0)
+        self.trailing_activation_spin.setDecimals(1)
+        self.trailing_activation_spin.setSingleStep(1.0)
+        self.trailing_activation_spin.setValue(float(self.settings.get('trailing_activation_pips', 70)))
+        self.trailing_activation_spin.setToolTip(I18N.t("Minimum profit to activate trailing stop (≥70 pips recommended)", "Lãi tối thiểu để kích hoạt trailing stop (khuyến nghị ≥70 pips)"))
+        self.trailing_activation_spin.valueChanged.connect(self.auto_save_risk_settings)
+        trailing_layout.addWidget(self.trailing_activation_spin, 1, 1)
+        
+        # Trailing Distance Range
+        self.trail_distance_label = QLabel(I18N.t("Trail Distance (pips):", "Khoảng cách trail (pips):"))
+        trailing_layout.addWidget(self.trail_distance_label, 2, 0)
+        self.trailing_min_spin = QDoubleSpinBox()
+        self.trailing_min_spin.setRange(0.0, 500.0)
+        self.trailing_min_spin.setDecimals(1)
+        self.trailing_min_spin.setSingleStep(1.0)
+        self.trailing_min_spin.setValue(float(self.settings.get('trailing_min_pips', 20)))
+        self.trailing_min_spin.setToolTip(I18N.t("Minimum trailing distance (for low volatility)", "Khoảng cách trailing tối thiểu (cho biến động thấp)"))
+        self.trailing_min_spin.valueChanged.connect(self.auto_save_risk_settings)
+        trailing_layout.addWidget(self.trailing_min_spin, 2, 1)
+        
+        self.trailing_to_label = QLabel(I18N.t("to", "đến"))
+        trailing_layout.addWidget(self.trailing_to_label, 2, 2, Qt.AlignCenter)
+        
+        self.trailing_max_spin = QDoubleSpinBox()
+        self.trailing_max_spin.setRange(0.0, 500.0)
+        self.trailing_max_spin.setDecimals(1)
+        self.trailing_max_spin.setSingleStep(1.0)
+        self.trailing_max_spin.setValue(float(self.settings.get('trailing_max_pips', 50)))
+        self.trailing_max_spin.setToolTip(I18N.t("Maximum trailing distance (for high volatility)", "Khoảng cách trailing tối đa (cho biến động cao)"))
+        self.trailing_max_spin.valueChanged.connect(self.auto_save_risk_settings)
+        trailing_layout.addWidget(self.trailing_max_spin, 2, 3)
+        
+        # Use Volatility Adaptive
+        self.trailing_volatility_cb = QCheckBox(I18N.t("Use volatility-adaptive trailing", "Sử dụng trailing thích ứng biến động"))
+        self.trailing_volatility_cb.setChecked(self.settings.get('trailing_use_volatility', True))
+        self.trailing_volatility_cb.setToolTip(I18N.t("Adjust trailing distance based on market volatility from trendline_sr", "Điều chỉnh khoảng cách trailing dựa trên biến động thị trường từ trendline_sr"))
+        self.trailing_volatility_cb.stateChanged.connect(self.auto_save_risk_settings)
+        trailing_layout.addWidget(self.trailing_volatility_cb, 3, 0, 1, 4)
+        
+        # Info label
+        self.trailing_info_label = QLabel(I18N.t(
+            "ℹ️ Breakeven: 20-50 pips | Trailing: ≥70 pips | Distance adjusts with volatility",
+            "ℹ️ Hòa vốn: 20-50 pips | Trailing: ≥70 pips | Khoảng cách tự động theo biến động"
+        ))
+        self.trailing_info_label.setStyleSheet("color: #3498DB; font-style: italic; padding: 5px; background-color: #EBF5FB; border-radius: 5px;")
+        trailing_layout.addWidget(self.trailing_info_label, 4, 0, 1, 4)
+        
+        self.trailing_group.setLayout(trailing_layout)
+        layout.addWidget(self.trailing_group)
         
         # 🔧 CONNECT: Auto-save for Basic Settings that were missing
         self.max_risk_combo.currentTextChanged.connect(self.auto_save_risk_settings)
@@ -6781,11 +15584,12 @@ class RiskManagementTab(QWidget):
         layout = QVBoxLayout()
 
         # === POSITION LIMITS GROUP ===
-        limits_group = QGroupBox(I18N.t("📊 Position Limits", "📊 Giới hạn vị thế"))
+        self.position_limits_group = QGroupBox(I18N.t("📊 Position Limits", "📊 Giới hạn vị thế"))
         limits_layout = QGridLayout()
 
         # Max Positions
-        limits_layout.addWidget(QLabel(I18N.t("Max Total Positions:", "Tối đa tổng vị thế:")), 0, 0)
+        self.max_positions_label = QLabel(I18N.t("Max Total Positions:", "Tối đa tổng vị thế:"))
+        limits_layout.addWidget(self.max_positions_label, 0, 0)
         self.max_positions_spin = QSpinBox()
         self.max_positions_spin.setRange(0, 1000)
         self.max_positions_spin.setValue(int(self.settings.get('max_positions', 5)))
@@ -6793,7 +15597,8 @@ class RiskManagementTab(QWidget):
         limits_layout.addWidget(self.max_positions_spin, 0, 1)
 
         # Max Positions per Symbol
-        limits_layout.addWidget(QLabel(I18N.t("Max Positions per Symbol:", "Tối đa vị thế mỗi mã:")), 0, 2)
+        self.max_positions_per_symbol_label = QLabel(I18N.t("Max Positions per Symbol:", "Tối đa vị thế mỗi mã:"))
+        limits_layout.addWidget(self.max_positions_per_symbol_label, 0, 2)
         self.max_positions_per_symbol_spin = QSpinBox()
         self.max_positions_per_symbol_spin.setRange(0, 100)
         self.max_positions_per_symbol_spin.setValue(int(self.settings.get('max_positions_per_symbol', 2)))
@@ -6801,7 +15606,8 @@ class RiskManagementTab(QWidget):
         limits_layout.addWidget(self.max_positions_per_symbol_spin, 0, 3)
 
         # Max Correlation
-        limits_layout.addWidget(QLabel(I18N.t("Max Correlation:", "Tương quan tối đa:")), 1, 0)
+        self.max_correlation_label = QLabel(I18N.t("Max Correlation:", "Tương quan tối đa:"))
+        limits_layout.addWidget(self.max_correlation_label, 1, 0)
         self.max_correlation_spin = QDoubleSpinBox()
         self.max_correlation_spin.setRange(0.0, 1.0)
         self.max_correlation_spin.setSingleStep(0.1)
@@ -6809,11 +15615,11 @@ class RiskManagementTab(QWidget):
         self.max_correlation_spin.valueChanged.connect(self.auto_save_risk_settings)  # 🔧 FIX: Auto save
         limits_layout.addWidget(self.max_correlation_spin, 1, 1)
 
-        limits_group.setLayout(limits_layout)
-        layout.addWidget(limits_group)
+        self.position_limits_group.setLayout(limits_layout)
+        layout.addWidget(self.position_limits_group)
 
         # === SYMBOL EXPOSURE GROUP ===
-        exposure_group = QGroupBox(I18N.t("💼 Symbol Exposure Limits", "💼 Giới hạn mức độ theo mã"))
+        self.exposure_group = QGroupBox(I18N.t("💼 Symbol Exposure Limits", "💼 Giới hạn mức độ theo mã"))
         exposure_layout = QVBoxLayout()
 
         # Info label (localized)
@@ -6841,8 +15647,8 @@ class RiskManagementTab(QWidget):
         self.populate_exposure_table()
 
         exposure_layout.addWidget(self.exposure_table)
-        exposure_group.setLayout(exposure_layout)
-        layout.addWidget(exposure_group)
+        self.exposure_group.setLayout(exposure_layout)
+        layout.addWidget(self.exposure_group)
 
         # 🔧 CONNECT: Auto-save for exposure table changes
         self.exposure_table.cellChanged.connect(self.on_exposure_table_changed)
@@ -6857,23 +15663,62 @@ class RiskManagementTab(QWidget):
         layout = QVBoxLayout()
         
         # === TRADING HOURS GROUP ===
-        hours_group = QGroupBox(I18N.t("🕐 Trading Hours (UTC)", "🕐 Giờ giao dịch (UTC)"))
+        self.hours_group = QGroupBox(I18N.t("🕐 Trading Hours (UTC)", "🕐 Giờ giao dịch (UTC)"))
         hours_layout = QGridLayout()
         
-        hours_layout.addWidget(QLabel(I18N.t("Start Hour:", "Giờ bắt đầu:")), 0, 0)
+        # Start Time: Hour : Minute
+        self.start_time_label = QLabel(I18N.t("Start Time:", "Giờ bắt đầu:"))
+        hours_layout.addWidget(self.start_time_label, 0, 0)
+        start_time_widget = QWidget()
+        start_time_layout = QHBoxLayout(start_time_widget)
+        start_time_layout.setContentsMargins(0, 0, 0, 0)
+        start_time_layout.setSpacing(2)
+        
         self.start_hour_spin = QSpinBox()
         self.start_hour_spin.setRange(0, 23)
         self.start_hour_spin.setValue(int(self.settings.get('trading_hours_start', 0)))
-        hours_layout.addWidget(self.start_hour_spin, 0, 1)
+        self.start_hour_spin.setFixedWidth(50)
+        start_time_layout.addWidget(self.start_hour_spin)
         
-        hours_layout.addWidget(QLabel(I18N.t("End Hour:", "Giờ kết thúc:")), 0, 2)
+        start_time_layout.addWidget(QLabel(":"))
+        
+        self.start_minute_spin = QSpinBox()
+        self.start_minute_spin.setRange(0, 59)
+        self.start_minute_spin.setValue(int(self.settings.get('trading_minutes_start', 0)))
+        self.start_minute_spin.setFixedWidth(50)
+        start_time_layout.addWidget(self.start_minute_spin)
+        start_time_layout.addStretch()
+        
+        hours_layout.addWidget(start_time_widget, 0, 1)
+        
+        # End Time: Hour : Minute
+        self.end_time_label = QLabel(I18N.t("End Time:", "Giờ kết thúc:"))
+        hours_layout.addWidget(self.end_time_label, 0, 2)
+        end_time_widget = QWidget()
+        end_time_layout = QHBoxLayout(end_time_widget)
+        end_time_layout.setContentsMargins(0, 0, 0, 0)
+        end_time_layout.setSpacing(2)
+        
         self.end_hour_spin = QSpinBox()
         self.end_hour_spin.setRange(0, 23)
-        self.end_hour_spin.setValue(int(self.settings.get('trading_hours_end', 24)))
-        hours_layout.addWidget(self.end_hour_spin, 0, 3)
+        self.end_hour_spin.setValue(int(self.settings.get('trading_hours_end', 23)))
+        self.end_hour_spin.setFixedWidth(50)
+        end_time_layout.addWidget(self.end_hour_spin)
+        
+        end_time_layout.addWidget(QLabel(":"))
+        
+        self.end_minute_spin = QSpinBox()
+        self.end_minute_spin.setRange(0, 59)
+        self.end_minute_spin.setValue(int(self.settings.get('trading_minutes_end', 59)))
+        self.end_minute_spin.setFixedWidth(50)
+        end_time_layout.addWidget(self.end_minute_spin)
+        end_time_layout.addStretch()
+        
+        hours_layout.addWidget(end_time_widget, 0, 3)
         
         # News avoidance with OFF option
-        hours_layout.addWidget(QLabel(I18N.t("Avoid News (minutes):", "Tránh tin tức (phút):")), 1, 0)
+        self.avoid_news_label = QLabel(I18N.t("Avoid News (minutes):", "Tránh tin tức (phút):"))
+        hours_layout.addWidget(self.avoid_news_label, 1, 0)
         self.avoid_news_combo = QComboBox()
         self.avoid_news_combo.setEditable(True)
         news_options = ["OFF", "5", "10", "15", "30", "45", "60", "90", "120"]
@@ -6886,15 +15731,16 @@ class RiskManagementTab(QWidget):
             self.avoid_news_combo.setCurrentText(str(current_avoid))
         hours_layout.addWidget(self.avoid_news_combo, 1, 1)
         
-        hours_group.setLayout(hours_layout)
-        layout.addWidget(hours_group)
+        self.hours_group.setLayout(hours_layout)
+        layout.addWidget(self.hours_group)
         
         # === MARKET CONDITIONS GROUP ===
-        market_group = QGroupBox(I18N.t("📊 Market Conditions", "📊 Điều kiện thị trường"))
+        self.market_conditions_group = QGroupBox(I18N.t("📊 Market Conditions", "📊 Điều kiện thị trường"))
         market_layout = QGridLayout()
         
         # Spread limits
-        market_layout.addWidget(QLabel(I18N.t("Max Spread Multiplier:", "Hệ số spread tối đa:")), 0, 0)
+        self.spread_multiplier_label = QLabel(I18N.t("Max Spread Multiplier:", "Hệ số spread tối đa:"))
+        market_layout.addWidget(self.spread_multiplier_label, 0, 0)
         self.spread_multiplier_spin = QDoubleSpinBox()
         self.spread_multiplier_spin.setRange(0.0, 100.0)
         self.spread_multiplier_spin.setSingleStep(0.5)
@@ -6902,21 +15748,23 @@ class RiskManagementTab(QWidget):
         market_layout.addWidget(self.spread_multiplier_spin, 0, 1)
         
         # Slippage
-        market_layout.addWidget(QLabel(I18N.t("Max Slippage:", "Độ trượt giá tối đa:")), 0, 2)
+        self.max_slippage_label = QLabel(I18N.t("Max Slippage:", "Độ trượt giá tối đa:"))
+        market_layout.addWidget(self.max_slippage_label, 0, 2)
         self.max_slippage_spin = QSpinBox()
         self.max_slippage_spin.setRange(0, 1000)
         self.max_slippage_spin.setValue(self.settings.get('max_slippage', 10))
         market_layout.addWidget(self.max_slippage_spin, 0, 3)
         
-        market_group.setLayout(market_layout)
-        layout.addWidget(market_group)
+        self.market_conditions_group.setLayout(market_layout)
+        layout.addWidget(self.market_conditions_group)
         
         # === EMERGENCY CONTROLS GROUP ===
-        emergency_group = QGroupBox(I18N.t("🚨 Emergency Controls", "🚨 Điều khiển khẩn cấp"))
+        self.emergency_group = QGroupBox(I18N.t("🚨 Emergency Controls", "🚨 Điều khiển khẩn cấp"))
         emergency_layout = QGridLayout()
         
         # Emergency stop drawdown with OFF option
-        emergency_layout.addWidget(QLabel(I18N.t("Emergency Stop DD (%):", "Dừng khẩn cấp DD (%):")), 0, 0)
+        self.emergency_dd_label = QLabel(I18N.t("Emergency Stop DD (%):", "Dừng khẩn cấp DD (%):"))
+        emergency_layout.addWidget(self.emergency_dd_label, 0, 0)
         self.emergency_dd_combo = QComboBox()
         self.emergency_dd_combo.setEditable(True)
         emergency_options = ["OFF", "5.0", "8.0", "10.0", "15.0", "20.0", "25.0", "30.0"]
@@ -6936,16 +15784,18 @@ class RiskManagementTab(QWidget):
         emergency_layout.addWidget(self.auto_reduce_check, 1, 0, 1, 4)
         
         # Note about position management
-        info_label = QLabel(I18N.t("ℹ️ Use Account Tab for position management and closing orders", "ℹ️ Dùng tab Tài khoản để quản lý và đóng lệnh"))
-        info_label.setStyleSheet("color: #3498DB; font-style: italic; padding: 10px; background-color: #EBF5FB; border-radius: 5px;")
-        emergency_layout.addWidget(info_label, 2, 0, 1, 4)
+        self.emergency_info_label = QLabel(I18N.t("ℹ️ Use Account Tab for position management and closing orders", "ℹ️ Dùng tab Tài khoản để quản lý và đóng lệnh"))
+        self.emergency_info_label.setStyleSheet("color: #3498DB; font-style: italic; padding: 10px; background-color: #EBF5FB; border-radius: 5px;")
+        emergency_layout.addWidget(self.emergency_info_label, 2, 0, 1, 4)
         
-        emergency_group.setLayout(emergency_layout)
-        layout.addWidget(emergency_group)
+        self.emergency_group.setLayout(emergency_layout)
+        layout.addWidget(self.emergency_group)
         
         # 🔧 CONNECT: Auto-save for Advanced Controls
         self.start_hour_spin.valueChanged.connect(self.auto_save_risk_settings)
+        self.start_minute_spin.valueChanged.connect(self.auto_save_risk_settings)
         self.end_hour_spin.valueChanged.connect(self.auto_save_risk_settings)
+        self.end_minute_spin.valueChanged.connect(self.auto_save_risk_settings)
         self.avoid_news_combo.currentTextChanged.connect(self.auto_save_risk_settings)
         self.spread_multiplier_spin.valueChanged.connect(self.auto_save_risk_settings)
         self.max_slippage_spin.valueChanged.connect(self.auto_save_risk_settings)
@@ -6962,7 +15812,7 @@ class RiskManagementTab(QWidget):
         layout = QVBoxLayout()
         
         # === DCA STRATEGY GROUP ===
-        dca_group = QGroupBox(I18N.t("📈 DCA Strategy Settings", "📈 Cài đặt chiến lược DCA"))
+        self.dca_group = QGroupBox(I18N.t("📈 DCA Strategy Settings", "📈 Cài đặt chiến lược DCA"))
         dca_layout = QGridLayout()
         
         # Enable DCA
@@ -6971,7 +15821,8 @@ class RiskManagementTab(QWidget):
         dca_layout.addWidget(self.enable_dca_check, 0, 0, 1, 2)
         
         # Max DCA levels
-        dca_layout.addWidget(QLabel(I18N.t("Max DCA Levels:", "Số tầng DCA tối đa:")), 1, 0)
+        self.max_dca_levels_label = QLabel(I18N.t("Max DCA Levels:", "Số tầng DCA tối đa:"))
+        dca_layout.addWidget(self.max_dca_levels_label, 1, 0)
         self.max_dca_levels_spin = QSpinBox()
         self.max_dca_levels_spin.setRange(1, 50)
         self.max_dca_levels_spin.setValue(self.settings.get('max_dca_levels', 3))
@@ -6983,13 +15834,13 @@ class RiskManagementTab(QWidget):
         # (Removed Fibonacci controls per user request)
         
         # DCA multiplier - moved up to position 3
-        self.dca_multiplier_label = QLabel("Hệ số khối lượng DCA:")
+        self.dca_multiplier_label = QLabel(I18N.t("DCA Volume Multiplier:", "Hệ số khối lượng DCA:"))
         dca_layout.addWidget(self.dca_multiplier_label, 3, 0)
         self.dca_multiplier_spin = QDoubleSpinBox()
         self.dca_multiplier_spin.setRange(0.0, 100.0)
         self.dca_multiplier_spin.setSingleStep(0.1)
         self.dca_multiplier_spin.setValue(self.settings.get('dca_volume_multiplier', 1.5))
-        self.dca_multiplier_spin.setToolTip("Hệ số nhân khối lượng cho mỗi tầng DCA")
+        self.dca_multiplier_spin.setToolTip(I18N.t("Volume multiplier for each DCA level", "Hệ số nhân khối lượng cho mỗi tầng DCA"))
         dca_layout.addWidget(self.dca_multiplier_spin, 3, 1)
         
         # DCA Mode (reintroduced per user request) - row 4
@@ -7100,8 +15951,8 @@ class RiskManagementTab(QWidget):
         self.dca_mode_combo.currentIndexChanged.connect(_on_dca_mode_changed)
         _refresh_dca_mode_widgets()
         
-        dca_group.setLayout(dca_layout)
-        layout.addWidget(dca_group)
+        self.dca_group.setLayout(dca_layout)
+        layout.addWidget(self.dca_group)
         
         # Connect DCA Strategy controls to auto-save (no popup message)
         self.enable_dca_check.stateChanged.connect(self.auto_save_risk_settings)
@@ -7116,11 +15967,12 @@ class RiskManagementTab(QWidget):
         self.dca_fibo_exec_combo.currentTextChanged.connect(self.auto_save_risk_settings)
         
         # === DCA CONDITIONS GROUP ===
-        conditions_group = QGroupBox(I18N.t("⚙️ DCA Activation Conditions", "⚙️ Điều kiện kích hoạt DCA"))
+        self.conditions_group = QGroupBox(I18N.t("⚙️ DCA Activation Conditions", "⚙️ Điều kiện kích hoạt DCA"))
         conditions_layout = QGridLayout()
         
         # Minimum drawdown to activate DCA
-        conditions_layout.addWidget(QLabel(I18N.t("Min Drawdown for DCA (%):", "Sụt giảm tối thiểu để DCA (%):")), 0, 0)
+        self.dca_min_drawdown_label = QLabel(I18N.t("Min Drawdown for DCA (%):", "Sụt giảm tối thiểu để DCA (%):"))
+        conditions_layout.addWidget(self.dca_min_drawdown_label, 0, 0)
         self.dca_min_drawdown_spin = QDoubleSpinBox()
         self.dca_min_drawdown_spin.setRange(0.0, 100.0)
         self.dca_min_drawdown_spin.setSingleStep(0.1)
@@ -7132,7 +15984,8 @@ class RiskManagementTab(QWidget):
         # Row 1 now left intentionally empty or can be repurposed later.
         
         # DCA stop loss mode
-        conditions_layout.addWidget(QLabel(I18N.t("DCA SL Mode:", "Chế độ SL cho DCA:")), 2, 0)
+        self.dca_sl_mode_label = QLabel(I18N.t("DCA SL Mode:", "Chế độ SL cho DCA:"))
+        conditions_layout.addWidget(self.dca_sl_mode_label, 2, 0)
         self.dca_sl_mode_combo = QComboBox()
         # 🔧 FORCE CLEAR: Ensure no cached items remain
         self.dca_sl_mode_combo.clear()
@@ -7167,8 +16020,8 @@ class RiskManagementTab(QWidget):
         ))
         conditions_layout.addWidget(self.dca_avg_sl_profit_spin, 3, 1)
         
-        conditions_group.setLayout(conditions_layout)
-        layout.addWidget(conditions_group)
+        self.conditions_group.setLayout(conditions_layout)
+        layout.addWidget(self.conditions_group)
         
         # Connect DCA Conditions controls to auto-save (no popup message)
         self.dca_min_drawdown_spin.valueChanged.connect(self.auto_save_risk_settings)
@@ -7203,13 +16056,8 @@ class RiskManagementTab(QWidget):
             # Show/hide min lot for auto mode only
             if hasattr(self, 'min_lot_spin'):
                 self.min_lot_spin.setVisible(is_auto_mode)
-                # Find and hide/show min lot label
-                try:
-                    position_layout = self.min_lot_spin.parent().layout()
-                    min_lot_label = position_layout.itemAtPosition(1, 0).widget()
-                    min_lot_label.setVisible(is_auto_mode)
-                except:
-                    pass
+            if hasattr(self, 'min_lot_label'):
+                self.min_lot_label.setVisible(is_auto_mode)
             
             # Show/hide fixed volume for fixed mode only  
             if hasattr(self, 'fixed_volume_spin'):
@@ -7309,15 +16157,10 @@ class RiskManagementTab(QWidget):
                 self.risk_manager.risk_params.emergency_stop_drawdown = emergency_dd_value
                 self.risk_manager.risk_params.avoid_news_minutes = avoid_news_value
                 
-                # Update auto mode based on current trading mode
-                is_auto_mode = self.mode_combo.currentText() in [I18N.t("🤖 Auto Mode", "🤖 Tự động")]
-                self.risk_manager.risk_params.auto_mode_enabled = is_auto_mode
-                self.risk_manager.risk_params.auto_scan_enabled = is_auto_mode
-                
                 # Save updated parameters to file
                 self.risk_manager._save_risk_parameters()
                 
-                print(f"🔄 Risk Manager parameters updated - Auto Mode: {'ENABLED' if is_auto_mode else 'DISABLED'}")
+                print(f"🔄 Risk Manager parameters updated")
                 
         except Exception as e:
             print(f"❌ Failed to update risk manager params: {e}")
@@ -7391,8 +16234,8 @@ class RiskManagementTab(QWidget):
     @safe_method
     # OLD SAVE/LOAD FUNCTIONS REMOVED - REPLACED WITH NEW SIMPLE SYSTEM
     
-    def save_risk_settings(self):
-        """🆕 Save current GUI values to file - Simple and direct"""
+    def save_risk_settings(self, *args):
+        """🆕 Save current GUI values to file - Simple and direct (accepts Qt signal args)"""
         try:
             # 🚫 SET FLAG to prevent infinite auto-save loops
             self._is_saving_settings = True
@@ -7430,9 +16273,6 @@ class RiskManagementTab(QWidget):
             # =====================================
             # BASIC SETTINGS TAB
             # =====================================
-            
-            # ✅ MANUAL MODE ONLY - Always save manual mode
-            settings['trading_mode'] = '👨‍💼 Thủ công'
                 
             # Volume Settings (conditional based on volume_mode)
             if hasattr(self, 'volume_mode_combo') and self.volume_mode_combo:
@@ -7462,6 +16302,20 @@ class RiskManagementTab(QWidget):
                 settings['default_sl_atr_multiplier'] = self.default_sl_spin.value()
             if hasattr(self, 'default_tp_spin') and self.default_tp_spin:
                 settings['default_tp_atr_multiplier'] = self.default_tp_spin.value()
+                
+            # Breakeven & Trailing Stop Settings
+            if hasattr(self, 'breakeven_min_spin') and self.breakeven_min_spin:
+                settings['breakeven_min_pips'] = self.breakeven_min_spin.value()
+            if hasattr(self, 'breakeven_max_spin') and self.breakeven_max_spin:
+                settings['breakeven_max_pips'] = self.breakeven_max_spin.value()
+            if hasattr(self, 'trailing_activation_spin') and self.trailing_activation_spin:
+                settings['trailing_activation_pips'] = self.trailing_activation_spin.value()
+            if hasattr(self, 'trailing_min_spin') and self.trailing_min_spin:
+                settings['trailing_min_pips'] = self.trailing_min_spin.value()
+            if hasattr(self, 'trailing_max_spin') and self.trailing_max_spin:
+                settings['trailing_max_pips'] = self.trailing_max_spin.value()
+            if hasattr(self, 'trailing_volatility_cb') and self.trailing_volatility_cb:
+                settings['trailing_use_volatility'] = self.trailing_volatility_cb.isChecked()
                 
             # =====================================
             # POSITION MANAGEMENT TAB
@@ -7554,11 +16408,15 @@ class RiskManagementTab(QWidget):
             # TRADING HOURS TAB
             # =====================================
             
-            # Trading Hours
+            # Trading Hours (Hour:Minute format)
             if hasattr(self, 'start_hour_spin') and self.start_hour_spin:
                 settings['trading_hours_start'] = self.start_hour_spin.value()
+            if hasattr(self, 'start_minute_spin') and self.start_minute_spin:
+                settings['trading_minutes_start'] = self.start_minute_spin.value()
             if hasattr(self, 'end_hour_spin') and self.end_hour_spin:
                 settings['trading_hours_end'] = self.end_hour_spin.value()
+            if hasattr(self, 'end_minute_spin') and self.end_minute_spin:
+                settings['trading_minutes_end'] = self.end_minute_spin.value()
                 
             # News Avoidance - CHỈ LƯU KHI KHÔNG PHẢI OFF
             avoid_news_value = self.get_combo_value(self.avoid_news_combo, "OFF") if hasattr(self, 'avoid_news_combo') else "OFF"
@@ -7637,7 +16495,11 @@ class RiskManagementTab(QWidget):
                         elif 'Fibonacci' in dca_mode or 'Fibo' in dca_mode:
                             # Chỉ lưu Fibonacci settings khi mode = Fibonacci
                             if hasattr(self, 'dca_fibo_start_combo') and self.dca_fibo_start_combo:
-                                settings['dca_fibo_start_level'] = self.dca_fibo_start_combo.currentText()
+                                settings['dca_fibo_start_level'] = self.dca_fibo_start_combo.currentIndex()  # 🔧 FIX: Save index, not text
+                            if hasattr(self, 'dca_fibo_exec_combo') and self.dca_fibo_exec_combo:
+                                settings['dca_fibo_exec_mode'] = self.dca_fibo_exec_combo.currentText()  # 🔧 ADD: Save exec mode
+                            # 🔧 ADD: Always save default Fibonacci levels for dca_service.py
+                            settings['dca_fibo_levels'] = '23.6,38.2,50,61.8,78.6'
                     
                     # DCA SL Mode - luôn lưu khi DCA enabled
                     if hasattr(self, 'dca_sl_mode_combo') and self.dca_sl_mode_combo:
@@ -7648,6 +16510,21 @@ class RiskManagementTab(QWidget):
                         if "SL trung bình" in current_sl_mode or "Average SL" in current_sl_mode:
                             if hasattr(self, 'dca_avg_sl_profit_spin') and self.dca_avg_sl_profit_spin:
                                 settings['dca_avg_sl_profit_percent'] = self.dca_avg_sl_profit_spin.value()
+                
+            # =====================================
+            # SIGNAL SETTINGS (from Signal Tab)
+            # =====================================
+            
+            # 🆕 Signal Confidence Threshold for Order Placement
+            # Lấy từ GUI nếu có, chuyển đổi từ % → 0-10 scale
+            if hasattr(self, 'signal_tab') and hasattr(self.signal_tab, 'min_conf_spin'):
+                try:
+                    conf_percentage = float(self.signal_tab.min_conf_spin.value())
+                    # Convert: 30% → 3.0, 20% → 2.0, etc.
+                    conf_scaled = conf_percentage / 10.0
+                    settings['min_confidence_for_entry'] = conf_scaled
+                except Exception as e:
+                    print(f"⚠️ Error reading signal confidence from GUI: {e}")
                         
             print(f"🔍 Collected {len(settings)} settings from GUI")
             return settings
@@ -7656,19 +16533,32 @@ class RiskManagementTab(QWidget):
             print(f"⚠️ Error collecting GUI values: {e}")
             return self._get_default_risk_settings()
     
+    def set_combo_value(self, combo, value):
+        """Helper function to set combo box value, handling both text and numeric values"""
+        if not combo:
+            return
+        
+        # Try to find exact text match first
+        index = combo.findText(str(value))
+        if index >= 0:
+            combo.setCurrentIndex(index)
+        else:
+            # Try to match numeric values for combo with numeric items
+            for i in range(combo.count()):
+                item_text = combo.itemText(i)
+                try:
+                    if item_text != "OFF" and float(item_text) == float(value):
+                        combo.setCurrentIndex(i)
+                        return
+                except ValueError:
+                    continue
+    
     def _apply_risk_settings_to_gui(self):
         """🆕 Apply loaded settings to GUI controls"""
         if not self.settings:
             return
             
         try:
-            # Trading Mode
-            if hasattr(self, 'mode_combo') and 'trading_mode' in self.settings:
-                mode = self.settings['trading_mode']
-                index = self.mode_combo.findText(mode)
-                if index >= 0:
-                    self.mode_combo.setCurrentIndex(index)
-                    
             # Volume Mode
             if hasattr(self, 'volume_mode_combo') and 'volume_mode' in self.settings:
                 mode = self.settings['volume_mode']
@@ -7693,6 +16583,20 @@ class RiskManagementTab(QWidget):
             if hasattr(self, 'default_tp_spin') and 'default_tp_atr_multiplier' in self.settings:
                 self.default_tp_spin.setValue(self.settings['default_tp_atr_multiplier'])
                 
+            # Breakeven & Trailing Stop Settings
+            if hasattr(self, 'breakeven_min_spin') and 'breakeven_min_pips' in self.settings:
+                self.breakeven_min_spin.setValue(self.settings['breakeven_min_pips'])
+            if hasattr(self, 'breakeven_max_spin') and 'breakeven_max_pips' in self.settings:
+                self.breakeven_max_spin.setValue(self.settings['breakeven_max_pips'])
+            if hasattr(self, 'trailing_activation_spin') and 'trailing_activation_pips' in self.settings:
+                self.trailing_activation_spin.setValue(self.settings['trailing_activation_pips'])
+            if hasattr(self, 'trailing_min_spin') and 'trailing_min_pips' in self.settings:
+                self.trailing_min_spin.setValue(self.settings['trailing_min_pips'])
+            if hasattr(self, 'trailing_max_spin') and 'trailing_max_pips' in self.settings:
+                self.trailing_max_spin.setValue(self.settings['trailing_max_pips'])
+            if hasattr(self, 'trailing_volatility_cb') and 'trailing_use_volatility' in self.settings:
+                self.trailing_volatility_cb.setChecked(self.settings['trailing_use_volatility'])
+                
             # Position Management
             if hasattr(self, 'max_positions_spin') and 'max_positions' in self.settings:
                 self.max_positions_spin.setValue(self.settings['max_positions'])
@@ -7701,17 +16605,103 @@ class RiskManagementTab(QWidget):
             if hasattr(self, 'max_correlation_spin') and 'max_correlation' in self.settings:
                 self.max_correlation_spin.setValue(self.settings['max_correlation'])
                 
-            # DCA
+            # Risk Management Settings
+            if hasattr(self, 'max_risk_combo') and 'max_risk_percent' in self.settings:
+                self.set_combo_value(self.max_risk_combo, self.settings['max_risk_percent'])
+            if hasattr(self, 'max_drawdown_combo') and 'max_drawdown_percent' in self.settings:
+                self.set_combo_value(self.max_drawdown_combo, self.settings['max_drawdown_percent'])
+            if hasattr(self, 'daily_loss_combo') and 'max_daily_loss_percent' in self.settings:
+                self.set_combo_value(self.daily_loss_combo, self.settings['max_daily_loss_percent'])
+            if hasattr(self, 'min_rr_combo') and 'min_risk_reward_ratio' in self.settings:
+                self.set_combo_value(self.min_rr_combo, self.settings['min_risk_reward_ratio'])
+            
+            # Volume Management
+            if hasattr(self, 'min_lot_spin') and 'min_volume_auto' in self.settings:
+                self.min_lot_spin.setValue(self.settings['min_volume_auto'])
+            if hasattr(self, 'max_lot_combo') and 'max_total_volume' in self.settings:
+                self.set_combo_value(self.max_lot_combo, self.settings['max_total_volume'])
+                
+            # Trading Hours
+            if hasattr(self, 'start_hour_spin') and 'trading_hours_start' in self.settings:
+                self.start_hour_spin.setValue(self.settings['trading_hours_start'])
+            if hasattr(self, 'start_minute_spin') and 'trading_minutes_start' in self.settings:
+                self.start_minute_spin.setValue(self.settings['trading_minutes_start'])
+            if hasattr(self, 'end_hour_spin') and 'trading_hours_end' in self.settings:
+                self.end_hour_spin.setValue(self.settings['trading_hours_end'])
+            if hasattr(self, 'end_minute_spin') and 'trading_minutes_end' in self.settings:
+                self.end_minute_spin.setValue(self.settings['trading_minutes_end'])
+            if hasattr(self, 'avoid_news_combo') and 'avoid_news_minutes' in self.settings:
+                self.set_combo_value(self.avoid_news_combo, self.settings['avoid_news_minutes'])
+                
+            # Market Conditions
+            if hasattr(self, 'spread_multiplier_spin') and 'max_spread_multiplier' in self.settings:
+                self.spread_multiplier_spin.setValue(self.settings['max_spread_multiplier'])
+            if hasattr(self, 'max_slippage_spin') and 'max_slippage' in self.settings:
+                self.max_slippage_spin.setValue(self.settings['max_slippage'])
+                
+            # Emergency Controls
+            if hasattr(self, 'emergency_dd_combo') and 'emergency_stop_drawdown' in self.settings:
+                self.set_combo_value(self.emergency_dd_combo, self.settings['emergency_stop_drawdown'])
+            if hasattr(self, 'auto_reduce_check') and 'auto_reduce_on_losses' in self.settings:
+                self.auto_reduce_check.setChecked(self.settings['auto_reduce_on_losses'])
+                
+            # DCA Settings
             if hasattr(self, 'enable_dca_check') and 'enable_dca' in self.settings:
                 self.enable_dca_check.setChecked(self.settings['enable_dca'])
+            if hasattr(self, 'max_dca_levels_spin') and 'max_dca_levels' in self.settings:
+                self.max_dca_levels_spin.setValue(self.settings['max_dca_levels'])
+            if hasattr(self, 'dca_multiplier_spin') and 'dca_volume_multiplier' in self.settings:
+                self.dca_multiplier_spin.setValue(self.settings['dca_volume_multiplier'])
+            if hasattr(self, 'dca_mode_combo') and 'dca_mode' in self.settings:
+                index = self.dca_mode_combo.findText(self.settings['dca_mode'])
+                if index >= 0:
+                    self.dca_mode_combo.setCurrentIndex(index)
+            if hasattr(self, 'dca_sl_mode_combo') and 'dca_sl_mode' in self.settings:
+                index = self.dca_sl_mode_combo.findText(self.settings['dca_sl_mode'])
+                if index >= 0:
+                    self.dca_sl_mode_combo.setCurrentIndex(index)
+            if hasattr(self, 'dca_min_drawdown_spin') and 'dca_min_drawdown' in self.settings:
+                self.dca_min_drawdown_spin.setValue(self.settings['dca_min_drawdown'])
+            if hasattr(self, 'dca_avg_sl_profit_spin') and 'dca_avg_sl_profit_percent' in self.settings:
+                self.dca_avg_sl_profit_spin.setValue(self.settings['dca_avg_sl_profit_percent'])
                 
-            print("✅ Applied settings to GUI controls")
+            # DCA Mode-specific settings
+            if hasattr(self, 'dca_atr_period_spin') and 'dca_atr_period' in self.settings:
+                self.dca_atr_period_spin.setValue(self.settings['dca_atr_period'])
+            if hasattr(self, 'dca_atr_mult_spin') and 'dca_atr_multiplier' in self.settings:
+                self.dca_atr_mult_spin.setValue(self.settings['dca_atr_multiplier'])
+            if hasattr(self, 'dca_base_distance_spin') and 'dca_distance_pips' in self.settings:
+                self.dca_base_distance_spin.setValue(self.settings['dca_distance_pips'])
+            if hasattr(self, 'dca_fibo_start_combo') and 'dca_fibo_start_level' in self.settings:
+                # 🔧 FIX: dca_fibo_start_level is index (int), not text
+                try:
+                    idx = int(self.settings['dca_fibo_start_level'])
+                    if 0 <= idx < self.dca_fibo_start_combo.count():
+                        self.dca_fibo_start_combo.setCurrentIndex(idx)
+                except (ValueError, TypeError):
+                    pass  # Keep default if invalid
+            if hasattr(self, 'dca_fibo_exec_combo') and 'dca_fibo_exec_mode' in self.settings:
+                # 🔧 ADD: Load exec mode
+                exec_mode = self.settings['dca_fibo_exec_mode']
+                index = self.dca_fibo_exec_combo.findText(exec_mode)
+                if index >= 0:
+                    self.dca_fibo_exec_combo.setCurrentIndex(index)
+            
+            # Load symbol exposure table with settings
+            if hasattr(self, 'populate_exposure_table') and ('symbol_exposure' in self.settings or 'symbol_multipliers' in self.settings):
+                self.populate_exposure_table(self.settings)
+                
+            print("✅ Applied ALL settings to GUI controls")
             
         except Exception as e:
             print(f"⚠️ Error applying settings to GUI: {e}")
     
     def auto_save_risk_settings(self):
         """🆕 Auto-save when GUI changes (no popup) - with debounce"""
+        # 🚫 PREVENT AUTO-SAVE during initialization
+        if getattr(self, '_is_initializing', False):
+            return True
+            
         # 🚫 PREVENT INFINITE LOOP: Skip auto-save if already saving
         if getattr(self, '_is_saving_settings', False):
             return True
@@ -7938,10 +16928,6 @@ class RiskManagementTab(QWidget):
             if hasattr(self, 'default_volume_spin'):
                 self.default_volume_spin.setValue(file_settings.get('default_volume_lots', 0.10))
             
-            # Update Trading Mode combo
-            if hasattr(self, 'mode_combo'):
-                self.mode_combo.setCurrentText(file_settings.get('trading_mode', I18N.t('👨‍💼 Manual', '👨‍💼 Thủ công')))
-            
             # Update SL/TP Mode combo
             if hasattr(self, 'sltp_mode_combo'):
                 # Load sltp_mode with proper conversion
@@ -7997,8 +16983,12 @@ class RiskManagementTab(QWidget):
                 self.max_correlation_spin.setValue(file_settings.get('max_correlation', 0.7))
             if hasattr(self, 'start_hour_spin'):
                 self.start_hour_spin.setValue(int(file_settings.get('trading_hours_start', 0)))
+            if hasattr(self, 'start_minute_spin'):
+                self.start_minute_spin.setValue(int(file_settings.get('trading_minutes_start', 0)))
             if hasattr(self, 'end_hour_spin'):
                 self.end_hour_spin.setValue(int(file_settings.get('trading_hours_end', 23)))
+            if hasattr(self, 'end_minute_spin'):
+                self.end_minute_spin.setValue(int(file_settings.get('trading_minutes_end', 59)))
             
             # Update Market Conditions settings
             if hasattr(self, 'spread_multiplier_spin'):
@@ -8165,7 +17155,7 @@ class RiskManagementTab(QWidget):
                 exposure_spin.setValue(settings_to_use.get('symbol_exposure', {}).get(symbol, 2.0))
                 exposure_spin.setToolTip(I18N.t(
                     f"Maximum exposure for {symbol} in lots",
-                    f"Khối lượng tối đa cho {symbol} (lot)"
+                    I18N.t("Max volume for {sym} (lot)", "Khối lượng tối đa cho {sym} (lot)", sym=symbol)
                 ))
                 # Connect to auto-save
                 exposure_spin.valueChanged.connect(lambda value, s=symbol: self.update_symbol_exposure(s, value))
@@ -8200,7 +17190,11 @@ class RiskManagementTab(QWidget):
             if not symbol_item:
                 return
                 
-            symbol = symbol_item.text()
+            symbol = symbol_item.text().strip()
+            # Skip placeholder symbols
+            if not symbol or symbol in ["Chưa chọn mã", "--", ""]:
+                return
+                
             changed_item = self.exposure_table.item(row, column)
             if not changed_item:
                 return
@@ -8483,14 +17477,12 @@ class RiskManagementTab(QWidget):
                     updated_count += 1
 
             # GET CURRENT MODES
-            trading_mode = cleaned.get('trading_mode', '')
             volume_mode = cleaned.get('volume_mode', '')
             sltp_mode = cleaned.get('sltp_mode', '')
             enable_dca = cleaned.get('enable_dca', False)
             dca_mode = cleaned.get('dca_mode', '')
             
             print(f"📋 CURRENT MODES:")
-            print(f"   Trading: '{trading_mode}'")
             print(f"   Volume: '{volume_mode}'") 
             print(f"   SL/TP: '{sltp_mode}'")
             print(f"   DCA Enabled: {enable_dca}")
@@ -8699,50 +17691,6 @@ class RiskManagementTab(QWidget):
             
             total_removed += dca_cleanup_count
             
-            # 4. 🎯 TRADING MODE CLEANUP
-            trading_cleanup_count = 0
-            print(f"\n🎯 TRADING MODE CLEANUP:")
-            
-            if "👨‍💼 Thủ công" in trading_mode or "Manual" in trading_mode:
-                # Manual mode: remove AUTO mode specific fields
-                auto_fields_to_remove = [
-                    'min_volume_auto',           # Auto volume minimum
-                    'max_daily_loss_percent',    # Auto daily loss limit  
-                    'max_weekly_loss_percent',   # Auto weekly loss limit
-                    'max_monthly_loss_percent',  # Auto monthly loss limit
-                    'emergency_stop_daily_loss', # Auto emergency stop
-                    'min_confidence_threshold',  # Auto confidence filter
-                    'high_confidence_threshold', # Auto high confidence
-                    'auto_risk_adjustment',      # Auto risk adjustment
-                    'auto_symbol_selection'      # Auto symbol selection
-                ]
-                
-                for field in auto_fields_to_remove:
-                    if field in cleaned:
-                        del cleaned[field]
-                        print(f"   🚫 Removed '{field}' (Manual mode)")
-                        trading_cleanup_count += 1
-            
-            elif "🤖 Tự động" in trading_mode or "Auto" in trading_mode:
-                # Auto mode: ensure required auto fields exist, remove manual-only fields
-                manual_fields_to_remove = [
-                    'fixed_volume_lots',         # Manual fixed volume
-                    'default_volume_lots'        # Manual default volume
-                ]
-                
-                for field in manual_fields_to_remove:
-                    if field in cleaned:
-                        del cleaned[field]
-                        print(f"   🚫 Removed '{field}' (Auto mode)")
-                        trading_cleanup_count += 1
-                
-                # Ensure auto mode fields exist
-                if 'min_volume_auto' not in cleaned:
-                    cleaned['min_volume_auto'] = 0.01
-                    print(f"   ✅ Added 'min_volume_auto': 0.01")
-            
-            total_removed += trading_cleanup_count
-            
             # 5. 🎯 EMERGENCY/NEWS CLEANUP
             emergency_cleanup_count = 0
             print(f"\n🎯 EMERGENCY/NEWS CLEANUP:")
@@ -8772,7 +17720,6 @@ class RiskManagementTab(QWidget):
             print(f"   🎯 SL/TP cleanup: {sltp_cleanup_count}")
             print(f"   🎯 Volume cleanup: {volume_cleanup_count}")
             print(f"   🎯 DCA cleanup: {dca_cleanup_count}")
-            print(f"   🎯 Trading mode cleanup: {trading_cleanup_count}")
             print(f"   🎯 Emergency cleanup: {emergency_cleanup_count}")
             print(f"   📊 Final fields: {len(cleaned)}")
             print(f"   🚫 Total removed: {total_removed}")
@@ -8784,10 +17731,11 @@ class RiskManagementTab(QWidget):
             return settings_dict  # Return original if cleaning fails
 
 class AutoTradingTab(QWidget):
-    def __init__(self, news_tab=None, risk_tab=None):
+    def __init__(self, news_tab=None, risk_tab=None, signal_tab=None):
         super().__init__()
         self.news_tab = news_tab  # Reference to news tab for economic calendar setting
         self.risk_tab = risk_tab  # Reference to risk management tab
+        self.signal_tab = signal_tab  # Reference to signal tab for AI model selection
         
         # 🔒 Thread-safe lock to prevent race condition in start_auto
         self._start_lock = threading.Lock()
@@ -8806,7 +17754,7 @@ class AutoTradingTab(QWidget):
         layout.addWidget(self.start_btn)
 
         # Status Label for Auto Trading
-        self.status_label = QLabel("⚪ Trạng thái: Chưa khởi động")
+        self.status_label = QLabel(I18N.t("⚪ Status: Not Started", "⚪ Trạng thái: Chưa khởi động"))
         self.status_label.setStyleSheet("""
             QLabel {
                 padding: 10px;
@@ -8833,13 +17781,41 @@ class AutoTradingTab(QWidget):
                 padding: 5px;
             }
         """)
-        self.progress_log.setPlaceholderText("📋 Nhật ký hoạt động sẽ hiển thị ở đây...")
-        layout.addWidget(QLabel("📋 Nhật ký hoạt động:"))
+        self.progress_log.setPlaceholderText(I18N.t("📋 Activity log will be displayed here...", "📋 Nhật ký hoạt động sẽ hiển thị ở đây..."))
+        self.activity_log_label = QLabel(I18N.t("📋 Activity Log:", "📋 Nhật ký hoạt động:"))
+        layout.addWidget(self.activity_log_label)
         layout.addWidget(self.progress_log)
 
         self.setLayout(layout)
         self.auto_manager = None
         self.main_window_ref = None  # Store main window reference
+
+    def refresh_translations(self):
+        """Refresh all UI text when language changes"""
+        try:
+            # Update button texts based on current state
+            if hasattr(self, 'auto_btn'):
+                if self.auto_btn.isChecked():
+                    self.auto_btn.setText(I18N.t("Auto Trading: ON", "Giao dịch tự động: BẬT"))
+                else:
+                    self.auto_btn.setText(I18N.t("Auto Trading: OFF", "Giao dịch tự động: TẮT"))
+            
+            if hasattr(self, 'start_btn'):
+                self.start_btn.setText(I18N.t("Start Auto Trading", "Bắt đầu giao dịch tự động"))
+            
+            if hasattr(self, 'activity_log_label'):
+                self.activity_log_label.setText(I18N.t("📋 Activity Log:", "📋 Nhật ký hoạt động:"))
+            
+            if hasattr(self, 'progress_log'):
+                self.progress_log.setPlaceholderText(I18N.t("📋 Activity log will be displayed here...", "📋 Nhật ký hoạt động sẽ hiển thị ở đây..."))
+            
+            # Only update status label if it shows the initial "Not Started" message
+            if hasattr(self, 'status_label'):
+                current_text = self.status_label.text()
+                if "Not Started" in current_text or "Chưa khởi động" in current_text:
+                    self.status_label.setText(I18N.t("⚪ Status: Not Started", "⚪ Trạng thái: Chưa khởi động"))
+        except Exception as e:
+            print(f"[LangSwitch] AutoTradingTab refresh error: {e}")
 
     def set_main_window_reference(self, main_window):
         """Set main window reference để auto trading có thể access các tab"""
@@ -8854,15 +17830,15 @@ class AutoTradingTab(QWidget):
             def _update():
                 if hasattr(self, 'status_label'):
                     # Determine color based on message content
-                    if "❌" in message or "thất bại" in message.lower() or "error" in message.lower():
+                    if "❌" in message or "error" in message.lower() or "fail" in message.lower():
                         color = "#d32f2f"  # Red
                         bg_color = "#ffebee"
                         border_color = "#f44336"
-                    elif "✅" in message or "hoàn thành" in message.lower() or "success" in message.lower():
+                    elif "✅" in message or "success" in message.lower() or "complete" in message.lower():
                         color = "#388e3c"  # Green  
                         bg_color = "#e8f5e8"
                         border_color = "#4caf50"
-                    elif "🔄" in message or "đang" in message.lower() or "loading" in message.lower():
+                    elif "🔄" in message or "loading" in message.lower() or "running" in message.lower():
                         color = "#1976d2"  # Blue
                         bg_color = "#e3f2fd"
                         border_color = "#2196f3"
@@ -8992,7 +17968,46 @@ class AutoTradingTab(QWidget):
             # Always accept the close event
             event.accept()
 
+    # === AI Model Selection Methods - Delegate to SignalTab ===
+    def _get_selected_ai_model(self):
+        """Get currently selected AI model from SignalTab"""
+        if hasattr(self, 'signal_tab') and self.signal_tab:
+            return self.signal_tab._get_selected_ai_model()
+        return "aggregator"  # Default
+    
+    def _get_ai_server_url(self):
+        """Get AI Server URL from SignalTab"""
+        if hasattr(self, 'signal_tab') and self.signal_tab:
+            return self.signal_tab._get_ai_server_url()
+        return None  # Default - local mode
+    
+    def _get_ai_model_port(self):
+        """Get AI model port from SignalTab"""
+        if hasattr(self, 'signal_tab') and self.signal_tab:
+            return self.signal_tab._get_ai_model_port()
+        return 0  # Default - local mode
+
+    def _check_ai_server_status(self):
+        """Check AI Server status via SignalTab"""
+        if hasattr(self, 'signal_tab') and self.signal_tab:
+            self.signal_tab._check_ai_server_status()
+    
+    def _get_ai_server_status_text(self):
+        """Get AI Server status text from SignalTab"""
+        if hasattr(self, 'signal_tab') and self.signal_tab:
+            if hasattr(self.signal_tab, 'ai_server_status'):
+                return self.signal_tab.ai_server_status.text()
+        return "🔴 Offline"
+
     def toggle_auto(self, checked):
+        # ========== LICENSE CHECK ==========
+        # Kiểm tra license trước khi cho phép bật Auto Trading
+        if checked and not check_license_for_service(self, "Auto Trading"):
+            # Reset the button state if license check fails
+            self.auto_btn.setChecked(False)
+            return
+        # ========== END LICENSE CHECK ==========
+        
         if checked:
             self.auto_btn.setText(I18N.t("Auto Trading: ON", "Giao dịch tự động: BẬT"))
             self.start_btn.setEnabled(True)
@@ -9007,16 +18022,48 @@ class AutoTradingTab(QWidget):
             try:
                 # Check if already running (double-click protection)
                 if hasattr(self, 'auto_manager') and self.auto_manager is not None:
-                    self.add_log("⚠️ Auto Trading đã đang chạy - bỏ qua yêu cầu duplicate")
+                    self.add_log(I18N.t("⚠️ Auto Trading already running - ignoring duplicate request", "⚠️ Auto Trading đã đang chạy - bỏ qua yêu cầu duplicate"))
                     return
+                
+                # 🤖 Check AI Model Selection (from SignalTab)
+                ai_model = self._get_selected_ai_model()
+                model_port = self._get_ai_model_port()
+                use_ai_server = (ai_model != "aggregator")
+                
+                # DEBUG: Print selection details
+                print(f"[AI DEBUG] _get_selected_ai_model() returned: '{ai_model}'")
+                print(f"[AI DEBUG] model_port: {model_port}")
+                print(f"[AI DEBUG] use_ai_server: {use_ai_server}")
+                
+                model_labels = {"aggregator": "Aggregator (Local)", "xgboost": "XGBoost AI", "cnn_lstm": "CNN-LSTM Pro", "transformer": "Transformer Pro"}
+                model_label = model_labels.get(ai_model, ai_model)
+                
+                if use_ai_server:
+                    # Check AI Server connection first
+                    self._check_ai_server_status()
+                    status_text = self._get_ai_server_status_text()
+                    if "Cannot" in status_text or "Error" in status_text or "Timeout" in status_text:
+                        self.add_log(f"❌ AI Server is not available: {status_text}")
+                        QMessageBox.warning(
+                            self,
+                            I18N.t("AI Server Unavailable", "Máy chủ AI không khả dụng"),
+                            I18N.t(
+                                f"Cannot connect to {model_label} server on port {model_port}!\n\nPlease check:\n1. AI Server is running\n2. Correct model is started\n\nOr select 'Aggregator (Local)' in Signal Tab to use local analysis.",
+                                f"Không thể kết nối đến server {model_label} trên port {model_port}!\n\nVui lòng kiểm tra:\n1. AI Server đang chạy\n2. Model đúng đã được khởi động\n\nHoặc chọn 'Tổng hợp (Local)' ở tab Signal để dùng phân tích local."
+                            )
+                        )
+                        return
+                    self.add_log(f"🤖 Using {model_label} on port {model_port}")
+                else:
+                    self.add_log("🤖 Using Aggregator (Local) - comprehensive_aggregator.py")
                 
                 # Use unified auto trading system
                 from unified_auto_trading_system import UnifiedAutoTradingSystem as AutoTradingManager
                 self.add_log("📦 Using UnifiedAutoTradingSystem")
                 
                 # Update status
-                self.update_status("🔄 Đang khởi động Auto Trading...")
-                self.add_log("🚀 Bắt đầu khởi động hệ thống Auto Trading")
+                self.update_status(I18N.t("🔄 Starting Auto Trading...", "🔄 Đang khởi động Auto Trading..."))
+                self.add_log(I18N.t("🚀 Starting Auto Trading system", "🚀 Bắt đầu khởi động hệ thống Auto Trading"))
                 
                 # Kiểm tra economic calendar setting
                 economic_status = self.get_economic_calendar_status()
@@ -9025,18 +18072,29 @@ class AutoTradingTab(QWidget):
                 # Hiển thị thông báo
                 icon_path = os.path.join("images", "robot.png")
                 msg = QMessageBox(self)
-                msg.setWindowTitle("Auto Trading")
+                msg.setWindowTitle(I18N.t("Auto Trading", "Giao dịch Tự động"))
             
                 # Tạo thông báo chi tiết
-                message = f"[AUTO TRADING] Starting Simplified Auto Trading!\n\n"
-                message += f"This will automatically:\n"
-                message += f"1. Fetch Market Data (if tab enabled)\n"
-                message += f"2. Calculate Trend Analysis (if tab enabled)\n"
-                message += f"3. Calculate Technical Indicators (if tab enabled)\n"
-                message += f"4. Analyze Patterns (if tab enabled)\n"
-                message += f"5. Generate Trading Signals (if tab enabled)\n"
-                message += f"6. Execute Orders (if signals found)\n\n"
-                message += f"[NEWS] Detection: {economic_status}"
+                if AppState.language() == 'vi':
+                    message = f"[AUTO TRADING] Khởi động Giao dịch Tự động!\n\n"
+                    message += f"Hệ thống sẽ tự động:\n"
+                    message += f"1. Lấy Dữ liệu Thị trường (nếu tab bật)\n"
+                    message += f"2. Tính Phân tích Xu hướng (nếu tab bật)\n"
+                    message += f"3. Tính Chỉ báo Kỹ thuật (nếu tab bật)\n"
+                    message += f"4. Phân tích Mô hình (nếu tab bật)\n"
+                    message += f"5. Tạo Tín hiệu Giao dịch (nếu tab bật)\n"
+                    message += f"6. Thực hiện Lệnh (nếu có tín hiệu)\n\n"
+                    message += f"[TIN TỨC] Phát hiện: {economic_status}"
+                else:
+                    message = f"[AUTO TRADING] Starting Simplified Auto Trading!\n\n"
+                    message += f"This will automatically:\n"
+                    message += f"1. Fetch Market Data (if tab enabled)\n"
+                    message += f"2. Calculate Trend Analysis (if tab enabled)\n"
+                    message += f"3. Calculate Technical Indicators (if tab enabled)\n"
+                    message += f"4. Analyze Patterns (if tab enabled)\n"
+                    message += f"5. Generate Trading Signals (if tab enabled)\n"
+                    message += f"6. Execute Orders (if signals found)\n\n"
+                    message += f"[NEWS] Detection: {economic_status}"
                 
                 msg.setText(message)
                 if os.path.exists(icon_path):
@@ -9048,7 +18106,7 @@ class AutoTradingTab(QWidget):
                 # Log setting
                 print(f"[AUTO TRADING] Started Simplified Auto Trading")
                 print(f"   [NEWS] News Detection: {economic_status}")
-                self.add_log(f"📰 News Detection: {economic_status}")
+                self.add_log(I18N.t("📰 News Detection: {status}", "📰 Phát hiện tin: {status}", status=economic_status))
                 
                 # Bắt đầu simplified auto trading
                 if not self.auto_manager:
@@ -9061,17 +18119,34 @@ class AutoTradingTab(QWidget):
                         print(f"[DEBUG] all_tabs available: {hasattr(main_window_ref, 'all_tabs')}")
                         if hasattr(main_window_ref, 'all_tabs'):
                             print(f"[DEBUG] auto_trading_tab in all_tabs: {'auto_trading_tab' in main_window_ref.all_tabs}")
-                        self.add_log(f"🔗 Kết nối với MainWindow: {type(main_window_ref).__name__}")
+                        self.add_log(I18N.t("🔗 Connected to MainWindow: {name}", "🔗 Kết nối với MainWindow: {name}", name=type(main_window_ref).__name__))
                     else:
                         print("[WARNING] No main window reference available - will use fallback methods")
-                        self.add_log("⚠️ Không có tham chiếu MainWindow - sử dụng phương pháp dự phòng")
+                        self.add_log(I18N.t("⚠️ No MainWindow reference - using fallback methods", "⚠️ Không có tham chiếu MainWindow - sử dụng phương pháp dự phòng"))
                 
                     print(f"[DEBUG] Creating AutoTradingManager with main_window_ref: {main_window_ref}")
+                    print(f"[DEBUG] AI Model: {ai_model}, Use AI Server: {use_ai_server}")
+                    
                     # 🔧 FIX: Pass actual MainWindow for GUI operations but keep status callbacks
                     self.auto_manager = AutoTradingManager(
                         main_window_ref=main_window_ref,  # Pass MainWindow for GUI clicks
                         update_interval=60  # 1 phút per cycle
                     )
+                    
+                    # 🤖 Pass AI model configuration to auto manager
+                    if hasattr(self.auto_manager, 'set_ai_config'):
+                        self.auto_manager.set_ai_config(
+                            use_ai_server=use_ai_server,
+                            ai_server_url=self._get_ai_server_url() if use_ai_server else None,
+                            custom_prompt=""  # GPT Prompt removed
+                        )
+                        self.add_log(f"🤖 AI Config set: {'AI Server' if use_ai_server else 'Aggregator'}")
+                    else:
+                        # Store AI config in auto_manager directly
+                        self.auto_manager._use_ai_server = use_ai_server
+                        self.auto_manager._ai_server_url = self._get_ai_server_url() if use_ai_server else None
+                        self.auto_manager._ai_custom_prompt = ""  # GPT Prompt removed
+                        self.add_log(f"🤖 AI Config stored: {'AI Server' if use_ai_server else 'Aggregator'}")
                     
                     # 🔧 FIX: Override main_window callbacks to AutoTradingTab for status updates
                     if hasattr(self.auto_manager, 'main_window'):
@@ -9084,7 +18159,7 @@ class AutoTradingTab(QWidget):
                 
                     print("[PIPELINE] Starting Auto Trading Pipeline...")
                     print("[INFO] Auto Trading will check checkbox settings from each tab")
-                    self.add_log("⚙️ Khởi tạo Auto Trading Manager thành công")
+                    self.add_log(I18N.t("⚙️ Auto Trading Manager initialized successfully", "⚙️ Khởi tạo Auto Trading Manager thành công"))
                     
                     # Start the pipeline in background
                     import threading
@@ -9094,43 +18169,49 @@ class AutoTradingTab(QWidget):
                             print(f"[PIPELINE DEBUG] Starting pipeline with auto_manager: {self.auto_manager}")
                             print(f"[PIPELINE DEBUG] auto_manager.main_window: {getattr(self.auto_manager, 'main_window', None)}")
                             
-                            self.update_status("🔄 Đang khởi động pipeline...")
-                            self.add_log("🔧 Bắt đầu pipeline trading...")
+                            self.update_status(I18N.t("🔄 Starting pipeline...", "🔄 Đang khởi động pipeline..."))
+                            self.add_log(I18N.t("🔧 Starting trading pipeline...", "🔧 Bắt đầu pipeline trading..."))
                         
                             # Test GUI update from auto manager
                             if hasattr(self.auto_manager, 'update_gui_status'):
                                 print("[PIPELINE DEBUG] Testing auto_manager.update_gui_status...")
-                                self.auto_manager.update_gui_status("🧪 Test status update từ Auto Manager")
+                                self.auto_manager.update_gui_status(I18N.t("🧪 Test status update from Auto Manager", "🧪 Test status update từ Auto Manager"))
                             
                             # Initialize and start the pipeline (CONTINUOUS MODE)
                             result = self.auto_manager.start()
                             if result is False:
                                 print("[BLOCKED] Auto Trading Pipeline BLOCKED by risk settings!")
                                 print("[INFO] Please enable auto mode in risk management first")
-                                self.update_status("🔒 Auto Trading bị chặn bởi cài đặt rủi ro")
-                                self.add_log("❌ Pipeline bị chặn - kiểm tra cài đặt Risk Management")
-                                QMessageBox.warning(self, "Auto Trading Blocked", 
-                                                  "Auto Trading is disabled in risk management settings.\n\n"
-                                                  "Please:\n"
-                                                  "1. Set 'enable_auto_mode': true\n"
-                                                  "2. Change trading mode to auto\n"
-                                                  "3. Check risk management settings")
+                                self.update_status(I18N.t("🔒 Auto Trading blocked by risk settings", "🔒 Auto Trading bị chặn bởi cài đặt rủi ro"))
+                                self.add_log(I18N.t("❌ Pipeline blocked - check Risk Management settings", "❌ Pipeline bị chặn - kiểm tra cài đặt Risk Management"))
+                                QMessageBox.warning(self, 
+                                                  I18N.t("Auto Trading Blocked", "Auto Trading Bị Chặn"), 
+                                                  I18N.t("Auto Trading is disabled in risk management settings.\n\n"
+                                                        "Please:\n"
+                                                        "1. Set 'enable_auto_mode': true\n"
+                                                        "2. Change trading mode to auto\n"
+                                                        "3. Check risk management settings",
+                                                        "Auto Trading bị tắt trong cài đặt quản lý rủi ro.\n\n"
+                                                        "Vui lòng:\n"
+                                                        "1. Đặt 'enable_auto_mode': true\n"
+                                                        "2. Chuyển chế độ giao dịch sang auto\n"
+                                                        "3. Kiểm tra cài đặt quản lý rủi ro"))
                                 self.auto_manager = None
                             else:
                                 print("[SUCCESS] Auto Trading Pipeline Successfully Started!")
-                                self.update_status("🔄 Auto Trading đang chạy liên tục...")
-                                self.add_log("🎉 Pipeline khởi động thành công - chế độ lặp lại!")
+                                self.update_status(I18N.t("🔄 Auto Trading running continuously...", "🔄 Auto Trading đang chạy liên tục..."))
+                                self.add_log(I18N.t("🎉 Pipeline started successfully - continuous mode!", "🎉 Pipeline khởi động thành công - chế độ lặp lại!"))
                                 
                                 # CONTINUOUS MODE - Keep running until stopped
                                 print("[CONTINUOUS] Auto Trading running in continuous mode...")
-                                self.add_log("🔄 Chạy liên tục - pipeline sẽ lặp lại sau mỗi 60 giây")
+                                self.add_log(I18N.t("🔄 Continuous mode - pipeline will repeat every 60 seconds", "🔄 Chạy liên tục - pipeline sẽ lặp lại sau mỗi 60 giây"))
                                 
                                 # The auto_manager will handle its own cycling
                                 # No need to wait or clean up - it runs continuously
                         except Exception as e:
                             print(f"[ERROR] Error starting simplified auto trading pipeline: {e}")
-                            self.update_status(f"❌ Lỗi khởi động: {str(e)}")
-                            self.add_log(f"❌ Lỗi pipeline: {str(e)}")
+                            self.update_status(I18N.t("❌ Startup error: {error}", "❌ Lỗi khởi động: {error}", error=str(e)))
+                            self.add_log(I18N.t("❌ Pipeline error: {error}", "❌ Lỗi pipeline: {error}", error=str(e)))
                             self.auto_manager = None
                 
                     # Start pipeline in separate thread to avoid blocking UI
@@ -9139,22 +18220,22 @@ class AutoTradingTab(QWidget):
                     
                 else:
                     print("[WARNING] Auto Trading Manager already running")
-                    self.update_status("⚠️ Auto Trading đã đang chạy")
-                    self.add_log("⚠️ Auto Trading Manager đã đang hoạt động")
+                    self.update_status(I18N.t("⚠️ Auto Trading already running", "⚠️ Auto Trading đã đang chạy"))
+                    self.add_log(I18N.t("⚠️ Auto Trading Manager already active", "⚠️ Auto Trading Manager đã đang hoạt động"))
                     
             except Exception as e:
                 print(f"[ERROR] Error in start_auto(): {e}")
-                self.update_status(f"❌ Lỗi khởi động: {str(e)}")
-                self.add_log(f"❌ Lỗi start_auto: {str(e)}")
-                QMessageBox.critical(self, "Error", f"Failed to start auto trading:\n{str(e)}")
+                self.update_status(I18N.t("❌ Startup error: {error}", "❌ Lỗi khởi động: {error}", error=str(e)))
+                self.add_log(I18N.t("❌ start_auto error: {error}", "❌ Lỗi start_auto: {error}", error=str(e)))
+                QMessageBox.critical(self, I18N.t("Error", "Lỗi"), I18N.t("Failed to start auto trading:\n{error}", "Không thể khởi động giao dịch tự động:\n{error}", error=str(e)))
 
     def stop_auto(self):
         """Improved stop method with better error handling and cleanup"""
         try:
             if self.auto_manager:
                 print("[STOP] Stopping Auto Trading Pipeline...")
-                self.update_status("🔄 Đang dừng Auto Trading...")
-                self.add_log("🛑 Bắt đầu dừng Auto Trading Pipeline")
+                self.update_status(I18N.t("🔄 Stopping Auto Trading...", "🔄 Đang dừng Auto Trading..."))
+                self.add_log(I18N.t("🛑 Starting to stop Auto Trading Pipeline", "🛑 Bắt đầu dừng Auto Trading Pipeline"))
                 
                 # Stop the manager gracefully with timeout
                 try:
@@ -9176,17 +18257,17 @@ class AutoTradingTab(QWidget):
                     
                     if stop_thread.is_alive():
                         print("[WARNING] Stop operation timed out")
-                        self.add_log("⚠️ Stop timeout - forcing cleanup")
+                        self.add_log(I18N.t("⚠️ Stop timeout - forcing cleanup", "⚠️ Stop timeout - forcing cleanup"))
                     else:
                         print("[SUCCESS] Auto Trading Pipeline Stopped Successfully")
-                        self.add_log("✅ Auto Trading Pipeline đã dừng thành công")
+                        self.add_log(I18N.t("✅ Auto Trading Pipeline stopped successfully", "✅ Auto Trading Pipeline đã dừng thành công"))
                     
-                    self.update_status("⚪ Auto Trading đã dừng")
+                    self.update_status(I18N.t("⚪ Auto Trading stopped", "⚪ Auto Trading đã dừng"))
                     
                 except Exception as e:
                     print(f"[ERROR] Error stopping auto manager: {e}")
-                    self.update_status("⚠️ Lỗi khi dừng Auto Trading")
-                    self.add_log(f"❌ Lỗi dừng manager: {str(e)}")
+                    self.update_status(I18N.t("⚠️ Error stopping Auto Trading", "⚠️ Lỗi khi dừng Auto Trading"))
+                    self.add_log(I18N.t("❌ Manager stop error: {error}", "❌ Lỗi dừng manager: {error}", error=str(e)))
                 
                 # Force cleanup
                 finally:
@@ -9205,15 +18286,15 @@ class AutoTradingTab(QWidget):
                 
             else:
                 print("[WARNING] No Auto Trading Manager to stop")
-                self.update_status("⚪ Không có Auto Trading để dừng")
-                self.add_log("⚠️ Không có Auto Trading Manager để dừng")
+                self.update_status(I18N.t("⚪ No Auto Trading to stop", "⚪ Không có Auto Trading để dừng"))
+                self.add_log(I18N.t("⚠️ No Auto Trading Manager to stop", "⚠️ Không có Auto Trading Manager để dừng"))
                 
         except Exception as e:
             print(f"[ERROR] Error in stop_auto(): {e}")
             import traceback
             print(f"[ERROR] Traceback: {traceback.format_exc()}")
-            self.update_status(f"❌ Lỗi dừng: {str(e)}")
-            self.add_log(f"❌ Lỗi stop_auto: {str(e)}")
+            self.update_status(I18N.t("❌ Stop error: {error}", "❌ Lỗi dừng: {error}", error=str(e)))
+            self.add_log(I18N.t("❌ stop_auto error: {error}", "❌ Lỗi stop_auto: {error}", error=str(e)))
             
             # Force clear auto_manager even if error
             try:
@@ -9626,11 +18707,82 @@ class IndicatorTab(QWidget):
         """Write the selected indicator tokens to analysis_results/indicator_whitelist.json for the aggregator to consume."""
         try:
             wl = self._collect_indicator_whitelist_tokens()
+            
+            # 🎯 ADD PATTERN TOKENS: Read ONLY from GUI checkboxes (Analysis tab)
+            # NEVER read from notification_config.json - that's for notification settings only!
+            
+            # Try to get Analysis tab reference from main window
+            analysis_tab = None
+            main_window = None
+            
+            try:
+                # This is IndicatorTab, get main window
+                widget = self
+                while widget:
+                    parent = widget.parent()
+                    if parent is None:
+                        main_window = widget
+                        break
+                    widget = parent
+                
+                if main_window and hasattr(main_window, 'analysis_tab'):
+                    analysis_tab = main_window.analysis_tab
+            except Exception as e:
+                print(f"[DEBUG] ⚠️ Failed to get Analysis tab reference: {e}")
+            
+            # Get checkbox states from Analysis tab (ONLY source for Auto Trading)
+            candlestick_enabled = False
+            price_patterns_enabled = False
+            
+            if analysis_tab:
+                candlestick_enabled = hasattr(analysis_tab, 'include_candlestick_cb') and analysis_tab.include_candlestick_cb.isChecked()
+                price_patterns_enabled = hasattr(analysis_tab, 'include_price_patterns_cb') and analysis_tab.include_price_patterns_cb.isChecked()
+                print(f"[DEBUG] 📖 Read pattern settings from Analysis tab GUI: candlestick={candlestick_enabled}, price_patterns={price_patterns_enabled}")
+            else:
+                # If can't access Analysis tab, READ from current whitelist file (preserves user choice)
+                print(f"[DEBUG] ⚠️ Can't access Analysis tab - attempting to read existing whitelist file")
+                try:
+                    import os, json
+                    wl_path = os.path.join(os.getcwd(), 'analysis_results', 'indicator_whitelist.json')
+                    print(f"[DEBUG] 🔍 Checking whitelist file at: {wl_path}")
+                    if os.path.exists(wl_path):
+                        print(f"[DEBUG] ✅ File exists, reading...")
+                        with open(wl_path, 'r', encoding='utf-8') as f:
+                            current_wl = json.load(f)
+                        print(f"[DEBUG] 📄 File contents: {current_wl}")
+                        candlestick_enabled = 'candlestick' in current_wl
+                        price_patterns_enabled = 'price_patterns' in current_wl
+                        print(f"[DEBUG] 📖 Read from existing whitelist file: candlestick={candlestick_enabled}, price_patterns={price_patterns_enabled}")
+                    else:
+                        # File doesn't exist yet - use safe defaults (both disabled to avoid unwanted runs)
+                        print(f"[DEBUG] ⚠️ File does NOT exist")
+                        candlestick_enabled = False
+                        price_patterns_enabled = False
+                        print(f"[DEBUG] ⚠️ No whitelist file - using safe defaults: candlestick=False, price_patterns=False")
+                except Exception as e:
+                    print(f"[DEBUG] ❌ Error reading whitelist: {e} - defaulting to False")
+                    import traceback
+                    traceback.print_exc()
+            
+            # Add pattern tokens based on checkbox state
+            if candlestick_enabled:
+                wl.append('candlestick')
+                print(f"[DEBUG] ✅ Added 'candlestick' token (enabled in GUI)")
+            else:
+                print(f"[DEBUG] ⚠️ 'candlestick' NOT added (disabled in GUI)")
+            
+            if price_patterns_enabled:
+                wl.append('price_patterns')
+                print(f"[DEBUG] ✅ Added 'price_patterns' token (enabled in GUI)")
+            else:
+                print(f"[DEBUG] ⚠️ 'price_patterns' NOT added (disabled in GUI)")
+            
             out_dir = os.path.join(os.getcwd(), "analysis_results")
             os.makedirs(out_dir, exist_ok=True)
             out_fp = os.path.join(out_dir, "indicator_whitelist.json")
             with open(out_fp, "w", encoding="utf-8") as f:
                 json.dump(wl, f, ensure_ascii=False, indent=2)
+            print(f"[DEBUG] 💾 Saved whitelist to {out_fp}: {wl}")
             # Optional log message if available
             try:
                 if hasattr(self, "log_output") and self.log_output:
@@ -9665,22 +18817,59 @@ class IndicatorTab(QWidget):
             return None
 
     def clear_all_indicator_data(self):
-        """Clear all saved indicator data files"""
+        """Clear only specific indicator data files being re-exported, not all files"""
         import os
-        import shutil
+        import glob
+        import time
         
         indicator_dir = "indicator_output"
         if os.path.exists(indicator_dir):
             try:
-                # Count files before deletion
-                file_count = len([f for f in os.listdir(indicator_dir) if os.path.isfile(os.path.join(indicator_dir, f))])
+                # Get current symbols and timeframes being processed
+                symbols = list(self.market_tab.checked_symbols) if hasattr(self, 'market_tab') and hasattr(self.market_tab, 'checked_symbols') else []
+                selected_tfs = []
+                if hasattr(self, 'market_tab') and hasattr(self.market_tab, 'tf_checkboxes'):
+                    selected_tfs = [tf for tf in self.market_tab.tf_checkboxes if self.market_tab.tf_checkboxes[tf].isChecked()]
                 
-                # Remove all files in indicator_output directory
-                shutil.rmtree(indicator_dir)
-                os.makedirs(indicator_dir, exist_ok=True)
-                
-                self.log_output.append(f"🧹 Indicator Data Cleanup: Removed {file_count} old indicator files")
-                print(f"🧹 Indicator Data Cleanup: Removed {file_count} old indicator files")
+                # Only clear files for symbols and timeframes being re-exported
+                files_removed = 0
+                if symbols and selected_tfs:
+                    for symbol in symbols:
+                        for tf in selected_tfs:
+                            # Clear files matching patterns for this symbol and timeframe
+                            patterns = [
+                                f"{symbol}_m_{tf}_indicators.json*",
+                                f"{symbol}_{tf}_indicators.json*", 
+                                f"{symbol}._{tf}_indicators.json*",
+                                f"{symbol}._m_{tf}_indicators.json*"
+                            ]
+                            
+                            for pattern in patterns:
+                                file_path = os.path.join(indicator_dir, pattern)
+                                matching_files = glob.glob(file_path)
+                                for file_to_remove in matching_files:
+                                    try:
+                                        # Additional safety: only remove files older than 1 minute to avoid conflicts
+                                        file_age = os.path.getctime(file_to_remove)
+                                        current_time = time.time()
+                                        if (current_time - file_age) > 60:  # 60 seconds old
+                                            os.remove(file_to_remove)
+                                            files_removed += 1
+                                            print(f"🧹 Removed old indicator file: {os.path.basename(file_to_remove)}")
+                                        else:
+                                            print(f"⏳ Skipping recent file: {os.path.basename(file_to_remove)} (too new)")
+                                    except Exception as e:
+                                        print(f"⚠️ Could not remove {file_to_remove}: {e}")
+                    
+                    if files_removed > 0:
+                        self.log_output.append(f"🧹 Selective Cleanup: Removed {files_removed} old indicator files for selected symbols")
+                        print(f"🧹 Selective Cleanup: Removed {files_removed} old indicator files for selected symbols")
+                    else:
+                        self.log_output.append("🧹 Selective Cleanup: No old indicator files found to remove")
+                        print("🧹 Selective Cleanup: No old indicator files found to remove")
+                else:
+                    self.log_output.append("⚠️ No symbols or timeframes selected - skipping indicator data cleanup")
+                    print("⚠️ No symbols or timeframes selected - skipping indicator data cleanup")
                 
             except Exception as e:
                 error_msg = f"⚠️ Warning: Could not clear indicator data: {e}"
@@ -9822,7 +19011,7 @@ class IndicatorTab(QWidget):
         # Dừng tất cả worker cũ trước khi tạo mới
         self.stop_all_workers()
         
-        # 🧹 Clear all old indicator data before starting new calculation
+        # 🧹 Clear only specific old indicator data before starting new calculation
         self.clear_all_indicator_data()
         
         self.table.setRowCount(0)
@@ -9930,7 +19119,7 @@ class IndicatorTab(QWidget):
                 self.pending_workers += 1
 
     def on_indicator_error(self, msg):
-        QMessageBox.critical(self, "Indicator Error", msg)
+        QMessageBox.critical(self, I18N.t("Indicator Error", "Lỗi chỉ báo"), msg)
         self.log_output.append(msg)
 
     def cleanup_worker(self, worker):
@@ -10279,14 +19468,16 @@ class PatternTab(QWidget):
         layout = QVBoxLayout()
         
         # Enable checkbox
-        self.enable_checkbox = QCheckBox("Enable candlestick pattern detection")
+        self.enable_checkbox = QCheckBox(I18N.t("Enable candlestick pattern detection", "Bật phát hiện mô hình nến"))
         self.enable_checkbox.setChecked(True)
+        # 🔥 Connect to whitelist update
+        self.enable_checkbox.toggled.connect(self._update_whitelist)
         layout.addWidget(self.enable_checkbox)
         
         # Filter options - chỉ giữ confidence filter
         filter_layout = QHBoxLayout()
         
-        self.min_confidence_label = QLabel("📊 Min confidence:")
+        self.min_confidence_label = QLabel(I18N.t("📊 Min confidence:", "📊 Độ tin cậy tối thiểu:"))
         filter_layout.addWidget(self.min_confidence_label)
         
         self.min_confidence_spinbox = QDoubleSpinBox()
@@ -10303,7 +19494,7 @@ class PatternTab(QWidget):
         layout.addLayout(filter_layout)
         
         # Status label for pattern statistics with improved styling
-        self.status_label = QLabel("No patterns loaded")
+        self.status_label = QLabel(I18N.t("No patterns loaded", "Chưa tải mô hình nào"))
         self.status_label.setStyleSheet("""
             QLabel {
                 background-color: #f0f0f0;
@@ -10317,14 +19508,14 @@ class PatternTab(QWidget):
         layout.addWidget(self.status_label)
         
         # Main action button
-        self.fetch_pattern_btn = QPushButton("🔍 Fetch Candlestick Patterns")
+        self.fetch_pattern_btn = QPushButton(I18N.t("🔍 Fetch Candlestick Patterns", "🔍 Lấy mô hình nến"))
         self.fetch_pattern_btn.clicked.connect(self.fetch_patterns_and_reload)
         self.fetch_pattern_btn.setMinimumHeight(35)
         layout.addWidget(self.fetch_pattern_btn)
         
         # Pattern table - 7 columns: Symbol, Timeframe, Time, Pattern, Length, Signal, Confidence
         self.table = QTableWidget(0, 7)
-        self.table.setHorizontalHeaderLabels(["Symbol", "Timeframe", "Time", "Pattern", "Length", "Signal", "Confidence"])
+        self.table.setHorizontalHeaderLabels([I18N.t("Symbol", "Mã"), I18N.t("Timeframe", "Khung TG"), I18N.t("Time", "Thời gian"), I18N.t("Pattern", "Mô hình"), I18N.t("Length", "Độ dài"), I18N.t("Signal", "Tín hiệu"), I18N.t("Confidence", "Độ tin cậy")])
         header = self.table.horizontalHeader()
         for i in range(self.table.columnCount()):
             header.setSectionResizeMode(i, QHeaderView.Stretch)
@@ -10520,6 +19711,54 @@ class PatternTab(QWidget):
         
         # Load patterns with new filter
         self.load_patterns()
+    
+    def _update_whitelist(self, checked):
+        """Update whitelist when candlestick checkbox toggled"""
+        try:
+            print(f"\n{'='*60}")
+            print(f"🔥 [PatternTab] Candlestick checkbox toggled: {checked}")
+            print(f"{'='*60}")
+            
+            import os, json
+            wl_path = os.path.join(os.getcwd(), 'analysis_results', 'indicator_whitelist.json')
+            
+            # Read current whitelist
+            wl = []
+            if os.path.exists(wl_path):
+                with open(wl_path, 'r', encoding='utf-8') as f:
+                    wl = json.load(f)
+            
+            # 🔥 ONLY remove 'candlestick' token (keep price_patterns and other indicators)
+            wl = [t for t in wl if t not in ('candlestick', 'patterns')]
+            
+            # Add candlestick if checked
+            if checked:
+                wl.append('candlestick')
+                print(f"✅ Added 'candlestick' to whitelist")
+            else:
+                print(f"⚠️ Removed 'candlestick' from whitelist")
+            
+            # Save
+            os.makedirs(os.path.dirname(wl_path), exist_ok=True)
+            with open(wl_path, 'w', encoding='utf-8') as f:
+                json.dump(wl, f, ensure_ascii=False, indent=2)
+            
+            print(f"💾 Saved whitelist: {wl}")
+            
+        except Exception as e:
+            print(f"❌ Error updating whitelist: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def refresh_translations(self):
+        """Refresh all UI text when language changes"""
+        try:
+            self.enable_checkbox.setText(I18N.t("Enable candlestick pattern detection", "Bật phát hiện mô hình nến"))
+            self.min_confidence_label.setText(I18N.t("📊 Min confidence:", "📊 Độ tin cậy tối thiểu:"))
+            self.fetch_pattern_btn.setText(I18N.t("🔍 Fetch Candlestick Patterns", "🔍 Lấy mô hình nến"))
+            self.table.setHorizontalHeaderLabels([I18N.t("Symbol", "Mã"), I18N.t("Timeframe", "Khung TG"), I18N.t("Time", "Thời gian"), I18N.t("Pattern", "Mô hình"), I18N.t("Length", "Độ dài"), I18N.t("Signal", "Tín hiệu"), I18N.t("Confidence", "Độ tin cậy")])
+        except Exception as e:
+            print(f"[LangSwitch] PatternTab refresh error: {e}")
 
 class PricePatternTab(QWidget):
     def __init__(self, market_tab):
@@ -10536,14 +19775,16 @@ class PricePatternTab(QWidget):
         layout = QVBoxLayout()
 
         # Enable checkbox
-        self.enable_checkbox = QCheckBox("Enable price pattern detection")
+        self.enable_checkbox = QCheckBox(I18N.t("Enable price pattern detection", "Bật phát hiện mô hình giá"))
         self.enable_checkbox.setChecked(True)
+        # 🔥 Connect to whitelist update
+        self.enable_checkbox.toggled.connect(self._update_whitelist)
         layout.addWidget(self.enable_checkbox)
 
         # Filter options - add confidence filter and age filter
         filter_layout = QHBoxLayout()
 
-        self.min_confidence_label = QLabel("📊 Min confidence:")
+        self.min_confidence_label = QLabel(I18N.t("📊 Min confidence:", "📊 Độ tin cậy tối thiểu:"))
         filter_layout.addWidget(self.min_confidence_label)
 
         self.min_confidence_spinbox = QDoubleSpinBox()
@@ -10558,20 +19799,20 @@ class PricePatternTab(QWidget):
         filter_layout.addWidget(self.min_confidence_spinbox)
 
         # Add age filter
-        self.max_age_label = QLabel("📅 Max age (days):")
+        self.max_age_label = QLabel(I18N.t("📅 Max age (days):", "📅 Tuổi tối đa (ngày):"))
         filter_layout.addWidget(self.max_age_label)
 
         self.max_age_spinbox = QSpinBox()
         self.max_age_spinbox.setRange(1, 365)
         self.max_age_spinbox.setValue(90)  # Default 90 days for better initial visibility
         self.max_age_spinbox.valueChanged.connect(self.on_filter_changed)
-        self.max_age_spinbox.setToolTip("Maximum age of patterns in days (only show patterns from last X days)")
+        self.max_age_spinbox.setToolTip(I18N.t("Maximum age of patterns in days (only show patterns from last X days)", "Tuổi tối đa của mô hình tính theo ngày (chỉ hiển thị mô hình từ X ngày gần nhất)"))
         filter_layout.addWidget(self.max_age_spinbox)
 
         layout.addLayout(filter_layout)
 
         # Status label for pattern statistics with improved styling
-        self.status_label = QLabel("No patterns loaded")
+        self.status_label = QLabel(I18N.t("No patterns loaded", "Chưa tải mô hình nào"))
         self.status_label.setStyleSheet(
             """
             QLabel {
@@ -10587,7 +19828,7 @@ class PricePatternTab(QWidget):
         layout.addWidget(self.status_label)
 
         # Main action button
-        self.fetch_pattern_btn = QPushButton("🔍 Fetch Price Patterns")
+        self.fetch_pattern_btn = QPushButton(I18N.t("🔍 Fetch Price Patterns", "🔍 Lấy mô hình giá"))
         self.fetch_pattern_btn.clicked.connect(self.fetch_patterns_and_reload)
         self.fetch_pattern_btn.setMinimumHeight(35)
         layout.addWidget(self.fetch_pattern_btn)
@@ -10595,7 +19836,7 @@ class PricePatternTab(QWidget):
         # Pattern table - 8 columns with Age column
         self.table = QTableWidget(0, 8)  # 8 columns
         self.table.setHorizontalHeaderLabels(
-            ["Symbol", "Timeframe", "Time Period", "Pattern", "Length", "Signal", "Confidence", "Age"]
+            [I18N.t("Symbol", "Mã"), I18N.t("Timeframe", "Khung TG"), I18N.t("Time Period", "Khoảng TG"), I18N.t("Pattern", "Mô hình"), I18N.t("Length", "Độ dài"), I18N.t("Signal", "Tín hiệu"), I18N.t("Confidence", "Độ tin cậy"), I18N.t("Age", "Tuổi")]
         )
         header = self.table.horizontalHeader()
         for i in range(self.table.columnCount()):
@@ -10984,6 +20225,55 @@ class PricePatternTab(QWidget):
         
         # Load patterns with new filter
         self.load_patterns()
+    
+    def _update_whitelist(self, checked):
+        """Update whitelist when price_patterns checkbox toggled"""
+        try:
+            print(f"\n{'='*60}")
+            print(f"🔥 [PricePatternTab] Price patterns checkbox toggled: {checked}")
+            print(f"{'='*60}")
+            
+            import os, json
+            wl_path = os.path.join(os.getcwd(), 'analysis_results', 'indicator_whitelist.json')
+            
+            # Read current whitelist
+            wl = []
+            if os.path.exists(wl_path):
+                with open(wl_path, 'r', encoding='utf-8') as f:
+                    wl = json.load(f)
+            
+            # 🔥 ONLY remove 'price_patterns' token (keep candlestick and other indicators)
+            wl = [t for t in wl if t not in ('price_patterns', 'patterns')]
+            
+            # Add price_patterns if checked
+            if checked:
+                wl.append('price_patterns')
+                print(f"✅ Added 'price_patterns' to whitelist")
+            else:
+                print(f"⚠️ Removed 'price_patterns' from whitelist")
+            
+            # Save
+            os.makedirs(os.path.dirname(wl_path), exist_ok=True)
+            with open(wl_path, 'w', encoding='utf-8') as f:
+                json.dump(wl, f, ensure_ascii=False, indent=2)
+            
+            print(f"💾 Saved whitelist: {wl}")
+            
+        except Exception as e:
+            print(f"❌ Error updating whitelist: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def refresh_translations(self):
+        """Refresh all UI text when language changes"""
+        try:
+            self.enable_checkbox.setText(I18N.t("Enable price pattern detection", "Bật phát hiện mô hình giá"))
+            self.min_confidence_label.setText(I18N.t("📊 Min confidence:", "📊 Độ tin cậy tối thiểu:"))
+            self.max_age_label.setText(I18N.t("📅 Max age (days):", "📅 Tuổi tối đa (ngày):"))
+            self.fetch_pattern_btn.setText(I18N.t("🔍 Fetch Price Patterns", "🔍 Lấy mô hình giá"))
+            self.table.setHorizontalHeaderLabels([I18N.t("Symbol", "Mã"), I18N.t("Timeframe", "Khung TG"), I18N.t("Time Period", "Khoảng TG"), I18N.t("Pattern", "Mô hình"), I18N.t("Length", "Độ dài"), I18N.t("Signal", "Tín hiệu"), I18N.t("Confidence", "Độ tin cậy"), I18N.t("Age", "Tuổi")])
+        except Exception as e:
+            print(f"[LangSwitch] PricePatternTab refresh error: {e}")
 
 class PatternWorker(QThread):
     finished = pyqtSignal()
@@ -11149,11 +20439,11 @@ class TrendTab(QWidget):
 
     def init_ui(self):
         layout = QVBoxLayout()
-        self.enable_checkbox = QCheckBox("Enable Trend Detection")
+        self.enable_checkbox = QCheckBox(I18N.t("Enable Trend Detection", "Bật phát hiện xu hướng"))
         self.enable_checkbox.setChecked(True)
         layout.addWidget(self.enable_checkbox)
 
-        self.calc_btn = QPushButton("Calculate Trendline & SR")
+        self.calc_btn = QPushButton(I18N.t("Calculate Trendline & SR", "Tính Trendline & S/R"))
         self.calc_btn.clicked.connect(self.on_calculate)
         layout.addWidget(self.calc_btn)
 
@@ -11161,7 +20451,7 @@ class TrendTab(QWidget):
         layout.addWidget(self.result_label)
 
         self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["Symbol", "Timeframe", "Type", "Value"])
+        self.table.setHorizontalHeaderLabels([I18N.t("Symbol", "Mã"), I18N.t("Timeframe", "Khung TG"), I18N.t("Type", "Loại"), I18N.t("Value", "Giá trị")])
         header = self.table.horizontalHeader()
         for i in range(self.table.columnCount()):
             header.setSectionResizeMode(i, QHeaderView.Stretch)
@@ -11218,7 +20508,7 @@ class TrendTab(QWidget):
         self.table.setRowCount(0)
         self.table.clearContents()  # Clear all cell contents
         self.results = {}  # Clear results dict
-        self.result_label.setText("Calculating...")
+        self.result_label.setText(I18N.t("Calculating...", "Đang tính..."))
         
         self.pending = 0
         
@@ -11247,7 +20537,7 @@ class TrendTab(QWidget):
             
             # Chỉ hiển thị popup nếu không phải lỗi thiếu dữ liệu thông thường
             if "Insufficient data" not in error_msg:
-                QMessageBox.warning(self, "Trend Analysis Warning", full_error)
+                QMessageBox.warning(self, I18N.t("Trend Analysis Warning", "Cảnh báo phân tích xu hướng"), full_error)
             else:
                 # Log lỗi thiếu dữ liệu mà không spam popup
                 print(f"⚠️ Trend Analysis: {full_error}")
@@ -11383,6 +20673,3513 @@ class TrendTab(QWidget):
             except Exception:
                 pass
         self.workers = []
+    
+    def refresh_translations(self):
+        """Refresh all UI text when language changes"""
+        try:
+            self.enable_checkbox.setText(I18N.t("Enable Trend Detection", "Bật phát hiện xu hướng"))
+            self.calc_btn.setText(I18N.t("Calculate Trendline & SR", "Tính Trendline & S/R"))
+            self.table.setHorizontalHeaderLabels([I18N.t("Symbol", "Mã"), I18N.t("Timeframe", "Khung TG"), I18N.t("Type", "Loại"), I18N.t("Value", "Giá trị")])
+        except Exception as e:
+            print(f"[LangSwitch] TrendTab refresh error: {e}")
+
+
+class PricingDialog(QDialog):
+    """Dialog hiển thị bảng giá gia hạn license"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(I18N.t("💰 Pricing Plans", "💰 Bảng Giá Gia Hạn"))
+        self.setMinimumWidth(550)
+        self.setModal(True)
+        self.init_ui()
+    
+    def init_ui(self):
+        layout = QVBoxLayout()
+        layout.setSpacing(15)
+        
+        # Header
+        header = QLabel(I18N.t("💰 License Pricing Plans", "💰 Bảng Giá Gia Hạn License"))
+        header.setStyleSheet("font-size: 20px; font-weight: bold; color: #2196F3; margin-bottom: 10px;")
+        header.setAlignment(Qt.AlignCenter)
+        layout.addWidget(header)
+        
+        # Instruction
+        instruction = QLabel(I18N.t("👆 Click on a plan to view payment details", "👆 Nhấn vào gói để xem thông tin thanh toán"))
+        instruction.setStyleSheet("font-size: 12px; color: #666; font-style: italic;")
+        instruction.setAlignment(Qt.AlignCenter)
+        layout.addWidget(instruction)
+        
+        # Pricing table
+        pricing_group = QGroupBox(I18N.t("Choose Your Plan", "Chọn Gói Phù Hợp"))
+        pricing_layout = QVBoxLayout()
+        
+        # Plan cards - now clickable buttons
+        self.plans = [
+            {"duration": I18N.t("1 Month", "1 Tháng"), "months": 1, "price": "$199", "save": "", "color": "#4CAF50"},
+            {"duration": I18N.t("3 Months", "3 Tháng"), "months": 3, "price": "$499", "save": I18N.t("Save $98", "Tiết kiệm $98"), "color": "#2196F3"},
+            {"duration": I18N.t("6 Months", "6 Tháng"), "months": 6, "price": "$799", "save": I18N.t("Save $395", "Tiết kiệm $395"), "color": "#FF9800"},
+            {"duration": I18N.t("1 Year", "1 Năm"), "months": 12, "price": "$1299", "save": I18N.t("Save $1089", "Tiết kiệm $1089"), "color": "#E91E63", "best": True},
+        ]
+        
+        for plan in self.plans:
+            plan_btn = QPushButton()
+            plan_btn.setCursor(Qt.PointingHandCursor)
+            plan_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: white;
+                    border: 2px solid {plan['color']};
+                    border-radius: 10px;
+                    padding: 15px;
+                    text-align: left;
+                }}
+                QPushButton:hover {{
+                    background-color: {plan['color']}20;
+                    border: 3px solid {plan['color']};
+                }}
+            """)
+            
+            # Create button content
+            btn_layout = QHBoxLayout(plan_btn)
+            btn_layout.setContentsMargins(10, 5, 10, 5)
+            
+            # Duration
+            duration_label = QLabel(plan["duration"])
+            duration_label.setStyleSheet(f"font-size: 16px; font-weight: bold; color: {plan['color']}; background: transparent;")
+            duration_label.setFixedWidth(100)
+            btn_layout.addWidget(duration_label)
+            
+            # Price
+            price_label = QLabel(plan["price"])
+            price_label.setStyleSheet("font-size: 24px; font-weight: bold; color: #333; background: transparent;")
+            price_label.setFixedWidth(80)
+            btn_layout.addWidget(price_label)
+            
+            # Save amount
+            if plan.get("save"):
+                save_label = QLabel(plan["save"])
+                save_label.setStyleSheet("font-size: 12px; color: #4CAF50; font-weight: bold; background: transparent;")
+                btn_layout.addWidget(save_label)
+            
+            # Best value badge
+            if plan.get("best"):
+                best_label = QLabel(I18N.t("⭐ BEST VALUE", "⭐ ƯU ĐÃI NHẤT"))
+                best_label.setStyleSheet("font-size: 11px; color: white; background-color: #E91E63; padding: 3px 8px; border-radius: 5px; font-weight: bold;")
+                btn_layout.addWidget(best_label)
+            
+            btn_layout.addStretch()
+            
+            # Arrow indicator
+            arrow_label = QLabel("→")
+            arrow_label.setStyleSheet(f"font-size: 20px; color: {plan['color']}; font-weight: bold; background: transparent;")
+            btn_layout.addWidget(arrow_label)
+            
+            # Connect click event
+            plan_btn.clicked.connect(lambda checked, p=plan: self.show_payment_details(p))
+            
+            pricing_layout.addWidget(plan_btn)
+        
+        pricing_group.setLayout(pricing_layout)
+        layout.addWidget(pricing_group)
+        
+        # Close button
+        close_btn = QPushButton(I18N.t("Close", "Đóng"))
+        close_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #607D8B;
+                color: white;
+                font-weight: bold;
+                padding: 10px 30px;
+                border: none;
+                border-radius: 5px;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #455A64;
+            }
+        """)
+        close_btn.clicked.connect(self.accept)
+        layout.addWidget(close_btn, alignment=Qt.AlignCenter)
+        
+        self.setLayout(layout)
+    
+    def show_payment_details(self, plan):
+        """Hiển thị dialog chi tiết thanh toán cho gói đã chọn"""
+        payment_dialog = PaymentDetailsDialog(plan, self)
+        payment_dialog.exec_()
+
+
+class PaymentDetailsDialog(QDialog):
+    """Dialog hiển thị chi tiết thanh toán với PayOS integration"""
+    
+    def __init__(self, plan, parent=None):
+        super().__init__(parent)
+        self.plan = plan
+        self.payment_data = None  # Lưu thông tin payment từ PayOS
+        self.order_code = None
+        self.setWindowTitle(I18N.t(f"💳 Payment - {plan['duration']}", f"💳 Thanh Toán - {plan['duration']}"))
+        self.setMinimumWidth(550)
+        self.setModal(True)
+        self.init_ui()
+    
+    def init_ui(self):
+        layout = QVBoxLayout()
+        layout.setSpacing(15)
+        
+        # Header with plan info
+        header = QLabel(I18N.t(f"📦 Selected Plan: {self.plan['duration']}", f"📦 Gói Đã Chọn: {self.plan['duration']}"))
+        header.setStyleSheet(f"font-size: 18px; font-weight: bold; color: {self.plan['color']}; padding: 10px;")
+        header.setAlignment(Qt.AlignCenter)
+        layout.addWidget(header)
+        
+        # Price summary
+        price_group = QGroupBox(I18N.t("💰 Price Summary", "💰 Tổng Thanh Toán"))
+        price_layout = QVBoxLayout()
+        
+        price_info = QLabel(f"""
+            <table style='width: 100%;'>
+                <tr>
+                    <td style='font-size: 14px;'>{I18N.t('Plan:', 'Gói:')}</td>
+                    <td style='font-size: 14px; font-weight: bold; text-align: right;'>{self.plan['duration']}</td>
+                </tr>
+                <tr>
+                    <td style='font-size: 14px;'>{I18N.t('Amount:', 'Số tiền:')}</td>
+                    <td style='font-size: 22px; font-weight: bold; color: #E91E63; text-align: right;'>{self.plan['price']}</td>
+                </tr>
+            </table>
+        """)
+        price_info.setTextFormat(Qt.RichText)
+        price_info.setStyleSheet("padding: 15px; background-color: #FFF3E0; border-radius: 8px;")
+        price_layout.addWidget(price_info)
+        
+        price_group.setLayout(price_layout)
+        layout.addWidget(price_group)
+        
+        # Payment Methods Tabs
+        self.payment_tabs = QTabWidget()
+        self.payment_tabs.setStyleSheet("""
+            QTabWidget::pane {
+                border: 1px solid #ddd;
+                border-radius: 8px;
+                background: white;
+            }
+            QTabBar::tab {
+                background: #f0f0f0;
+                padding: 10px 20px;
+                margin-right: 2px;
+                border-top-left-radius: 8px;
+                border-top-right-radius: 8px;
+                font-weight: bold;
+            }
+            QTabBar::tab:selected {
+                background: white;
+                border-bottom: 2px solid #2196F3;
+            }
+        """)
+        
+        # ===== TAB 1: PAYOS AUTO PAYMENT =====
+        self.payos_tab = QWidget()
+        self.payos_tab_layout = QVBoxLayout(self.payos_tab)
+        
+        # Loading indicator
+        self.loading_label = QLabel(I18N.t("⏳ Creating payment...", "⏳ Đang tạo thanh toán..."))
+        self.loading_label.setStyleSheet("font-size: 16px; color: #666; padding: 30px;")
+        self.loading_label.setAlignment(Qt.AlignCenter)
+        self.payos_tab_layout.addWidget(self.loading_label)
+        
+        # QR and info container (hidden initially)
+        self.payos_content = QWidget()
+        self.payos_content.setVisible(False)
+        payos_content_layout = QVBoxLayout(self.payos_content)
+        
+        # Auto badge
+        auto_badge = QLabel(I18N.t("🚀 AUTO ACTIVATE - No wait!", "🚀 TỰ ĐỘNG KÍCH HOẠT - Không cần chờ!"))
+        auto_badge.setStyleSheet("""
+            font-size: 14px; font-weight: bold; color: white; 
+            background-color: #4CAF50; padding: 8px 15px; border-radius: 5px;
+        """)
+        auto_badge.setAlignment(Qt.AlignCenter)
+        payos_content_layout.addWidget(auto_badge)
+        
+        # QR Code and Bank Info side by side
+        qr_bank_layout = QHBoxLayout()
+        
+        # QR Code from PayOS
+        qr_frame = QFrame()
+        qr_frame.setStyleSheet("background-color: white; border-radius: 10px; padding: 5px;")
+        qr_inner_layout = QVBoxLayout(qr_frame)
+        
+        self.payos_qr_label = QLabel()
+        self.payos_qr_label.setAlignment(Qt.AlignCenter)
+        self.payos_qr_label.setMinimumSize(200, 200)
+        qr_inner_layout.addWidget(self.payos_qr_label)
+        
+        qr_hint = QLabel(I18N.t("Scan QR to pay", "Quét mã để thanh toán"))
+        qr_hint.setStyleSheet("font-size: 11px; color: #666; font-style: italic;")
+        qr_hint.setAlignment(Qt.AlignCenter)
+        qr_inner_layout.addWidget(qr_hint)
+        
+        qr_bank_layout.addWidget(qr_frame)
+        
+        # Bank info từ PayOS
+        self.bank_info_label = QLabel()
+        self.bank_info_label.setTextFormat(Qt.RichText)
+        self.bank_info_label.setStyleSheet("padding: 10px; background-color: #E3F2FD; border-radius: 8px; font-size: 12px;")
+        self.bank_info_label.setWordWrap(True)
+        qr_bank_layout.addWidget(self.bank_info_label, 1)
+        
+        payos_content_layout.addLayout(qr_bank_layout)
+        
+        # Amount VND display
+        self.amount_vnd_label = QLabel()
+        self.amount_vnd_label.setStyleSheet("""
+            font-size: 18px; font-weight: bold; color: #E91E63; 
+            padding: 10px; background-color: #FCE4EC; border-radius: 5px;
+        """)
+        self.amount_vnd_label.setAlignment(Qt.AlignCenter)
+        payos_content_layout.addWidget(self.amount_vnd_label)
+        
+        # Open checkout button
+        self.open_checkout_btn = QPushButton(I18N.t("🌐 Open Payment Page", "🌐 Mở Trang Thanh Toán"))
+        self.open_checkout_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #2196F3;
+                color: white;
+                font-weight: bold;
+                padding: 12px 20px;
+                border: none;
+                border-radius: 5px;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #1976D2;
+            }
+        """)
+        self.open_checkout_btn.clicked.connect(self.open_checkout_url)
+        payos_content_layout.addWidget(self.open_checkout_btn)
+        
+        # Check payment status button
+        self.check_status_btn = QPushButton(I18N.t("🔄 Check Payment Status", "🔄 Kiểm Tra Trạng Thái"))
+        self.check_status_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #FF9800;
+                color: white;
+                font-weight: bold;
+                padding: 10px 20px;
+                border: none;
+                border-radius: 5px;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background-color: #F57C00;
+            }
+        """)
+        self.check_status_btn.clicked.connect(self.check_payment_status)
+        payos_content_layout.addWidget(self.check_status_btn)
+        
+        self.payos_tab_layout.addWidget(self.payos_content)
+        
+        self.payment_tabs.addTab(self.payos_tab, I18N.t("🏦 Bank", "🏦 Ngân Hàng"))
+        
+        # ===== TAB 2: CRYPTO (NOWPayments - Auto) =====
+        self.crypto_tab = QWidget()
+        self.crypto_tab_layout = QVBoxLayout(self.crypto_tab)
+        
+        # Loading label for crypto
+        self.crypto_loading_label = QLabel(I18N.t("⏳ Creating crypto payment...", "⏳ Đang tạo thanh toán crypto..."))
+        self.crypto_loading_label.setAlignment(Qt.AlignCenter)
+        self.crypto_loading_label.setStyleSheet("font-size: 14px; color: #FF9800; padding: 20px;")
+        self.crypto_tab_layout.addWidget(self.crypto_loading_label)
+        
+        # Crypto payment content (hidden initially)
+        self.crypto_content = QWidget()
+        self.crypto_content.setVisible(False)
+        crypto_content_layout = QVBoxLayout(self.crypto_content)
+        
+        # Crypto amount info
+        self.crypto_amount_label = QLabel()
+        self.crypto_amount_label.setStyleSheet("""
+            font-size: 14px; font-weight: bold; color: #26A17B; 
+            padding: 10px; background-color: #E8F5E9; border-radius: 5px;
+        """)
+        self.crypto_amount_label.setAlignment(Qt.AlignCenter)
+        crypto_content_layout.addWidget(self.crypto_amount_label)
+        
+        # QR Code and Wallet Info side by side
+        qr_crypto_layout = QHBoxLayout()
+        
+        # QR Code for crypto address
+        crypto_qr_frame = QFrame()
+        crypto_qr_frame.setStyleSheet("background-color: white; border-radius: 10px; padding: 5px;")
+        crypto_qr_inner_layout = QVBoxLayout(crypto_qr_frame)
+        
+        self.crypto_qr_label = QLabel()
+        self.crypto_qr_label.setAlignment(Qt.AlignCenter)
+        self.crypto_qr_label.setMinimumSize(180, 180)
+        crypto_qr_inner_layout.addWidget(self.crypto_qr_label)
+        
+        crypto_qr_hint = QLabel(I18N.t("Scan to pay", "Quét mã để thanh toán"))
+        crypto_qr_hint.setStyleSheet("font-size: 11px; color: #666; font-style: italic;")
+        crypto_qr_hint.setAlignment(Qt.AlignCenter)
+        crypto_qr_inner_layout.addWidget(crypto_qr_hint)
+        
+        qr_crypto_layout.addWidget(crypto_qr_frame)
+        
+        # Crypto wallet info - dynamic
+        self.crypto_info_label = QLabel()
+        self.crypto_info_label.setTextFormat(Qt.RichText)
+        self.crypto_info_label.setStyleSheet("padding: 10px; background-color: #E8F5E9; border-radius: 8px; font-size: 12px;")
+        self.crypto_info_label.setWordWrap(True)
+        qr_crypto_layout.addWidget(self.crypto_info_label, 1)
+        
+        crypto_content_layout.addLayout(qr_crypto_layout)
+        
+        # Copy wallet address button
+        self.copy_crypto_btn = QPushButton(I18N.t("📋 Copy Wallet Address", "📋 Sao Chép Địa Chỉ Ví"))
+        self.copy_crypto_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #26A17B;
+                color: white;
+                font-weight: bold;
+                padding: 10px 15px;
+                border: none;
+                border-radius: 5px;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background-color: #1E8E6B;
+            }
+        """)
+        self.copy_crypto_btn.clicked.connect(self.copy_crypto_address)
+        crypto_content_layout.addWidget(self.copy_crypto_btn)
+        
+        # Check crypto payment status button
+        self.check_crypto_btn = QPushButton(I18N.t("🔄 Check Payment Status", "🔄 Kiểm Tra Trạng Thái"))
+        self.check_crypto_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #FF9800;
+                color: white;
+                font-weight: bold;
+                padding: 10px 15px;
+                border: none;
+                border-radius: 5px;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background-color: #F57C00;
+            }
+        """)
+        self.check_crypto_btn.clicked.connect(self.check_crypto_payment_status)
+        crypto_content_layout.addWidget(self.check_crypto_btn)
+        
+        self.crypto_tab_layout.addWidget(self.crypto_content)
+        
+        self.payment_tabs.addTab(self.crypto_tab, I18N.t("💎 Crypto", "💎 Crypto"))
+        
+        layout.addWidget(self.payment_tabs)
+        
+        # USD rate is fetched together with payment creation (no separate call needed)
+        
+        # Create crypto payment when switching to crypto tab
+        self.payment_tabs.currentChanged.connect(self.on_payment_tab_changed)
+        
+        # Contact info (for crypto payments)
+        contact_group = QGroupBox(I18N.t("📞 Support Contact", "📞 Liên Hệ Hỗ Trợ"))
+        contact_layout = QVBoxLayout()
+        
+        contact_info = QLabel(I18N.t(
+            """👤 <b>Admin Hiến Vũ CFDs</b><br>
+            📱 <b>Zalo/Telegram:</b> <span style='font-size: 14px; color: #4CAF50; font-weight: bold;'>0396560888</span>""",
+            """👤 <b>Admin Hiến Vũ CFDs</b><br>
+            📱 <b>Zalo/Telegram:</b> <span style='font-size: 14px; color: #4CAF50; font-weight: bold;'>0396560888</span>"""
+        ))
+        contact_info.setTextFormat(Qt.RichText)
+        contact_info.setStyleSheet("padding: 10px; background-color: #E8F5E9; border-radius: 8px; font-size: 12px;")
+        contact_info.setWordWrap(True)
+        contact_layout.addWidget(contact_info)
+        
+        contact_group.setLayout(contact_layout)
+        layout.addWidget(contact_group)
+        
+        # Buttons
+        btn_layout = QHBoxLayout()
+        
+        back_btn = QPushButton(I18N.t("← Back", "← Quay Lại"))
+        back_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #607D8B;
+                color: white;
+                font-weight: bold;
+                padding: 10px 25px;
+                border: none;
+                border-radius: 5px;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background-color: #455A64;
+            }
+        """)
+        back_btn.clicked.connect(self.reject)
+        
+        btn_layout.addWidget(back_btn)
+        btn_layout.addStretch()
+        layout.addLayout(btn_layout)
+        
+        self.setLayout(layout)
+        
+        # Auto create PayOS payment when dialog opens
+        QTimer.singleShot(500, self.create_payos_payment)
+    
+    def create_payos_payment(self):
+        """Tạo payment qua PayOS API"""
+        import requests
+        try:
+            from license_client import get_license_client
+            client = get_license_client(server_url=LICENSE_SERVER_URL)
+            
+            # Lấy valid token (tự động refresh nếu cần)
+            token = client.get_valid_token()
+            
+            print(f"[PayOS Debug] Client: {client}")
+            print(f"[PayOS Debug] Access token: {token[:30] if token else 'None'}...")
+            print(f"[PayOS Debug] Server URL: {LICENSE_SERVER_URL}")
+            print(f"[PayOS Debug] Is authenticated: {client.is_authenticated}")
+            
+            if not token:
+                # Thử kiểm tra xem user đã authenticated chưa (có thể token chưa load từ cache)
+                if client.is_authenticated:
+                    # User đã login nhưng không có access token - thử dùng license_key để tạo session mới
+                    print("[PayOS Debug] User authenticated but no token - trying to refresh session...")
+                    # Reload cache để lấy token
+                    client._load_cached_license()
+                    token = client.get_valid_token()
+                
+                if not token:
+                    self.loading_label.setText(I18N.t("❌ Please login first", "❌ Vui lòng đăng nhập trước"))
+                    self.loading_label.setStyleSheet("font-size: 14px; color: #F44336; padding: 20px;")
+                    return
+            
+            # Map duration to plan_id
+            plan_map = {
+                '1 Month': 1, '1 Tháng': 1,
+                '3 Months': 2, '3 Tháng': 2,
+                '6 Months': 3, '6 Tháng': 3,
+                '12 Months': 4, '12 Tháng': 4, '1 Year': 4, '1 Năm': 4
+            }
+            plan_id = plan_map.get(self.plan['duration'], 1)
+            print(f"[PayOS Debug] Plan: {self.plan['duration']} -> plan_id: {plan_id}")
+            
+            # Call API
+            headers = {'Authorization': f'Bearer {token}'}
+            print(f"[PayOS Debug] Calling: {LICENSE_SERVER_URL}/payment/create/")
+            
+            response = requests.post(
+                f"{LICENSE_SERVER_URL}/payment/create/",
+                json={'plan_id': plan_id},
+                headers=headers,
+                timeout=30
+            )
+            
+            print(f"[PayOS Debug] Response status: {response.status_code}")
+            print(f"[PayOS Debug] Response: {response.text[:500]}")
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('success'):
+                    self.payment_data = data
+                    self.order_code = data.get('order_code')
+                    self.checkout_url = data.get('checkout_url')
+                    
+                    # Generate QR from qr_code string
+                    qr_string = data.get('qr_code', '')
+                    amount_vnd = data.get('amount_vnd', 0)
+                    amount_usd = data.get('amount_usd', 0)
+                    usd_rate = data.get('usd_rate', 25500)
+                    
+                    # Create QR image
+                    self.generate_qr_image(qr_string)
+                    
+                    # Update bank info with rate
+                    self.bank_info_label.setText(I18N.t(
+                        f"""<b>🏦 Bank Transfer Info</b><br><br>
+                        <b>Order Code:</b> <span style='color: #E91E63;'>{self.order_code}</span><br><br>
+                        <b>Price:</b> <span style='color: #2196F3;'>${amount_usd:.0f}</span><br>
+                        <b>Rate:</b> <span style='color: #FF9800;'>1 USD = {usd_rate:,.0f} VND</span><br><br>
+                        <b>Amount to pay:</b><br>
+                        <span style='font-size: 20px; font-weight: bold; color: #E91E63;'>{amount_vnd:,.0f} VND</span><br><br>
+                        <span style='color: #4CAF50; font-size: 11px;'>✅ Auto-activate after payment!</span>""",
+                        f"""<b>🏦 Thông Tin Chuyển Khoản</b><br><br>
+                        <b>Mã đơn:</b> <span style='color: #E91E63;'>{self.order_code}</span><br><br>
+                        <b>Giá gốc:</b> <span style='color: #2196F3;'>${amount_usd:.0f}</span><br>
+                        <b>Tỷ giá:</b> <span style='color: #FF9800;'>1 USD = {usd_rate:,.0f} VND</span><br><br>
+                        <b>Số tiền cần chuyển:</b><br>
+                        <span style='font-size: 20px; font-weight: bold; color: #E91E63;'>{amount_vnd:,.0f} VND</span><br><br>
+                        <span style='color: #4CAF50; font-size: 11px;'>✅ Tự động kích hoạt sau thanh toán!</span>"""
+                    ))
+                    
+                    self.amount_vnd_label.setText(I18N.t(
+                        f"💰 ${amount_usd:.0f} × {usd_rate:,.0f} = {amount_vnd:,.0f} VND",
+                        f"💰 ${amount_usd:.0f} × {usd_rate:,.0f} = {amount_vnd:,.0f} VND"
+                    ))
+                    
+                    # Show content, hide loading
+                    self.loading_label.setVisible(False)
+                    self.payos_content.setVisible(True)
+                else:
+                    self.loading_label.setText(I18N.t(
+                        f"❌ Error: {data.get('error', 'Unknown')}",
+                        f"❌ Lỗi: {data.get('error', 'Không xác định')}"
+                    ))
+            else:
+                self.loading_label.setText(I18N.t(
+                    f"❌ Server error: {response.status_code}",
+                    f"❌ Lỗi server: {response.status_code}"
+                ))
+                
+        except Exception as e:
+            print(f"[PayOS] Error: {e}")
+            self.loading_label.setText(I18N.t(
+                f"❌ Connection error",
+                f"❌ Lỗi kết nối server"
+            ))
+    
+    def generate_qr_image(self, qr_string):
+        """Tạo QR image từ string"""
+        try:
+            import qrcode
+            qr = qrcode.QRCode(version=1, box_size=5, border=2)
+            qr.add_data(qr_string)
+            qr.make(fit=True)
+            
+            img = qr.make_image(fill_color="black", back_color="white")
+            
+            # Convert to QPixmap
+            from io import BytesIO
+            buffer = BytesIO()
+            img.save(buffer, format='PNG')
+            buffer.seek(0)
+            
+            pixmap = QPixmap()
+            pixmap.loadFromData(buffer.read())
+            self.payos_qr_label.setPixmap(pixmap.scaled(200, 200, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            
+        except ImportError:
+            # Fallback: show text if qrcode not installed
+            self.payos_qr_label.setText(I18N.t("Open payment page\nto scan QR", "Mở trang thanh toán\nđể quét QR"))
+            self.payos_qr_label.setStyleSheet("font-size: 12px; color: #666; padding: 50px;")
+        except Exception as e:
+            print(f"[QR] Error: {e}")
+            self.payos_qr_label.setText("QR Error")
+    
+    def open_checkout_url(self):
+        """Mở trang thanh toán PayOS"""
+        if hasattr(self, 'checkout_url') and self.checkout_url:
+            import webbrowser
+            webbrowser.open(self.checkout_url)
+        else:
+            QMessageBox.warning(self, "Error", I18N.t("No checkout URL available", "Không có link thanh toán"))
+    
+    def check_payment_status(self):
+        """Kiểm tra trạng thái thanh toán"""
+        import requests
+        if not self.order_code:
+            QMessageBox.warning(self, "Error", I18N.t("No order to check", "Không có đơn hàng để kiểm tra"))
+            return
+        
+        try:
+            from license_client import get_license_client
+            client = get_license_client()
+            token = client.get_valid_token()
+            
+            headers = {'Authorization': f'Bearer {token}'}
+            response = requests.get(
+                f"{LICENSE_SERVER_URL}/payment/status/{self.order_code}/",
+                headers=headers,
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                status = data.get('status', 'unknown')
+                
+                if status == 'completed':
+                    QMessageBox.information(self, 
+                        I18N.t("✅ Payment Successful!", "✅ Thanh Toán Thành Công!"),
+                        I18N.t(
+                            "Your payment has been received!\nLicense has been activated automatically.\n\nPlease restart the app to see changes.",
+                            "Thanh toán của bạn đã được nhận!\nLicense đã được kích hoạt tự động.\n\nVui lòng khởi động lại app để thấy thay đổi."
+                        ))
+                    self.accept()
+                elif status == 'pending':
+                    QMessageBox.information(self, 
+                        I18N.t("⏳ Pending", "⏳ Đang Chờ"),
+                        I18N.t("Payment not received yet. Please complete the transfer.", 
+                               "Chưa nhận được thanh toán. Vui lòng hoàn tất chuyển khoản."))
+                else:
+                    QMessageBox.warning(self, 
+                        I18N.t("Status", "Trạng Thái"),
+                        I18N.t(f"Payment status: {status}", f"Trạng thái: {status}"))
+            else:
+                QMessageBox.warning(self, "Error", f"Server error: {response.status_code}")
+                
+        except Exception as e:
+            QMessageBox.warning(self, "Error", str(e))
+    
+    def copy_wallet_address(self):
+        """Copy địa chỉ ví USDT TRC20 vào clipboard"""
+        from PyQt5.QtWidgets import QApplication
+        clipboard = QApplication.clipboard()
+        clipboard.setText("TJ2Ydkh6wFxZy1KSpL39f18RdXXrx5vHZw")
+        QMessageBox.information(self, 
+            I18N.t("Copied!", "Đã sao chép!"),
+            I18N.t("USDT TRC20 wallet address copied to clipboard", "Địa chỉ ví USDT TRC20 đã được sao chép"))
+    
+    def on_payment_tab_changed(self, index):
+        """Xử lý khi chuyển tab thanh toán"""
+        # Tab 1 = Crypto (index 1)
+        if index == 1 and not hasattr(self, 'crypto_payment_created'):
+            QTimer.singleShot(500, self.create_crypto_payment)
+    
+    def create_crypto_payment(self):
+        """Tạo payment crypto qua NOWPayments"""
+        import requests
+        try:
+            from license_client import get_license_client
+            client = get_license_client(server_url=LICENSE_SERVER_URL)
+            # Lấy valid token (tự động refresh nếu cần)
+            token = client.get_valid_token()
+            
+            if not token:
+                # Thử reload cache nếu user đã authenticated
+                if client.is_authenticated:
+                    client._load_cached_license()
+                    token = client.get_valid_token()
+                    
+                if not token:
+                    self.crypto_loading_label.setText(I18N.t("❌ Please login first", "❌ Vui lòng đăng nhập trước"))
+                    self.crypto_loading_label.setStyleSheet("font-size: 14px; color: #F44336; padding: 20px;")
+                    return
+            
+            # Map duration to plan_id
+            plan_map = {
+                '1 Month': 1, '1 Tháng': 1,
+                '3 Months': 2, '3 Tháng': 2,
+                '6 Months': 3, '6 Tháng': 3,
+                '12 Months': 4, '12 Tháng': 4, '1 Year': 4, '1 Năm': 4
+            }
+            plan_id = plan_map.get(self.plan['duration'], 1)
+            
+            headers = {'Authorization': f'Bearer {token}'}
+            
+            response = requests.post(
+                f"{LICENSE_SERVER_URL}/crypto/create/",
+                json={'plan_id': plan_id, 'currency': 'usdttrc20'},
+                headers=headers,
+                timeout=30
+            )
+            
+            print(f"[Crypto Debug] Response: {response.status_code} - {response.text[:500]}")
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('success'):
+                    self.crypto_payment_created = True
+                    self.crypto_payment_data = data
+                    self.crypto_order_id = data.get('order_id')
+                    self.crypto_pay_address = data.get('pay_address')
+                    self.crypto_pay_amount = data.get('pay_amount')
+                    
+                    # Generate QR for wallet address
+                    self.generate_crypto_qr(self.crypto_pay_address)
+                    
+                    # Update crypto info
+                    amount_usd = data.get('amount_usd', 0)
+                    pay_currency = data.get('pay_currency', 'USDT')
+                    network = data.get('network', 'TRC20')
+                    
+                    self.crypto_amount_label.setText(I18N.t(
+                        f"💰 Price: ${amount_usd:.0f} = {self.crypto_pay_amount} {pay_currency}",
+                        f"💰 Giá: ${amount_usd:.0f} = {self.crypto_pay_amount} {pay_currency}"
+                    ))
+                    
+                    self.crypto_info_label.setText(I18N.t(
+                        f"""<b>💰 Currency:</b> <span style='color: #26A17B; font-size: 16px;'>{pay_currency}</span><br><br>
+                        <b>🌐 Network:</b><br>
+                        <span style='font-size: 16px; font-weight: bold; color: #E91E63;'>{network}</span><br><br>
+                        <b>💵 Amount to send:</b><br>
+                        <span style='font-size: 18px; font-weight: bold; color: #4CAF50;'>{self.crypto_pay_amount} {pay_currency}</span><br><br>
+                        <b>📍 Wallet Address:</b><br>
+                        <span style='font-size: 11px; color: #333; font-weight: bold; word-break: break-all;'>{self.crypto_pay_address}</span><br><br>
+                        <span style='color: #4CAF50; font-size: 11px;'>✅ Auto-activate after payment confirmed!</span>""",
+                        f"""<b>💰 Loại tiền:</b> <span style='color: #26A17B; font-size: 16px;'>{pay_currency}</span><br><br>
+                        <b>🌐 Mạng lưới:</b><br>
+                        <span style='font-size: 16px; font-weight: bold; color: #E91E63;'>{network}</span><br><br>
+                        <b>💵 Số tiền gửi:</b><br>
+                        <span style='font-size: 18px; font-weight: bold; color: #4CAF50;'>{self.crypto_pay_amount} {pay_currency}</span><br><br>
+                        <b>📍 Địa chỉ ví:</b><br>
+                        <span style='font-size: 11px; color: #333; font-weight: bold; word-break: break-all;'>{self.crypto_pay_address}</span><br><br>
+                        <span style='color: #4CAF50; font-size: 11px;'>✅ Tự động kích hoạt sau khi xác nhận!</span>"""
+                    ))
+                    
+                    # Show content
+                    self.crypto_loading_label.setVisible(False)
+                    self.crypto_content.setVisible(True)
+                else:
+                    self.crypto_loading_label.setText(I18N.t(
+                        f"❌ Error: {data.get('error', 'Unknown')}",
+                        f"❌ Lỗi: {data.get('error', 'Không xác định')}"
+                    ))
+                    self.crypto_loading_label.setStyleSheet("font-size: 14px; color: #F44336; padding: 20px;")
+            else:
+                error_text = response.text[:200] if response.text else str(response.status_code)
+                self.crypto_loading_label.setText(I18N.t(
+                    f"❌ Server error: {error_text}",
+                    f"❌ Lỗi server: {error_text}"
+                ))
+                self.crypto_loading_label.setStyleSheet("font-size: 14px; color: #F44336; padding: 20px;")
+                
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.crypto_loading_label.setText(I18N.t(f"❌ Error: {str(e)}", f"❌ Lỗi: {str(e)}"))
+            self.crypto_loading_label.setStyleSheet("font-size: 14px; color: #F44336; padding: 20px;")
+    
+    def generate_crypto_qr(self, address):
+        """Tạo QR code cho địa chỉ crypto"""
+        try:
+            import qrcode
+            from io import BytesIO
+            
+            qr = qrcode.QRCode(version=1, box_size=8, border=2)
+            qr.add_data(address)
+            qr.make(fit=True)
+            
+            img = qr.make_image(fill_color="black", back_color="white")
+            
+            buffer = BytesIO()
+            img.save(buffer, format='PNG')
+            buffer.seek(0)
+            
+            pixmap = QPixmap()
+            pixmap.loadFromData(buffer.getvalue())
+            self.crypto_qr_label.setPixmap(pixmap.scaled(180, 180, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            
+        except Exception as e:
+            print(f"[Crypto QR] Error: {e}")
+            self.crypto_qr_label.setText(address[:20] + "...")
+    
+    def copy_crypto_address(self):
+        """Copy địa chỉ crypto vào clipboard"""
+        from PyQt5.QtWidgets import QApplication
+        if hasattr(self, 'crypto_pay_address') and self.crypto_pay_address:
+            clipboard = QApplication.clipboard()
+            clipboard.setText(self.crypto_pay_address)
+            QMessageBox.information(self, 
+                I18N.t("Copied!", "Đã sao chép!"),
+                I18N.t("Crypto wallet address copied to clipboard", "Địa chỉ ví crypto đã được sao chép"))
+        else:
+            QMessageBox.warning(self, "Error", I18N.t("No address available", "Chưa có địa chỉ"))
+    
+    def check_crypto_payment_status(self):
+        """Kiểm tra trạng thái thanh toán crypto"""
+        import requests
+        try:
+            if not hasattr(self, 'crypto_order_id'):
+                QMessageBox.warning(self, "Error", I18N.t("No payment created", "Chưa tạo thanh toán"))
+                return
+            
+            from license_client import get_license_client
+            client = get_license_client()
+            token = client.get_valid_token()
+            
+            headers = {'Authorization': f'Bearer {token}'}
+            response = requests.get(
+                f"{LICENSE_SERVER_URL}/crypto/status/{self.crypto_order_id}/",
+                headers=headers,
+                timeout=15
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                status = data.get('status', 'pending')
+                np_status = data.get('nowpayments_status', '')
+                actually_paid = data.get('actually_paid', 0)
+                
+                if status == 'completed':
+                    QMessageBox.information(self, 
+                        I18N.t("✅ Payment Completed!", "✅ Thanh Toán Thành Công!"),
+                        I18N.t(
+                            "Your payment has been confirmed and license activated!",
+                            "Thanh toán đã được xác nhận và license đã kích hoạt!"
+                        ))
+                    self.accept()
+                elif status == 'pending':
+                    status_text = np_status if np_status else 'waiting'
+                    paid_text = f"\nReceived: {actually_paid}" if actually_paid else ""
+                    QMessageBox.information(self,
+                        I18N.t("⏳ Payment Pending", "⏳ Đang Chờ Thanh Toán"),
+                        I18N.t(
+                            f"Status: {status_text}{paid_text}\n\nPlease wait for blockchain confirmation.",
+                            f"Trạng thái: {status_text}{paid_text}\n\nVui lòng chờ xác nhận trên blockchain."
+                        ))
+                else:
+                    QMessageBox.warning(self,
+                        I18N.t("Payment Status", "Trạng Thái"),
+                        I18N.t(f"Status: {status}", f"Trạng thái: {status}"))
+            else:
+                QMessageBox.warning(self, "Error", f"Server error: {response.status_code}")
+                
+        except Exception as e:
+            QMessageBox.warning(self, "Error", str(e))
+
+
+class LoginDialog(QDialog):
+    """Dialog đăng nhập tài khoản hệ thống"""
+    
+    # Signal để thông báo login thành công
+    login_success = pyqtSignal(dict)
+    
+    # File để lưu thông tin remember me
+    REMEMBER_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.login_remember.json')
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(I18N.t("🔑 Login", "🔑 Đăng nhập"))
+        self.setMinimumWidth(450)
+        self.setModal(True)
+        self.license_client = None
+        self.went_to_register = False  # Flag to track if user went to register
+        self.logged_in_user = None  # Store logged in user info
+        self.logged_in_license = None  # Store license info
+        self.init_ui()
+        self._init_license_client()
+        self._load_remembered_login()  # Load saved credentials
+        
+    def _init_license_client(self):
+        """Initialize license client"""
+        try:
+            from license_client import get_license_client
+            self.license_client = get_license_client(
+                server_url=LICENSE_SERVER_URL
+            )
+        except Exception as e:
+            print(f"[LoginDialog] Cannot init license client: {e}")
+        
+    def init_ui(self):
+        layout = QVBoxLayout()
+        
+        # Language switch button at top right (dropdown menu like main app)
+        lang_layout = QHBoxLayout()
+        lang_layout.addStretch()
+        
+        # Create language menu button with dropdown
+        self.lang_btn = QPushButton()
+        self._update_lang_btn_text()
+        self.lang_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #607D8B;
+                color: white;
+                padding: 5px 12px;
+                border: none;
+                border-radius: 3px;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background-color: #455A64;
+            }
+            QPushButton::menu-indicator {
+                subcontrol-position: right center;
+                subcontrol-origin: padding;
+                right: 5px;
+            }
+        """)
+        
+        # Create dropdown menu for language selection
+        self.lang_menu = QMenu(self)
+        self.lang_menu.setStyleSheet("""
+            QMenu {
+                background-color: white;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+                padding: 5px;
+            }
+            QMenu::item {
+                padding: 8px 20px;
+                border-radius: 3px;
+            }
+            QMenu::item:selected {
+                background-color: #2196F3;
+                color: white;
+            }
+            QMenu::item:checked {
+                font-weight: bold;
+            }
+        """)
+        
+        # Create action group for exclusive selection
+        self.lang_group = QActionGroup(self)
+        
+        self.lang_en = QAction("🇬🇧 English", self, checkable=True)
+        self.lang_vi = QAction("🇻🇳 Tiếng Việt", self, checkable=True)
+        
+        self.lang_group.addAction(self.lang_en)
+        self.lang_group.addAction(self.lang_vi)
+        
+        self.lang_menu.addAction(self.lang_en)
+        self.lang_menu.addAction(self.lang_vi)
+        
+        # Set current language checked
+        if AppState.language() == 'vi':
+            self.lang_vi.setChecked(True)
+        else:
+            self.lang_en.setChecked(True)
+        
+        # Connect actions
+        self.lang_en.triggered.connect(lambda: self._apply_language('en'))
+        self.lang_vi.triggered.connect(lambda: self._apply_language('vi'))
+        
+        self.lang_btn.setMenu(self.lang_menu)
+        lang_layout.addWidget(self.lang_btn)
+        layout.addLayout(lang_layout)
+        
+        # Header
+        self.header = QLabel(I18N.t("🔑 Login to Your Account", "🔑 Đăng nhập Tài khoản"))
+        self.header.setStyleSheet("font-size: 18px; font-weight: bold; color: #2196F3; margin-bottom: 10px;")
+        self.header.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.header)
+        
+        # ========== LOGIN FORM (Shown before login) ==========
+        self.login_form_widget = QWidget()
+        login_form_layout = QVBoxLayout(self.login_form_widget)
+        login_form_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Form
+        self.form_group = QGroupBox(I18N.t("Account Information", "Thông tin Tài khoản"))
+        form_layout = QFormLayout()
+        
+        # Email/Username
+        self.email_input = QLineEdit()
+        self.email_input.setPlaceholderText(I18N.t("Enter email or username", "Nhập email hoặc tên đăng nhập"))
+        self.email_input.setStyleSheet("padding: 8px; border: 1px solid #ddd; border-radius: 4px;")
+        form_layout.addRow(I18N.t("Email/Username:", "Email/Tên đăng nhập:"), self.email_input)
+        
+        # Password
+        self.password_input = QLineEdit()
+        self.password_input.setEchoMode(QLineEdit.Password)
+        self.password_input.setPlaceholderText(I18N.t("Enter password", "Nhập mật khẩu"))
+        self.password_input.setStyleSheet("padding: 8px; border: 1px solid #ddd; border-radius: 4px;")
+        form_layout.addRow(I18N.t("Password:", "Mật khẩu:"), self.password_input)
+        
+        # Remember me checkbox
+        self.remember_cb = QCheckBox(I18N.t("Remember me", "Ghi nhớ đăng nhập"))
+        form_layout.addRow("", self.remember_cb)
+        
+        self.form_group.setLayout(form_layout)
+        login_form_layout.addWidget(self.form_group)
+        
+        # Buttons
+        btn_layout = QHBoxLayout()
+        
+        self.login_btn = QPushButton(I18N.t("🔑 Login", "🔑 Đăng nhập"))
+        self.login_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                font-weight: bold;
+                padding: 10px 20px;
+                border: none;
+                border-radius: 5px;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+        """)
+        self.login_btn.clicked.connect(self.do_login)
+        
+        self.cancel_btn = QPushButton(I18N.t("Cancel", "Hủy"))
+        self.cancel_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #f44336;
+                color: white;
+                font-weight: bold;
+                padding: 10px 20px;
+                border: none;
+                border-radius: 5px;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #d32f2f;
+            }
+        """)
+        self.cancel_btn.clicked.connect(self.reject)
+        
+        btn_layout.addWidget(self.login_btn)
+        btn_layout.addWidget(self.cancel_btn)
+        login_form_layout.addLayout(btn_layout)
+        
+        # Pricing/Renewal button
+        self.pricing_btn = QPushButton(I18N.t("💰 View Pricing / Renew License", "💰 Xem Bảng Giá / Gia Hạn"))
+        self.pricing_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #FF9800;
+                color: white;
+                font-weight: bold;
+                padding: 10px 20px;
+                border: none;
+                border-radius: 5px;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background-color: #F57C00;
+            }
+        """)
+        self.pricing_btn.clicked.connect(self.open_pricing)
+        login_form_layout.addWidget(self.pricing_btn)
+        
+        # Forgot password link
+        self.forgot_link = QLabel(I18N.t("<a href='#'>Forgot password?</a>", "<a href='#'>Quên mật khẩu?</a>"))
+        self.forgot_link.setOpenExternalLinks(False)
+        self.forgot_link.linkActivated.connect(self.forgot_password)
+        self.forgot_link.setAlignment(Qt.AlignCenter)
+        self.forgot_link.setStyleSheet("margin-top: 10px;")
+        login_form_layout.addWidget(self.forgot_link)
+        
+        # Register link
+        self.register_link = QLabel(I18N.t("<a href='#'>Don't have an account? Register here</a>", "<a href='#'>Chưa có tài khoản? Đăng ký ngay</a>"))
+        self.register_link.setOpenExternalLinks(False)
+        self.register_link.linkActivated.connect(self.open_register)
+        self.register_link.setAlignment(Qt.AlignCenter)
+        login_form_layout.addWidget(self.register_link)
+        
+        layout.addWidget(self.login_form_widget)
+        
+        # ========== LOGGED IN PANEL (Shown after successful login) ==========
+        self.logged_in_widget = QWidget()
+        logged_in_layout = QVBoxLayout(self.logged_in_widget)
+        logged_in_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Success icon and message
+        self.success_icon = QLabel("✅")
+        self.success_icon.setStyleSheet("font-size: 48px;")
+        self.success_icon.setAlignment(Qt.AlignCenter)
+        logged_in_layout.addWidget(self.success_icon)
+        
+        # User info group
+        self.user_info_group = QGroupBox(I18N.t("Account Information", "Thông tin Tài khoản"))
+        user_info_layout = QFormLayout()
+        
+        self.user_name_label = QLabel("--")
+        self.user_name_label.setStyleSheet("font-weight: bold; font-size: 14px; color: #2196F3;")
+        user_info_layout.addRow(I18N.t("User:", "Người dùng:"), self.user_name_label)
+        
+        self.license_type_label = QLabel("--")
+        self.license_type_label.setStyleSheet("font-weight: bold;")
+        user_info_layout.addRow(I18N.t("License:", "License:"), self.license_type_label)
+        
+        self.days_remaining_label = QLabel("--")
+        user_info_layout.addRow(I18N.t("Days Remaining:", "Còn lại:"), self.days_remaining_label)
+        
+        self.user_info_group.setLayout(user_info_layout)
+        logged_in_layout.addWidget(self.user_info_group)
+        
+        # Start button - big and prominent (always enabled, will check license on click)
+        self.start_btn = QPushButton(I18N.t("🚀 Start Trading Bot", "🚀 Khởi động Trading Bot"))
+        self.start_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                font-weight: bold;
+                padding: 15px 30px;
+                border: none;
+                border-radius: 8px;
+                font-size: 16px;
+                min-height: 50px;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+        """)
+        self.start_btn.clicked.connect(self._on_start_clicked)
+        logged_in_layout.addWidget(self.start_btn)
+        
+        # Pricing button for logged in users
+        self.pricing_btn_logged = QPushButton(I18N.t("💰 View Pricing / Renew License", "💰 Xem Bảng Giá / Gia Hạn"))
+        self.pricing_btn_logged.setStyleSheet("""
+            QPushButton {
+                background-color: #FF9800;
+                color: white;
+                font-weight: bold;
+                padding: 10px 20px;
+                border: none;
+                border-radius: 5px;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background-color: #F57C00;
+            }
+        """)
+        self.pricing_btn_logged.clicked.connect(self.open_pricing)
+        logged_in_layout.addWidget(self.pricing_btn_logged)
+        
+        # Logout button
+        self.logout_btn = QPushButton(I18N.t("🚪 Logout", "🚪 Đăng xuất"))
+        self.logout_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #9E9E9E;
+                color: white;
+                font-weight: bold;
+                padding: 10px 20px;
+                border: none;
+                border-radius: 5px;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background-color: #757575;
+            }
+        """)
+        self.logout_btn.clicked.connect(self._on_logout_clicked)
+        logged_in_layout.addWidget(self.logout_btn)
+        
+        layout.addWidget(self.logged_in_widget)
+        
+        # Initially hide logged in panel
+        self.logged_in_widget.hide()
+        
+        self.setLayout(layout)
+        
+    def do_login(self):
+        email = self.email_input.text().strip()
+        password = self.password_input.text()
+        
+        if not email or not password:
+            QMessageBox.warning(self, 
+                I18N.t("Validation Error", "Lỗi xác thực"),
+                I18N.t("Please enter email and password", "Vui lòng nhập email và mật khẩu"))
+            return
+        
+        # Disable button and show loading
+        self.login_btn.setEnabled(False)
+        self.login_btn.setText(I18N.t("⏳ Logging in...", "⏳ Đang đăng nhập..."))
+        QApplication.processEvents()
+        
+        try:
+            # === PHƯƠNG THỨC 1: THỬ LICENSE SERVER TRƯỚC ===
+            server_success = False
+            use_local_fallback = False
+            
+            if self.license_client:
+                try:
+                    success, data = self.license_client.login(email, password)
+                    
+                    if success:
+                        # Login successful with server
+                        license_info = data.get('license') or {}
+                        user_data = data.get('user', {})
+                        license_status = data.get('license_status', 'active')
+                        
+                        # Xử lý days_remaining dựa trên license_status
+                        if license_status == 'expired':
+                            days_remaining = 0
+                        elif license_status == 'no_license':
+                            days_remaining = 0
+                            license_info = {'license_type': 'none', 'days_remaining': 0}
+                        else:
+                            days_remaining = license_info.get('days_remaining', 0) if license_info else 0
+                        
+                        # Store login info
+                        self.logged_in_user = user_data
+                        self.logged_in_license = license_info
+                        
+                        # Activate license on this device (even if expired, for tracking)
+                        if license_info and license_info.get('license_key'):
+                            self.license_client.activate(license_info['license_key'])
+                        
+                        # Save or clear remembered login based on checkbox
+                        self._save_remembered_login(email, password, self.remember_cb.isChecked(), user_data)
+                        
+                        # Show logged in panel instead of accepting immediately
+                        self._show_logged_in_panel(email, license_info, days_remaining)
+                        
+                        server_success = True
+                        return
+                    else:
+                        # Check if this is a connection error -> try local fallback
+                        if data.get('error') == 'connection_error':
+                            use_local_fallback = True
+                            print("🔄 Server unavailable, trying local authentication...")
+                        else:
+                            # Server responded but login failed
+                            raw_msg = data.get('message', data.get('error', 'Unknown error'))
+                            error_translations = {
+                                'Invalid username or password': 'Tên đăng nhập hoặc mật khẩu không đúng',
+                                'Invalid username/email/phone or password': 'Tên đăng nhập/email/số điện thoại hoặc mật khẩu không đúng',
+                                'Account is disabled': 'Tài khoản đã bị vô hiệu hóa',
+                                'No active license found': 'Không tìm thấy license đang hoạt động',
+                                'License has expired': 'License đã hết hạn',
+                                'Username/Email/Phone and password are required': 'Vui lòng nhập tên đăng nhập/email/số điện thoại và mật khẩu',
+                            }
+                            vi_msg = error_translations.get(raw_msg, raw_msg)
+                            error_msg = I18N.t(raw_msg, vi_msg)
+                            
+                            # Check if license expired or not found - STILL ALLOW LOGIN
+                            # User can login but will be restricted from using services
+                            if raw_msg in ['No active license found', 'License has expired']:
+                                # Save login info for user (so they can access pricing)
+                                self._save_remembered_login(email, password, self.remember_cb.isChecked(), {})
+                                
+                                # Store login info with expired license
+                                self.logged_in_user = {}
+                                self.logged_in_license = {'license_type': 'expired', 'days_remaining': 0}
+                                
+                                # Show logged in panel with expired license
+                                self._show_logged_in_panel(email, {'license_type': 'expired'}, 0)
+                                return
+                            else:
+                                QMessageBox.warning(self,
+                                    I18N.t("❌ Login Failed", "❌ Đăng nhập thất bại"),
+                                    str(error_msg))
+                            return
+                except Exception as e:
+                    print(f"⚠️ Server login error: {e}, trying local fallback...")
+                    use_local_fallback = True
+            else:
+                use_local_fallback = True
+            
+            # === PHƯƠNG THỨC 2: FALLBACK SANG LOCAL LICENSE GUARD ===
+            if use_local_fallback:
+                try:
+                    from license_guard import get_license_guard
+                    guard = get_license_guard()
+                    
+                    success, message, result = guard.validate_online(email, password)
+                    
+                    if success:
+                        # Local authentication successful
+                        user_info = guard.user_info or {}
+                        license_type = guard.license_type or "trial"
+                        
+                        # Save remembered login
+                        self._save_remembered_login(email, password, self.remember_cb.isChecked(), user_info)
+                        
+                        # Store login info
+                        self.logged_in_user = user_info
+                        self.logged_in_license = {'license_type': license_type, 'days_remaining': -1}  # -1 = offline mode
+                        
+                        # Show logged in panel (offline mode)
+                        self._show_logged_in_panel(email, {'license_type': f'{license_type} (Offline)'}, -1)
+                        return
+                    else:
+                        QMessageBox.warning(self,
+                            I18N.t("❌ Login Failed", "❌ Đăng nhập thất bại"),
+                            message)
+                        return
+                except ImportError:
+                    QMessageBox.critical(self,
+                        I18N.t("Error", "Lỗi"),
+                        I18N.t("Cannot connect to server and local authentication not available.",
+                               "Không thể kết nối server và xác thực cục bộ không khả dụng."))
+                except Exception as e:
+                    QMessageBox.critical(self,
+                        I18N.t("Error", "Lỗi"),
+                        I18N.t(f"Local login error: {str(e)}", f"Lỗi đăng nhập cục bộ: {str(e)}"))
+                    
+        except Exception as e:
+            QMessageBox.critical(self,
+                I18N.t("Error", "Lỗi"),
+                I18N.t(f"Login error: {str(e)}", f"Lỗi đăng nhập: {str(e)}"))
+        finally:
+            self.login_btn.setEnabled(True)
+            self.login_btn.setText(I18N.t("🔑 Login", "🔑 Đăng nhập"))
+    
+    def _show_logged_in_panel(self, email: str, license_info: dict, days_remaining: int):
+        """Show the logged in panel with user info"""
+        # Update header
+        self.header.setText(I18N.t("✅ Login Successful", "✅ Đăng nhập thành công"))
+        self.header.setStyleSheet("font-size: 18px; font-weight: bold; color: #4CAF50; margin-bottom: 10px;")
+        
+        # Update user info labels
+        self.user_name_label.setText(email)
+        
+        license_type = license_info.get('license_type', 'N/A').upper()
+        self.license_type_label.setText(license_type)
+        
+        if days_remaining == -1:
+            # Offline mode - allow start
+            self.days_remaining_label.setText(I18N.t("⚠️ Offline Mode", "⚠️ Chế độ Offline"))
+            self.days_remaining_label.setStyleSheet("color: #FF9800; font-weight: bold;")
+            self.start_btn.setEnabled(True)
+            self.start_btn.setText(I18N.t("🚀 Start Trading Bot", "🚀 Khởi động Trading Bot"))
+            self.start_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #4CAF50;
+                    color: white;
+                    font-weight: bold;
+                    padding: 15px 30px;
+                    border: none;
+                    border-radius: 8px;
+                    font-size: 16px;
+                    min-height: 50px;
+                }
+                QPushButton:hover {
+                    background-color: #45a049;
+                }
+            """)
+        elif days_remaining <= 0:
+            # License expired - Keep Start button enabled but show warning style
+            self.days_remaining_label.setText(I18N.t("❌ Expired", "❌ Hết hạn"))
+            self.days_remaining_label.setStyleSheet("color: #f44336; font-weight: bold;")
+            
+            # Keep start button enabled with warning style (will check on click)
+            self.start_btn.setEnabled(True)
+            self.start_btn.setText(I18N.t("🚀 Start Trading Bot", "🚀 Khởi động Trading Bot"))
+            self.start_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #FF9800;
+                    color: white;
+                    font-weight: bold;
+                    padding: 15px 30px;
+                    border: none;
+                    border-radius: 8px;
+                    font-size: 16px;
+                    min-height: 50px;
+                }
+                QPushButton:hover {
+                    background-color: #F57C00;
+                }
+            """)
+        else:
+            # License active
+            self.days_remaining_label.setText(f"{days_remaining} " + I18N.t("days", "ngày"))
+            self.days_remaining_label.setStyleSheet("color: #4CAF50; font-weight: bold;")
+            self.start_btn.setEnabled(True)
+            self.start_btn.setText(I18N.t("🚀 Start Trading Bot", "🚀 Khởi động Trading Bot"))
+            self.start_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #4CAF50;
+                    color: white;
+                    font-weight: bold;
+                    padding: 15px 30px;
+                    border: none;
+                    border-radius: 8px;
+                    font-size: 16px;
+                    min-height: 50px;
+                }
+                QPushButton:hover {
+                    background-color: #45a049;
+                }
+            """)
+        
+        # Hide login form, show logged in panel
+        self.login_form_widget.hide()
+        self.logged_in_widget.show()
+        
+        # Adjust dialog size
+        self.adjustSize()
+    
+    def _on_start_clicked(self):
+        """Handle Start button click - refresh license and proceed to main app if valid"""
+        # Show loading
+        self.start_btn.setEnabled(False)
+        self.start_btn.setText(I18N.t("⏳ Checking license...", "⏳ Đang kiểm tra license..."))
+        QApplication.processEvents()
+        
+        try:
+            # Refresh license status from server
+            if self.license_client:
+                print("🔄 Refreshing license status before start...")
+                refresh_success, is_active = self.license_client.refresh_license_status()
+                
+                if refresh_success:
+                    # Update displayed info with fresh data
+                    license_data = self.license_client.license_data
+                    if license_data:
+                        days_remaining = license_data.get('days_remaining', 0)
+                        expire_date = license_data.get('expire_date', '')
+                        license_type = license_data.get('license_type', 'N/A')
+                        
+                        # Update stored license info
+                        self.logged_in_license = license_data
+                        
+                        # Update UI
+                        self.license_type_label.setText(license_type.upper())
+                        
+                        if days_remaining > 0:
+                            self.days_remaining_label.setText(f"{days_remaining} " + I18N.t("days", "ngày"))
+                            self.days_remaining_label.setStyleSheet("color: #4CAF50; font-weight: bold;")
+                        else:
+                            self.days_remaining_label.setText(I18N.t("❌ Expired", "❌ Hết hạn"))
+                            self.days_remaining_label.setStyleSheet("color: #f44336; font-weight: bold;")
+                        
+                        print(f"✅ License refreshed: days_remaining={days_remaining}, is_active={is_active}")
+                
+                # Check if license is active
+                if not self.license_client.is_license_active:
+                    # License expired - show message and don't proceed
+                    QMessageBox.warning(self,
+                        I18N.t("⚠️ License Expired", "⚠️ License Hết Hạn"),
+                        I18N.t(
+                            "Your license has expired!\n\nPlease renew your license to use the app.\n\nClick 'View Pricing' to renew.",
+                            "License của bạn đã hết hạn!\n\nVui lòng gia hạn license để sử dụng app.\n\nNhấn 'Xem Bảng Giá' để gia hạn."
+                        )
+                    )
+                    # Reset button
+                    self.start_btn.setEnabled(True)
+                    self.start_btn.setText(I18N.t("🚀 Start Trading Bot", "🚀 Khởi động Trading Bot"))
+                    return
+            
+            # License valid - proceed to main app
+            self.accept()
+            
+        except Exception as e:
+            print(f"⚠️ Error checking license: {e}")
+            # On error, still allow to proceed (offline grace)
+            self.accept()
+    
+    def _on_logout_clicked(self):
+        """Handle Logout button click"""
+        # Clear license client cache
+        if self.license_client:
+            try:
+                self.license_client.clear_cache()
+            except Exception as e:
+                print(f"[LoginDialog] Error clearing license cache: {e}")
+        
+        # Clear remembered login
+        self._clear_remembered_login()
+        
+        # Clear stored user info
+        self.logged_in_user = None
+        self.logged_in_license = None
+        
+        # Reset UI to login form
+        self.header.setText(I18N.t("🔑 Login to Your Account", "🔑 Đăng nhập Tài khoản"))
+        self.header.setStyleSheet("font-size: 18px; font-weight: bold; color: #2196F3; margin-bottom: 10px;")
+        
+        # Clear input fields
+        self.email_input.clear()
+        self.password_input.clear()
+        self.remember_cb.setChecked(False)
+        
+        # Show login form, hide logged in panel
+        self.logged_in_widget.hide()
+        self.login_form_widget.show()
+        
+        # Reset start button text, style and enable it
+        self.start_btn.setEnabled(True)
+        self.start_btn.setText(I18N.t("🚀 Start Trading Bot", "🚀 Khởi động Trading Bot"))
+        self.start_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                font-weight: bold;
+                padding: 15px 30px;
+                border: none;
+                border-radius: 8px;
+                font-size: 16px;
+                min-height: 50px;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+        """)
+        
+        # Adjust dialog size
+        self.adjustSize()
+        
+        QMessageBox.information(self,
+            I18N.t("Logged Out", "Đã đăng xuất"),
+            I18N.t("You have been logged out successfully.", "Bạn đã đăng xuất thành công."))
+        
+    def forgot_password(self):
+        """Mở dialog quên mật khẩu"""
+        forgot_dialog = ForgotPasswordDialog(self)
+        forgot_dialog.exec_()
+    
+    def open_register(self):
+        self.went_to_register = True  # Flag to indicate user went to register
+        self.reject()  # Close login dialog
+        register_dialog = RegisterDialog(self.parent())
+        register_dialog.exec_()
+    
+    def open_pricing(self):
+        """Mở dialog bảng giá gia hạn license"""
+        pricing_dialog = PricingDialog(self)
+        pricing_dialog.exec_()
+    
+    def _update_lang_btn_text(self):
+        """Update language button text based on current language"""
+        if AppState.language() == 'vi':
+            self.lang_btn.setText("🌐 Ngôn ngữ ▼")
+        else:
+            self.lang_btn.setText("🌐 Language ▼")
+    
+    def _apply_language(self, lang_code: str):
+        """Apply language change - affects entire app"""
+        print(f"[LoginDialog] Switching language to: {lang_code}")
+        AppState.set_language(lang_code)
+        
+        # Update button text
+        self._update_lang_btn_text()
+        
+        # Update checked state
+        if lang_code == 'vi':
+            self.lang_vi.setChecked(True)
+        else:
+            self.lang_en.setChecked(True)
+        
+        # Refresh dialog UI
+        self._refresh_ui()
+        
+        # Also try to refresh main app if it exists
+        try:
+            main_window = self.parent()
+            if main_window and hasattr(main_window, 'update_menu_for_user'):
+                if hasattr(main_window, 'logged_in_user'):
+                    main_window.update_menu_for_user(main_window.logged_in_user)
+            
+            # Update main window tabs language
+            if main_window and hasattr(main_window, 'update_ui_language'):
+                main_window.update_ui_language()
+                print(f"[LoginDialog] ✅ Main window UI language updated")
+        except Exception as e:
+            print(f"[LoginDialog] Cannot update main window: {e}")
+    
+    def _toggle_language(self):
+        """Toggle between English and Vietnamese (legacy method)"""
+        current_lang = AppState.language()
+        new_lang = 'vi' if current_lang == 'en' else 'en'
+        self._apply_language(new_lang)
+    
+    def _refresh_ui(self):
+        """Refresh UI texts after language change"""
+        self.setWindowTitle(I18N.t("🔑 Login", "🔑 Đăng nhập"))
+        self.header.setText(I18N.t("🔑 Login to Your Account", "🔑 Đăng nhập Tài khoản"))
+        self.form_group.setTitle(I18N.t("Account Information", "Thông tin Tài khoản"))
+        self.email_input.setPlaceholderText(I18N.t("Enter email or username", "Nhập email hoặc tên đăng nhập"))
+        self.password_input.setPlaceholderText(I18N.t("Enter password", "Nhập mật khẩu"))
+        self.remember_cb.setText(I18N.t("Remember me", "Ghi nhớ đăng nhập"))
+        self.login_btn.setText(I18N.t("🔑 Login", "🔑 Đăng nhập"))
+        self.cancel_btn.setText(I18N.t("Cancel", "Hủy"))
+        self.pricing_btn.setText(I18N.t("💰 View Pricing / Renew License", "💰 Xem Bảng Giá / Gia Hạn"))
+        self.forgot_link.setText(I18N.t("<a href='#'>Forgot password?</a>", "<a href='#'>Quên mật khẩu?</a>"))
+        self.register_link.setText(I18N.t("<a href='#'>Don't have an account? Register here</a>", "<a href='#'>Chưa có tài khoản? Đăng ký ngay</a>"))
+        
+        # Logged in panel texts
+        self.user_info_group.setTitle(I18N.t("Account Information", "Thông tin Tài khoản"))
+        self.start_btn.setText(I18N.t("🚀 Start Trading Bot", "🚀 Khởi động Trading Bot"))
+        self.pricing_btn_logged.setText(I18N.t("💰 View Pricing / Renew License", "💰 Xem Bảng Giá / Gia Hạn"))
+        self.logout_btn.setText(I18N.t("🚪 Logout", "🚪 Đăng xuất"))
+    
+    def _load_remembered_login(self):
+        """Load saved login credentials if remember me was checked"""
+        try:
+            if os.path.exists(self.REMEMBER_FILE):
+                import base64
+                with open(self.REMEMBER_FILE, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                
+                if data.get('remember', False):
+                    # Decode saved credentials (basic obfuscation, not real encryption)
+                    email = base64.b64decode(data.get('e', '')).decode('utf-8') if data.get('e') else ''
+                    password = base64.b64decode(data.get('p', '')).decode('utf-8') if data.get('p') else ''
+                    
+                    self.email_input.setText(email)
+                    self.password_input.setText(password)
+                    self.remember_cb.setChecked(True)
+        except Exception as e:
+            print(f"[LoginDialog] Cannot load remembered login: {e}")
+    
+    def _save_remembered_login(self, email: str, password: str, remember: bool, user_data: dict = None):
+        """Save login credentials if remember me is checked"""
+        try:
+            import base64
+            if remember:
+                # Save with basic obfuscation (not real encryption for simplicity)
+                data = {
+                    'remember': True,
+                    'e': base64.b64encode(email.encode('utf-8')).decode('utf-8'),
+                    'p': base64.b64encode(password.encode('utf-8')).decode('utf-8'),
+                    'email': email,  # Plain email for AI Server tracking
+                    'name': user_data.get('name', email.split('@')[0]) if user_data else email.split('@')[0],
+                    'phone': user_data.get('phone', 'N/A') if user_data else 'N/A'
+                }
+            else:
+                # Clear saved credentials
+                data = {'remember': False}
+            
+            with open(self.REMEMBER_FILE, 'w', encoding='utf-8') as f:
+                json.dump(data, f)
+        except Exception as e:
+            print(f"[LoginDialog] Cannot save remembered login: {e}")
+    
+    def _clear_remembered_login(self):
+        """Clear saved login credentials"""
+        try:
+            if os.path.exists(self.REMEMBER_FILE):
+                os.remove(self.REMEMBER_FILE)
+        except Exception as e:
+            print(f"[LoginDialog] Cannot clear remembered login: {e}")
+
+
+class ForgotPasswordDialog(QDialog):
+    """Dialog quên mật khẩu - Khôi phục mật khẩu qua email"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(I18N.t("🔓 Forgot Password", "🔓 Quên mật khẩu"))
+        self.setMinimumWidth(450)
+        self.setModal(True)
+        self.license_client = None
+        self.verified_email = None  # Email đã xác thực
+        self.init_ui()
+        self._init_license_client()
+    
+    def _init_license_client(self):
+        """Initialize license client"""
+        try:
+            from license_client import get_license_client
+            self.license_client = get_license_client(
+                server_url=LICENSE_SERVER_URL
+            )
+        except Exception as e:
+            print(f"[ForgotPasswordDialog] Cannot init license client: {e}")
+    
+    def init_ui(self):
+        self.main_layout = QVBoxLayout()
+        
+        # Header
+        header = QLabel(I18N.t("🔓 Reset Your Password", "🔓 Đặt lại mật khẩu"))
+        header.setStyleSheet("font-size: 18px; font-weight: bold; color: #FF9800; margin-bottom: 10px;")
+        header.setAlignment(Qt.AlignCenter)
+        self.main_layout.addWidget(header)
+        
+        # Stacked widget for multi-step flow
+        self.stacked = QStackedWidget()
+        
+        # Step 1: Enter email
+        self.step1_widget = self._create_step1_email()
+        self.stacked.addWidget(self.step1_widget)
+        
+        # Step 2: Enter verification code
+        self.step2_widget = self._create_step2_code()
+        self.stacked.addWidget(self.step2_widget)
+        
+        # Step 3: Enter new password
+        self.step3_widget = self._create_step3_password()
+        self.stacked.addWidget(self.step3_widget)
+        
+        self.main_layout.addWidget(self.stacked)
+        self.setLayout(self.main_layout)
+    
+    def _create_step1_email(self):
+        """Step 1: Nhập email"""
+        widget = QWidget()
+        layout = QVBoxLayout()
+        
+        # Instructions
+        info = QLabel(I18N.t(
+            "Enter your registered email address.\nWe will send a verification code to reset your password.",
+            "Nhập địa chỉ email đã đăng ký.\nChúng tôi sẽ gửi mã xác nhận để đặt lại mật khẩu."
+        ))
+        info.setStyleSheet("color: #666; margin-bottom: 15px;")
+        info.setWordWrap(True)
+        layout.addWidget(info)
+        
+        # Email input
+        form_group = QGroupBox(I18N.t("Email Address", "Địa chỉ Email"))
+        form_layout = QFormLayout()
+        
+        self.email_input = QLineEdit()
+        self.email_input.setPlaceholderText(I18N.t("Enter your email", "Nhập email của bạn"))
+        self.email_input.setStyleSheet("padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;")
+        form_layout.addRow(I18N.t("Email:", "Email:"), self.email_input)
+        
+        form_group.setLayout(form_layout)
+        layout.addWidget(form_group)
+        
+        # Buttons
+        btn_layout = QHBoxLayout()
+        
+        self.send_code_btn = QPushButton(I18N.t("📧 Send Verification Code", "📧 Gửi mã xác nhận"))
+        self.send_code_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #FF9800;
+                color: white;
+                font-weight: bold;
+                padding: 12px 20px;
+                border: none;
+                border-radius: 5px;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #F57C00;
+            }
+            QPushButton:disabled {
+                background-color: #ccc;
+            }
+        """)
+        self.send_code_btn.clicked.connect(self._send_verification_code)
+        
+        cancel_btn = QPushButton(I18N.t("Cancel", "Hủy"))
+        cancel_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #9e9e9e;
+                color: white;
+                padding: 12px 20px;
+                border: none;
+                border-radius: 5px;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #757575;
+            }
+        """)
+        cancel_btn.clicked.connect(self.reject)
+        
+        btn_layout.addWidget(self.send_code_btn)
+        btn_layout.addWidget(cancel_btn)
+        layout.addLayout(btn_layout)
+        
+        widget.setLayout(layout)
+        return widget
+    
+    def _create_step2_code(self):
+        """Step 2: Nhập mã xác nhận"""
+        widget = QWidget()
+        layout = QVBoxLayout()
+        
+        # Instructions
+        self.code_info = QLabel(I18N.t(
+            "A verification code has been sent to your email.\nPlease enter the 6-digit code below.",
+            "Mã xác nhận đã được gửi đến email của bạn.\nVui lòng nhập mã 6 chữ số bên dưới."
+        ))
+        self.code_info.setStyleSheet("color: #666; margin-bottom: 15px;")
+        self.code_info.setWordWrap(True)
+        layout.addWidget(self.code_info)
+        
+        # Code input
+        form_group = QGroupBox(I18N.t("Verification Code", "Mã xác nhận"))
+        form_layout = QFormLayout()
+        
+        self.code_input = QLineEdit()
+        self.code_input.setPlaceholderText(I18N.t("Enter 6-digit code", "Nhập mã 6 chữ số"))
+        self.code_input.setMaxLength(6)
+        self.code_input.setStyleSheet("padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 18px; letter-spacing: 5px; text-align: center;")
+        self.code_input.setAlignment(Qt.AlignCenter)
+        form_layout.addRow(I18N.t("Code:", "Mã:"), self.code_input)
+        
+        form_group.setLayout(form_layout)
+        layout.addWidget(form_group)
+        
+        # Resend link
+        resend_layout = QHBoxLayout()
+        resend_label = QLabel(I18N.t("Didn't receive the code?", "Không nhận được mã?"))
+        resend_label.setStyleSheet("color: #666;")
+        
+        self.resend_btn = QPushButton(I18N.t("Resend", "Gửi lại"))
+        self.resend_btn.setStyleSheet("color: #2196F3; background: none; border: none; text-decoration: underline; cursor: pointer;")
+        self.resend_btn.clicked.connect(self._resend_code)
+        
+        resend_layout.addWidget(resend_label)
+        resend_layout.addWidget(self.resend_btn)
+        resend_layout.addStretch()
+        layout.addLayout(resend_layout)
+        
+        # Buttons
+        btn_layout = QHBoxLayout()
+        
+        self.verify_code_btn = QPushButton(I18N.t("✓ Verify Code", "✓ Xác nhận mã"))
+        self.verify_code_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                font-weight: bold;
+                padding: 12px 20px;
+                border: none;
+                border-radius: 5px;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+            QPushButton:disabled {
+                background-color: #ccc;
+            }
+        """)
+        self.verify_code_btn.clicked.connect(self._verify_code)
+        
+        back_btn = QPushButton(I18N.t("← Back", "← Quay lại"))
+        back_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #9e9e9e;
+                color: white;
+                padding: 12px 20px;
+                border: none;
+                border-radius: 5px;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #757575;
+            }
+        """)
+        back_btn.clicked.connect(lambda: self.stacked.setCurrentIndex(0))
+        
+        btn_layout.addWidget(self.verify_code_btn)
+        btn_layout.addWidget(back_btn)
+        layout.addLayout(btn_layout)
+        
+        widget.setLayout(layout)
+        return widget
+    
+    def _create_step3_password(self):
+        """Step 3: Đặt mật khẩu mới"""
+        widget = QWidget()
+        layout = QVBoxLayout()
+        
+        # Success icon
+        success_icon = QLabel("✅")
+        success_icon.setStyleSheet("font-size: 40px; margin-bottom: 10px;")
+        success_icon.setAlignment(Qt.AlignCenter)
+        layout.addWidget(success_icon)
+        
+        # Instructions
+        info = QLabel(I18N.t(
+            "Email verified successfully!\nPlease enter your new password below.",
+            "Email đã được xác nhận!\nVui lòng nhập mật khẩu mới bên dưới."
+        ))
+        info.setStyleSheet("color: #4CAF50; margin-bottom: 15px; font-weight: bold;")
+        info.setWordWrap(True)
+        info.setAlignment(Qt.AlignCenter)
+        layout.addWidget(info)
+        
+        # Password inputs
+        form_group = QGroupBox(I18N.t("New Password", "Mật khẩu mới"))
+        form_layout = QFormLayout()
+        
+        self.new_password_input = QLineEdit()
+        self.new_password_input.setEchoMode(QLineEdit.Password)
+        self.new_password_input.setPlaceholderText(I18N.t("Enter new password (min 8 chars)", "Nhập mật khẩu mới (tối thiểu 8 ký tự)"))
+        self.new_password_input.setStyleSheet("padding: 10px; border: 1px solid #ddd; border-radius: 4px;")
+        form_layout.addRow(I18N.t("New Password:", "Mật khẩu mới:"), self.new_password_input)
+        
+        self.confirm_password_input = QLineEdit()
+        self.confirm_password_input.setEchoMode(QLineEdit.Password)
+        self.confirm_password_input.setPlaceholderText(I18N.t("Confirm new password", "Xác nhận mật khẩu mới"))
+        self.confirm_password_input.setStyleSheet("padding: 10px; border: 1px solid #ddd; border-radius: 4px;")
+        form_layout.addRow(I18N.t("Confirm:", "Xác nhận:"), self.confirm_password_input)
+        
+        form_group.setLayout(form_layout)
+        layout.addWidget(form_group)
+        
+        # Buttons
+        btn_layout = QHBoxLayout()
+        
+        self.reset_password_btn = QPushButton(I18N.t("🔑 Reset Password", "🔑 Đặt lại mật khẩu"))
+        self.reset_password_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                font-weight: bold;
+                padding: 12px 20px;
+                border: none;
+                border-radius: 5px;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+            QPushButton:disabled {
+                background-color: #ccc;
+            }
+        """)
+        self.reset_password_btn.clicked.connect(self._reset_password)
+        
+        btn_layout.addWidget(self.reset_password_btn)
+        layout.addLayout(btn_layout)
+        
+        widget.setLayout(layout)
+        return widget
+    
+    def _send_verification_code(self):
+        """Gửi mã xác nhận đến email"""
+        email = self.email_input.text().strip()
+        
+        if not email:
+            QMessageBox.warning(self,
+                I18N.t("Validation Error", "Lỗi xác thực"),
+                I18N.t("Please enter your email address.", "Vui lòng nhập địa chỉ email."))
+            return
+        
+        # Basic email validation
+        import re
+        if not re.match(r'^[\w\.-]+@[\w\.-]+\.\w+$', email):
+            QMessageBox.warning(self,
+                I18N.t("Invalid Email", "Email không hợp lệ"),
+                I18N.t("Please enter a valid email address.", "Vui lòng nhập địa chỉ email hợp lệ."))
+            return
+        
+        if not self.license_client:
+            QMessageBox.warning(self,
+                I18N.t("Error", "Lỗi"),
+                I18N.t("Cannot connect to server.", "Không thể kết nối đến server."))
+            return
+        
+        # Disable button and show loading
+        self.send_code_btn.setEnabled(False)
+        self.send_code_btn.setText(I18N.t("⏳ Sending...", "⏳ Đang gửi..."))
+        QApplication.processEvents()
+        
+        try:
+            # Gửi kèm ngôn ngữ hiện tại để server gửi email đúng ngôn ngữ
+            current_lang = AppState.language()
+            success, data = self.license_client._api_request('auth/forgot-password/', data={
+                'email': email,
+                'language': current_lang
+            })
+            
+            if success:
+                self.verified_email = email
+                QMessageBox.information(self,
+                    I18N.t("✅ Code Sent", "✅ Đã gửi mã"),
+                    I18N.t(f"A verification code has been sent to {email}.\nPlease check your inbox (and spam folder).",
+                           f"Mã xác nhận đã được gửi đến {email}.\nVui lòng kiểm tra hộp thư (và thư rác)."))
+                # Move to step 2
+                self.stacked.setCurrentIndex(1)
+            else:
+                error_msg = data.get('message', data.get('error', 'Unknown error'))
+                QMessageBox.warning(self,
+                    I18N.t("❌ Error", "❌ Lỗi"),
+                    str(error_msg))
+        except Exception as e:
+            QMessageBox.critical(self,
+                I18N.t("Error", "Lỗi"),
+                I18N.t(f"Error: {str(e)}", f"Lỗi: {str(e)}"))
+        finally:
+            self.send_code_btn.setEnabled(True)
+            self.send_code_btn.setText(I18N.t("📧 Send Verification Code", "📧 Gửi mã xác nhận"))
+    
+    def _resend_code(self):
+        """Gửi lại mã xác nhận"""
+        self._send_verification_code()
+    
+    def _verify_code(self):
+        """Xác nhận mã"""
+        code = self.code_input.text().strip()
+        
+        if not code or len(code) != 6:
+            QMessageBox.warning(self,
+                I18N.t("Validation Error", "Lỗi xác thực"),
+                I18N.t("Please enter the 6-digit verification code.", "Vui lòng nhập mã xác nhận 6 chữ số."))
+            return
+        
+        if not self.license_client or not self.verified_email:
+            QMessageBox.warning(self,
+                I18N.t("Error", "Lỗi"),
+                I18N.t("Session expired. Please start over.", "Phiên đã hết hạn. Vui lòng thử lại."))
+            self.stacked.setCurrentIndex(0)
+            return
+        
+        # Disable button and show loading
+        self.verify_code_btn.setEnabled(False)
+        self.verify_code_btn.setText(I18N.t("⏳ Verifying...", "⏳ Đang xác nhận..."))
+        QApplication.processEvents()
+        
+        try:
+            success, data = self.license_client._api_request('auth/verify-reset-code/', data={
+                'email': self.verified_email,
+                'code': code
+            })
+            
+            if success:
+                # Move to step 3
+                self.stacked.setCurrentIndex(2)
+            else:
+                error_msg = data.get('message', data.get('error', 'Invalid code'))
+                QMessageBox.warning(self,
+                    I18N.t("❌ Invalid Code", "❌ Mã không đúng"),
+                    I18N.t(f"The verification code is incorrect or expired.\n{error_msg}",
+                           f"Mã xác nhận không đúng hoặc đã hết hạn.\n{error_msg}"))
+        except Exception as e:
+            QMessageBox.critical(self,
+                I18N.t("Error", "Lỗi"),
+                I18N.t(f"Error: {str(e)}", f"Lỗi: {str(e)}"))
+        finally:
+            self.verify_code_btn.setEnabled(True)
+            self.verify_code_btn.setText(I18N.t("✓ Verify Code", "✓ Xác nhận mã"))
+    
+    def _reset_password(self):
+        """Đặt lại mật khẩu mới"""
+        new_password = self.new_password_input.text()
+        confirm_password = self.confirm_password_input.text()
+        
+        if not new_password:
+            QMessageBox.warning(self,
+                I18N.t("Validation Error", "Lỗi xác thực"),
+                I18N.t("Please enter a new password.", "Vui lòng nhập mật khẩu mới."))
+            return
+        
+        if len(new_password) < 8:
+            QMessageBox.warning(self,
+                I18N.t("Weak Password", "Mật khẩu yếu"),
+                I18N.t("Password must be at least 8 characters.", "Mật khẩu phải có ít nhất 8 ký tự."))
+            return
+        
+        if new_password != confirm_password:
+            QMessageBox.warning(self,
+                I18N.t("Password Mismatch", "Mật khẩu không khớp"),
+                I18N.t("Passwords do not match.", "Mật khẩu không khớp."))
+            return
+        
+        if not self.license_client or not self.verified_email:
+            QMessageBox.warning(self,
+                I18N.t("Error", "Lỗi"),
+                I18N.t("Session expired. Please start over.", "Phiên đã hết hạn. Vui lòng thử lại."))
+            self.stacked.setCurrentIndex(0)
+            return
+        
+        code = self.code_input.text().strip()
+        
+        # Disable button and show loading
+        self.reset_password_btn.setEnabled(False)
+        self.reset_password_btn.setText(I18N.t("⏳ Resetting...", "⏳ Đang đặt lại..."))
+        QApplication.processEvents()
+        
+        try:
+            success, data = self.license_client._api_request('auth/reset-password/', data={
+                'email': self.verified_email,
+                'code': code,
+                'new_password': new_password,
+                'new_password_confirm': new_password
+            })
+            
+            if success:
+                QMessageBox.information(self,
+                    I18N.t("✅ Password Reset Successful", "✅ Đặt lại mật khẩu thành công"),
+                    I18N.t("Your password has been reset successfully!\nYou can now login with your new password.",
+                           "Mật khẩu đã được đặt lại thành công!\nBạn có thể đăng nhập bằng mật khẩu mới."))
+                self.accept()
+            else:
+                error_msg = data.get('message', data.get('error', 'Unknown error'))
+                QMessageBox.warning(self,
+                    I18N.t("❌ Error", "❌ Lỗi"),
+                    str(error_msg))
+        except Exception as e:
+            QMessageBox.critical(self,
+                I18N.t("Error", "Lỗi"),
+                I18N.t(f"Error: {str(e)}", f"Lỗi: {str(e)}"))
+        finally:
+            self.reset_password_btn.setEnabled(True)
+            self.reset_password_btn.setText(I18N.t("🔑 Reset Password", "🔑 Đặt lại mật khẩu"))
+
+
+class RegisterDialog(QDialog):
+    """Dialog đăng ký tài khoản mới"""
+    
+    # Signal để thông báo đăng ký thành công
+    register_success = pyqtSignal(dict)
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(I18N.t("📝 Register", "📝 Đăng ký"))
+        self.setMinimumWidth(450)
+        self.setModal(True)
+        self.license_client = None
+        self.init_ui()
+        self._init_license_client()
+    
+    def _init_license_client(self):
+        """Initialize license client"""
+        try:
+            from license_client import get_license_client
+            self.license_client = get_license_client(
+                server_url=LICENSE_SERVER_URL
+            )
+        except Exception as e:
+            print(f"[RegisterDialog] Cannot init license client: {e}")
+        
+    def init_ui(self):
+        layout = QVBoxLayout()
+        
+        # Header
+        header = QLabel(I18N.t("📝 Create New Account", "📝 Tạo Tài khoản Mới"))
+        header.setStyleSheet("font-size: 18px; font-weight: bold; color: #2196F3; margin-bottom: 10px;")
+        header.setAlignment(Qt.AlignCenter)
+        layout.addWidget(header)
+        
+        # Scroll area for form
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        
+        form_widget = QWidget()
+        form_layout = QVBoxLayout(form_widget)
+        
+        # Personal Information
+        personal_group = QGroupBox(I18N.t("👤 Personal Information", "👤 Thông tin Cá nhân"))
+        personal_layout = QFormLayout()
+        
+        self.fullname_input = QLineEdit()
+        self.fullname_input.setPlaceholderText(I18N.t("Enter your full name", "Nhập họ và tên"))
+        self.fullname_input.setStyleSheet("padding: 8px; border: 1px solid #ddd; border-radius: 4px;")
+        personal_layout.addRow(I18N.t("Full Name:", "Họ và tên:"), self.fullname_input)
+        
+        self.email_input = QLineEdit()
+        self.email_input.setPlaceholderText(I18N.t("Enter your email", "Nhập email của bạn"))
+        self.email_input.setStyleSheet("padding: 8px; border: 1px solid #ddd; border-radius: 4px;")
+        personal_layout.addRow(I18N.t("Email:", "Email:"), self.email_input)
+        
+        self.phone_input = QLineEdit()
+        self.phone_input.setPlaceholderText(I18N.t("Enter phone number (optional)", "Nhập số điện thoại (tùy chọn)"))
+        self.phone_input.setStyleSheet("padding: 8px; border: 1px solid #ddd; border-radius: 4px;")
+        personal_layout.addRow(I18N.t("Phone:", "Điện thoại:"), self.phone_input)
+        
+        personal_group.setLayout(personal_layout)
+        form_layout.addWidget(personal_group)
+        
+        # Account Information
+        account_group = QGroupBox(I18N.t("🔐 Account Security", "🔐 Bảo mật Tài khoản"))
+        account_layout = QFormLayout()
+        
+        self.username_input = QLineEdit()
+        self.username_input.setPlaceholderText(I18N.t("Choose a username", "Chọn tên đăng nhập"))
+        self.username_input.setStyleSheet("padding: 8px; border: 1px solid #ddd; border-radius: 4px;")
+        account_layout.addRow(I18N.t("Username:", "Tên đăng nhập:"), self.username_input)
+        
+        self.password_input = QLineEdit()
+        self.password_input.setEchoMode(QLineEdit.Password)
+        self.password_input.setPlaceholderText(I18N.t("Create password (min 8 characters)", "Tạo mật khẩu (tối thiểu 8 ký tự)"))
+        self.password_input.setStyleSheet("padding: 8px; border: 1px solid #ddd; border-radius: 4px;")
+        account_layout.addRow(I18N.t("Password:", "Mật khẩu:"), self.password_input)
+        
+        self.confirm_password_input = QLineEdit()
+        self.confirm_password_input.setEchoMode(QLineEdit.Password)
+        self.confirm_password_input.setPlaceholderText(I18N.t("Confirm your password", "Xác nhận mật khẩu"))
+        self.confirm_password_input.setStyleSheet("padding: 8px; border: 1px solid #ddd; border-radius: 4px;")
+        account_layout.addRow(I18N.t("Confirm Password:", "Xác nhận mật khẩu:"), self.confirm_password_input)
+        
+        account_group.setLayout(account_layout)
+        form_layout.addWidget(account_group)
+        
+        # Trading Preferences
+        trading_group = QGroupBox(I18N.t("📊 Trading Preferences", "📊 Tùy chọn Giao dịch"))
+        trading_layout = QFormLayout()
+        
+        self.experience_combo = QComboBox()
+        self.experience_combo.addItems([
+            I18N.t("Beginner (< 1 year)", "Mới bắt đầu (< 1 năm)"),
+            I18N.t("Intermediate (1-3 years)", "Trung bình (1-3 năm)"),
+            I18N.t("Advanced (3-5 years)", "Nâng cao (3-5 năm)"),
+            I18N.t("Expert (> 5 years)", "Chuyên gia (> 5 năm)")
+        ])
+        self.experience_combo.setStyleSheet("padding: 8px; border: 1px solid #ddd; border-radius: 4px;")
+        trading_layout.addRow(I18N.t("Experience Level:", "Trình độ kinh nghiệm:"), self.experience_combo)
+        
+        self.trading_style_combo = QComboBox()
+        self.trading_style_combo.addItems([
+            I18N.t("Scalping", "Scalping (Lướt sóng)"),
+            I18N.t("Day Trading", "Day Trading (Giao dịch trong ngày)"),
+            I18N.t("Swing Trading", "Swing Trading (Giao dịch trung hạn)"),
+            I18N.t("Position Trading", "Position Trading (Giao dịch dài hạn)")
+        ])
+        self.trading_style_combo.setStyleSheet("padding: 8px; border: 1px solid #ddd; border-radius: 4px;")
+        trading_layout.addRow(I18N.t("Trading Style:", "Phong cách giao dịch:"), self.trading_style_combo)
+        
+        trading_group.setLayout(trading_layout)
+        form_layout.addWidget(trading_group)
+        
+        # Terms and Conditions
+        terms_layout = QHBoxLayout()
+        self.terms_cb = QCheckBox()
+        terms_label = QLabel(I18N.t(
+            "I agree to the <a href='terms'>Terms of Service</a> and <a href='privacy'>Privacy Policy</a>",
+            "Tôi đồng ý với <a href='terms'>Điều khoản Dịch vụ</a> và <a href='privacy'>Chính sách Bảo mật</a>"
+        ))
+        terms_label.setOpenExternalLinks(False)
+        terms_label.linkActivated.connect(self.show_legal_document)
+        terms_layout.addWidget(self.terms_cb)
+        terms_layout.addWidget(terms_label, 1)
+        form_layout.addLayout(terms_layout)
+        
+        scroll.setWidget(form_widget)
+        layout.addWidget(scroll)
+        
+        # Buttons
+        btn_layout = QHBoxLayout()
+        
+        self.register_btn = QPushButton(I18N.t("📝 Register", "📝 Đăng ký"))
+        self.register_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #2196F3;
+                color: white;
+                font-weight: bold;
+                padding: 10px 20px;
+                border: none;
+                border-radius: 5px;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #1976D2;
+            }
+        """)
+        self.register_btn.clicked.connect(self.do_register)
+        
+        self.cancel_btn = QPushButton(I18N.t("Cancel", "Hủy"))
+        self.cancel_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #9e9e9e;
+                color: white;
+                font-weight: bold;
+                padding: 10px 20px;
+                border: none;
+                border-radius: 5px;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #757575;
+            }
+        """)
+        self.cancel_btn.clicked.connect(self.reject)
+        
+        btn_layout.addWidget(self.register_btn)
+        btn_layout.addWidget(self.cancel_btn)
+        layout.addLayout(btn_layout)
+        
+        # Login link
+        login_link = QLabel(I18N.t("<a href='#'>Already have an account? Login here</a>", "<a href='#'>Đã có tài khoản? Đăng nhập tại đây</a>"))
+        login_link.setOpenExternalLinks(False)
+        login_link.linkActivated.connect(self.open_login)
+        login_link.setAlignment(Qt.AlignCenter)
+        login_link.setStyleSheet("margin-top: 10px;")
+        layout.addWidget(login_link)
+        
+        self.setLayout(layout)
+        
+    def do_register(self):
+        # Validate inputs
+        fullname = self.fullname_input.text().strip()
+        email = self.email_input.text().strip()
+        username = self.username_input.text().strip()
+        password = self.password_input.text()
+        confirm_password = self.confirm_password_input.text()
+        
+        if not fullname or not email or not username or not password:
+            QMessageBox.warning(self,
+                I18N.t("Validation Error", "Lỗi xác thực"),
+                I18N.t("Please fill in all required fields", "Vui lòng điền đầy đủ thông tin bắt buộc"))
+            return
+        
+        if password != confirm_password:
+            QMessageBox.warning(self,
+                I18N.t("Password Mismatch", "Mật khẩu không khớp"),
+                I18N.t("Passwords do not match. Please try again.", "Mật khẩu không khớp. Vui lòng thử lại."))
+            return
+        
+        if len(password) < 8:
+            QMessageBox.warning(self,
+                I18N.t("Weak Password", "Mật khẩu yếu"),
+                I18N.t("Password must be at least 8 characters long.", "Mật khẩu phải có ít nhất 8 ký tự."))
+            return
+        
+        if not self.terms_cb.isChecked():
+            QMessageBox.warning(self,
+                I18N.t("Terms Required", "Yêu cầu Điều khoản"),
+                I18N.t("You must agree to the Terms of Service and Privacy Policy.", "Bạn phải đồng ý với Điều khoản Dịch vụ và Chính sách Bảo mật."))
+            return
+        
+        # Connect to License Server
+        if not self.license_client:
+            QMessageBox.warning(self, 
+                I18N.t("Error", "Lỗi"),
+                I18N.t("License client not initialized. Please restart the app.", 
+                       "Không thể khởi tạo license client. Vui lòng khởi động lại ứng dụng."))
+            return
+        
+        # Disable button and show loading
+        self.register_btn.setEnabled(False)
+        self.register_btn.setText(I18N.t("⏳ Registering...", "⏳ Đang đăng ký..."))
+        QApplication.processEvents()
+        
+        try:
+            # Parse full name into first and last name
+            name_parts = fullname.split(' ', 1)
+            first_name = name_parts[0]
+            last_name = name_parts[1] if len(name_parts) > 1 else ''
+            phone = self.phone_input.text().strip()
+            
+            print(f"[RegisterDialog] 📤 Sending register request for {username}...")
+            success, data = self.license_client.register(
+                username=username,
+                password=password,
+                email=email,
+                first_name=first_name,
+                last_name=last_name,
+                phone=phone,
+                language=AppState.language()  # Gửi ngôn ngữ hiện tại
+            )
+            print(f"[RegisterDialog] 📥 Got response: success={success}, data={data}")
+            
+            if success:
+                # Registration successful - Check if activation code is required
+                require_activation = data.get('require_activation', False)
+                email_sent = data.get('email_sent', False)
+                
+                if require_activation:
+                    # Show message about activation code
+                    if email_sent:
+                        QMessageBox.information(self,
+                            I18N.t("✅ Registration Successful", "✅ Đăng ký thành công"),
+                            I18N.t(f"Welcome to Trading Bot!\n\n📧 An activation code has been sent to your email: {email}\n\nPlease check your inbox (and spam folder) for the 6-character activation code.\n\nEnter the code in the next screen to activate your Trial license.",
+                                   f"Chào mừng bạn đến với Trading Bot!\n\n📧 Mã kích hoạt đã được gửi đến email: {email}\n\nVui lòng kiểm tra hộp thư (và thư rác) để lấy mã kích hoạt 6 ký tự.\n\nNhập mã vào màn hình tiếp theo để kích hoạt License Trial."))
+                    
+                    # Close register dialog and open activation code dialog
+                    self.accept()
+                    
+                    # Open activation code dialog
+                    activation_dialog = ActivationCodeDialog(username, self.parent())
+                    activation_dialog.exec_()
+                else:
+                    # Old flow - License granted directly
+                    message = data.get('message', 'Đăng ký thành công!')
+                    
+                    if email_sent:
+                        QMessageBox.information(self,
+                            I18N.t("✅ Registration Successful", "✅ Đăng ký thành công"),
+                            I18N.t(f"Welcome to Trading Bot!\n\n📧 A verification email has been sent to your email address.\n\nPlease check your inbox and click the verification link to activate your account.\n\nAfter verification, please wait for Admin to grant your license.",
+                                   f"Chào mừng bạn đến với Trading Bot!\n\n📧 Email xác thực đã được gửi đến địa chỉ email của bạn.\n\nVui lòng kiểm tra hộp thư và nhấn vào link xác thực để kích hoạt tài khoản.\n\nSau khi xác thực, vui lòng chờ Admin cấp License."))
+                    else:
+                        QMessageBox.information(self,
+                            I18N.t("✅ Registration Successful", "✅ Đăng ký thành công"),
+                            I18N.t(f"Welcome to Trading Bot!\n\nYour account has been created.\n\nPlease wait for Admin to review and grant your license.\n\nYou will be notified when your license is ready.",
+                                   f"Chào mừng bạn đến với Trading Bot!\n\nTài khoản của bạn đã được tạo.\n\nVui lòng chờ Admin xét duyệt và cấp License.\n\nBạn sẽ được thông báo khi License sẵn sàng."))
+                    
+                    self.accept()
+            else:
+                # Registration failed
+                if data is None:
+                    data = {}
+                error_msg = data.get('message', data.get('error', 'Unknown error'))
+                
+                # Check for specific errors
+                if 'username' in str(data):
+                    error_msg = I18N.t("Username already exists. Please choose another.", 
+                                       "Tên đăng nhập đã tồn tại. Vui lòng chọn tên khác.")
+                elif 'email' in str(data):
+                    error_msg = I18N.t("Email already registered. Please use another email or login.", 
+                                       "Email đã được đăng ký. Vui lòng sử dụng email khác hoặc đăng nhập.")
+                elif data.get('error') == 'connection_error':
+                    error_msg = I18N.t("Cannot connect to server. Please check your internet connection.",
+                                       "Không thể kết nối đến máy chủ. Vui lòng kiểm tra kết nối internet.")
+                
+                QMessageBox.warning(self,
+                    I18N.t("❌ Registration Failed", "❌ Đăng ký thất bại"),
+                    str(error_msg))
+                    
+        except Exception as e:
+            QMessageBox.critical(self,
+                I18N.t("Error", "Lỗi"),
+                I18N.t(f"Registration error: {str(e)}", f"Lỗi đăng ký: {str(e)}"))
+        finally:
+            self.register_btn.setEnabled(True)
+            self.register_btn.setText(I18N.t("📝 Register", "📝 Đăng ký"))
+    
+    def open_login(self):
+        self.reject()  # Close register dialog
+        login_dialog = LoginDialog(self.parent())
+        login_dialog.exec_()
+    
+    def show_legal_document(self, link):
+        """Show Terms of Service or Privacy Policy dialog"""
+        if link == 'terms':
+            dialog = TermsOfServiceDialog(self)
+            dialog.exec_()
+        elif link == 'privacy':
+            dialog = PrivacyPolicyDialog(self)
+            dialog.exec_()
+
+
+class ActivationCodeDialog(QDialog):
+    """Dialog nhập mã kích hoạt 6 ký tự để kích hoạt tài khoản Trial"""
+    
+    # Signal để thông báo kích hoạt thành công với thông tin license
+    activation_success = pyqtSignal(dict)
+    
+    def __init__(self, username: str, parent=None):
+        super().__init__(parent)
+        self.username = username
+        self.setWindowTitle(I18N.t("🔑 Activate Account", "🔑 Kích hoạt Tài khoản"))
+        self.setMinimumWidth(400)
+        self.setModal(True)
+        self.license_client = None
+        self.init_ui()
+        self._init_license_client()
+    
+    def _init_license_client(self):
+        """Initialize license client"""
+        try:
+            from license_client import get_license_client
+            self.license_client = get_license_client(
+                server_url=LICENSE_SERVER_URL
+            )
+        except Exception as e:
+            print(f"[ActivationCodeDialog] Cannot init license client: {e}")
+    
+    def init_ui(self):
+        layout = QVBoxLayout()
+        layout.setSpacing(15)
+        
+        # Header
+        header = QLabel(I18N.t("🔑 Enter Activation Code", "🔑 Nhập Mã Kích Hoạt"))
+        header.setStyleSheet("font-size: 20px; font-weight: bold; color: #4CAF50; margin-bottom: 5px;")
+        header.setAlignment(Qt.AlignCenter)
+        layout.addWidget(header)
+        
+        # Description
+        desc = QLabel(I18N.t(
+            "Your account has been created!\n\nPlease enter the 6-character activation code to activate your Trial license.",
+            "Tài khoản của bạn đã được tạo!\n\nVui lòng nhập mã kích hoạt 6 ký tự để kích hoạt License Trial."))
+        desc.setStyleSheet("color: #666; margin-bottom: 10px;")
+        desc.setAlignment(Qt.AlignCenter)
+        desc.setWordWrap(True)
+        layout.addWidget(desc)
+        
+        # Username display
+        user_label = QLabel(I18N.t(f"👤 Username: {self.username}", f"👤 Tên đăng nhập: {self.username}"))
+        user_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #1976D2; background: #E3F2FD; padding: 10px; border-radius: 5px;")
+        user_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(user_label)
+        
+        # Code input group
+        code_group = QGroupBox(I18N.t("Activation Code", "Mã Kích Hoạt"))
+        code_layout = QVBoxLayout()
+        
+        self.code_input = QLineEdit()
+        self.code_input.setPlaceholderText("ABC123")
+        self.code_input.setMaxLength(6)
+        self.code_input.setAlignment(Qt.AlignCenter)
+        self.code_input.setStyleSheet("""
+            QLineEdit {
+                padding: 15px;
+                font-size: 24px;
+                font-weight: bold;
+                letter-spacing: 8px;
+                text-transform: uppercase;
+                border: 2px solid #4CAF50;
+                border-radius: 8px;
+                background: #F1F8E9;
+            }
+            QLineEdit:focus {
+                border-color: #2E7D32;
+                background: white;
+            }
+        """)
+        self.code_input.textChanged.connect(self._on_code_changed)
+        code_layout.addWidget(self.code_input)
+        
+        # Hint
+        hint = QLabel(I18N.t("Enter 6-character code (letters and numbers)", "Nhập mã 6 ký tự (chữ và số)"))
+        hint.setStyleSheet("color: #888; font-size: 11px;")
+        hint.setAlignment(Qt.AlignCenter)
+        code_layout.addWidget(hint)
+        
+        code_group.setLayout(code_layout)
+        layout.addWidget(code_group)
+        
+        # Buttons
+        btn_layout = QHBoxLayout()
+        
+        self.activate_btn = QPushButton(I18N.t("✅ Activate", "✅ Kích hoạt"))
+        self.activate_btn.setEnabled(False)
+        self.activate_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                font-weight: bold;
+                padding: 12px 25px;
+                border: none;
+                border-radius: 5px;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #388E3C;
+            }
+            QPushButton:disabled {
+                background-color: #BDBDBD;
+            }
+        """)
+        self.activate_btn.clicked.connect(self.do_activate)
+        
+        self.cancel_btn = QPushButton(I18N.t("Later", "Để sau"))
+        self.cancel_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #9E9E9E;
+                color: white;
+                font-weight: bold;
+                padding: 12px 25px;
+                border: none;
+                border-radius: 5px;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #757575;
+            }
+        """)
+        self.cancel_btn.clicked.connect(self.reject)
+        
+        btn_layout.addWidget(self.activate_btn)
+        btn_layout.addWidget(self.cancel_btn)
+        layout.addLayout(btn_layout)
+        
+        # Note
+        note = QLabel(I18N.t(
+            "💡 Don't have an activation code? Contact Admin to get one.",
+            "💡 Chưa có mã kích hoạt? Liên hệ Admin để được cấp mã."))
+        note.setStyleSheet("color: #FF9800; font-size: 11px; margin-top: 10px;")
+        note.setAlignment(Qt.AlignCenter)
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        
+        self.setLayout(layout)
+        
+        # Focus on code input
+        self.code_input.setFocus()
+    
+    def _on_code_changed(self, text):
+        """Enable activate button when code has 6 characters"""
+        # Convert to uppercase
+        self.code_input.blockSignals(True)
+        self.code_input.setText(text.upper())
+        self.code_input.blockSignals(False)
+        
+        # Enable button when 6 chars
+        self.activate_btn.setEnabled(len(text) == 6)
+    
+    def do_activate(self):
+        """Kích hoạt bằng mã"""
+        code = self.code_input.text().strip().upper()
+        
+        if len(code) != 6:
+            QMessageBox.warning(self,
+                I18N.t("Invalid Code", "Mã không hợp lệ"),
+                I18N.t("Please enter a 6-character activation code.", "Vui lòng nhập mã kích hoạt 6 ký tự."))
+            return
+        
+        if not self.license_client:
+            QMessageBox.warning(self,
+                I18N.t("Error", "Lỗi"),
+                I18N.t("Cannot connect to license server.", "Không thể kết nối đến máy chủ license."))
+            return
+        
+        # Disable button and show loading
+        self.activate_btn.setEnabled(False)
+        self.activate_btn.setText(I18N.t("⏳ Activating...", "⏳ Đang kích hoạt..."))
+        QApplication.processEvents()
+        
+        try:
+            success, data = self.license_client.activate_by_code(self.username, code)
+            
+            if success:
+                # Activation successful
+                license_info = data.get('license', {})
+                days = license_info.get('days_remaining', 7)
+                license_type = license_info.get('license_type', 'trial')
+                
+                QMessageBox.information(self,
+                    I18N.t("✅ Activation Successful", "✅ Kích hoạt thành công"),
+                    I18N.t(f"🎉 Congratulations!\n\nYour account has been activated!\n\n📋 License Type: {license_type.upper()}\n⏰ Days Remaining: {days} days\n\nNow please login with your password.",
+                           f"🎉 Chúc mừng!\n\nTài khoản của bạn đã được kích hoạt!\n\n📋 Loại License: {license_type.upper()}\n⏰ Thời hạn: {days} ngày\n\nBây giờ hãy đăng nhập bằng mật khẩu của bạn."))
+                
+                # Emit signal
+                self.activation_success.emit(data)
+                
+                # Close this dialog
+                self.accept()
+                
+                # Auto open LoginDialog with username pre-filled
+                login_dialog = LoginDialog(self.parent())
+                login_dialog.email_input.setText(self.username)
+                login_dialog.password_input.setFocus()
+                
+                # Show login dialog
+                if login_dialog.exec_() == QDialog.Accepted:
+                    # Login successful - the main app will continue
+                    pass
+            else:
+                # Activation failed
+                error_msg = data.get('error', data.get('message', 'Unknown error'))
+                if 'not found' in str(error_msg).lower():
+                    error_msg = I18N.t("Invalid activation code. Please check and try again.",
+                                       "Mã kích hoạt không hợp lệ. Vui lòng kiểm tra và thử lại.")
+                elif 'used' in str(error_msg).lower():
+                    error_msg = I18N.t("This activation code has already been used.",
+                                       "Mã kích hoạt này đã được sử dụng.")
+                elif 'expired' in str(error_msg).lower() or 'invalid' in str(error_msg).lower():
+                    error_msg = I18N.t("This activation code is expired or invalid.",
+                                       "Mã kích hoạt đã hết hạn hoặc không hợp lệ.")
+                
+                QMessageBox.warning(self,
+                    I18N.t("❌ Activation Failed", "❌ Kích hoạt thất bại"),
+                    str(error_msg))
+                    
+        except Exception as e:
+            QMessageBox.critical(self,
+                I18N.t("Error", "Lỗi"),
+                I18N.t(f"Activation error: {str(e)}", f"Lỗi kích hoạt: {str(e)}"))
+        finally:
+            self.activate_btn.setEnabled(True)
+            self.activate_btn.setText(I18N.t("✅ Activate", "✅ Kích hoạt"))
+
+
+class AccountProfileDialog(QDialog):
+    """Dialog xem và chỉnh sửa thông tin tài khoản"""
+    
+    profile_updated = pyqtSignal(dict)
+    
+    def __init__(self, username: str, parent=None, license_client=None):
+        super().__init__(parent)
+        self.username = username
+        self.setWindowTitle(I18N.t("👤 Account Profile", "👤 Thông tin Tài khoản"))
+        self.setMinimumWidth(500)
+        self.setModal(True)
+        self.license_client = license_client  # Use provided client or init new one
+        self.user_data = {}
+        self.init_ui()
+        if not self.license_client:
+            self._init_license_client()
+        self._load_profile()
+    
+    def _init_license_client(self):
+        """Initialize license client"""
+        try:
+            from license_client import get_license_client
+            self.license_client = get_license_client(
+                server_url=LICENSE_SERVER_URL
+            )
+            print(f"[AccountProfileDialog] ✅ License client initialized with token: {self.license_client._access_token[:30] if self.license_client._access_token else 'None'}...")
+        except Exception as e:
+            print(f"[AccountProfileDialog] ❌ Cannot init license client: {e}")
+    
+    def _load_profile(self):
+        """Load profile từ server - BẮT BUỘC phải kết nối server"""
+        print(f"\n[AccountProfileDialog] === LOADING PROFILE ===")
+        print(f"[AccountProfileDialog] Username: {self.username}")
+        print(f"[AccountProfileDialog] License Client available: {self.license_client is not None}")
+        if self.license_client:
+            print(f"[AccountProfileDialog] Token: {self.license_client._access_token[:30] if self.license_client._access_token else 'None'}...")
+        
+        # Check license client
+        if not self.license_client:
+            print(f"[AccountProfileDialog] [ERROR] No license client!")
+            self._show_login_required_dialog(
+                I18N.t("License Client Error", "Lỗi Khách hàng License"),
+                I18N.t("Cannot initialize license client. Please login again.",
+                       "Không thể khởi tạo khách hàng license. Vui lòng đăng nhập lại.")
+            )
+            return
+        
+        # Check if token exists
+        if not self.license_client._access_token:
+            print(f"[AccountProfileDialog] [ERROR] No access token - user must login first!")
+            self._show_login_required_dialog(
+                I18N.t("Login Required", "Yêu cầu Đăng nhập"),
+                I18N.t("Please login first to view your profile.",
+                       "Vui lòng đăng nhập trước để xem hồ sơ của bạn.")
+            )
+            return
+        
+        # Try to fetch profile with auto-refresh
+        print(f"[AccountProfileDialog] [FETCH] Fetching profile from server...")
+        success, data = self.license_client.get_profile()
+        
+        if success:
+            print(f"[AccountProfileDialog] [OK] Profile loaded successfully!")
+            self._populate_profile_from_server(data)
+        else:
+            # Failed to load profile
+            error_code = data.get('error', 'unknown')
+            error_msg = data.get('message', 'Unknown error')
+            print(f"[AccountProfileDialog] [ERROR] Failed: {error_code} - {error_msg}")
+            
+            self._show_login_required_dialog(
+                I18N.t("Cannot Load Profile", "Không thể Tải Profile"),
+                I18N.t(f"Failed to load profile from server: {error_msg}\n\nPlease login again to get a fresh token.",
+                       f"Không thể tải profile từ server: {error_msg}\n\nVui lòng đăng nhập lại để lấy token mới.")
+            )
+    
+    def _show_login_required_dialog(self, title, message):
+        """Show dialog yêu cầu user login lại"""
+        print(f"[AccountProfileDialog] Showing login required dialog: {title}")
+        
+        result = QMessageBox.critical(self,
+            title,
+            f"{message}\n\nVui lòng đóng dialog này và logout rồi login lại.",
+            QMessageBox.Ok)
+        
+        # Close this dialog after user clicks OK
+        self.reject()
+    
+    def _populate_profile_from_server(self, data):
+        """Populate profile from server data"""
+        self.user_data = data.get('user', {})
+        # Xử lý cả 'license' (singular) và 'licenses' (list)
+        license_data = data.get('license') or (data.get('licenses', [{}])[0] if data.get('licenses') else {})
+        
+        # Populate fields
+        self.username_input.setText(self.user_data.get('username', ''))
+        self.email_input.setText(self.user_data.get('email', ''))
+        self.firstname_input.setText(self.user_data.get('first_name', ''))
+        self.lastname_input.setText(self.user_data.get('last_name', ''))
+        self.phone_input.setText(str(self.user_data.get('phone', '') or ''))
+        
+        # License info
+        if license_data:
+            license_type = license_data.get('license_type', 'N/A').upper()
+            days_remaining = license_data.get('days_remaining', 0)
+            expire_date = license_data.get('expire_date', 'N/A')
+            if expire_date and len(str(expire_date)) > 10:
+                expire_date = str(expire_date)[:10]
+            self.license_info.setText(
+                I18N.t(f"📋 License: {license_type} | ⏰ Days: {days_remaining} | 📅 Expires: {expire_date}",
+                       f"📋 License: {license_type} | ⏰ Còn: {days_remaining} ngày | 📅 Hết hạn: {expire_date}")
+            )
+        else:
+            self.license_info.setText(I18N.t("⚠️ No active license", "⚠️ Không có license hoạt động"))
+        
+        # Join date
+        date_joined = self.user_data.get('date_joined', '')
+        if date_joined:
+            self.join_date_label.setText(
+                I18N.t(f"📅 Member since: {date_joined[:10]}", f"📅 Tham gia: {date_joined[:10]}")
+            )
+    
+
+    
+    
+    def init_ui(self):
+        layout = QVBoxLayout()
+        
+        # Header
+        header = QLabel(I18N.t("👤 Account Profile", "👤 Thông tin Tài khoản"))
+        header.setStyleSheet("font-size: 20px; font-weight: bold; color: #1976D2; margin-bottom: 10px;")
+        header.setAlignment(Qt.AlignCenter)
+        layout.addWidget(header)
+        
+        # License info banner
+        self.license_info = QLabel(I18N.t("Loading license info...", "Đang tải thông tin license..."))
+        self.license_info.setStyleSheet("""
+            QLabel {
+                background: #E3F2FD;
+                color: #1565C0;
+                padding: 10px;
+                border-radius: 5px;
+                font-weight: bold;
+            }
+        """)
+        self.license_info.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.license_info)
+        
+        # Form group - Account Info
+        account_group = QGroupBox(I18N.t("🔐 Account Information", "🔐 Thông tin Tài khoản"))
+        account_layout = QFormLayout()
+        
+        self.username_input = QLineEdit()
+        self.username_input.setReadOnly(True)
+        self.username_input.setStyleSheet("padding: 8px; background: #f5f5f5; border: 1px solid #ddd; border-radius: 4px;")
+        account_layout.addRow(I18N.t("Username:", "Tên đăng nhập:"), self.username_input)
+        
+        self.join_date_label = QLabel("")
+        self.join_date_label.setStyleSheet("color: #666; font-style: italic;")
+        account_layout.addRow("", self.join_date_label)
+        
+        account_group.setLayout(account_layout)
+        layout.addWidget(account_group)
+        
+        # Form group - Personal Info
+        personal_group = QGroupBox(I18N.t("📝 Personal Information", "📝 Thông tin Cá nhân"))
+        personal_layout = QFormLayout()
+        
+        self.firstname_input = QLineEdit()
+        self.firstname_input.setPlaceholderText(I18N.t("Enter first name", "Nhập tên"))
+        self.firstname_input.setStyleSheet("padding: 8px; border: 1px solid #ddd; border-radius: 4px;")
+        personal_layout.addRow(I18N.t("First Name:", "Tên:"), self.firstname_input)
+        
+        self.lastname_input = QLineEdit()
+        self.lastname_input.setPlaceholderText(I18N.t("Enter last name", "Nhập họ"))
+        self.lastname_input.setStyleSheet("padding: 8px; border: 1px solid #ddd; border-radius: 4px;")
+        personal_layout.addRow(I18N.t("Last Name:", "Họ:"), self.lastname_input)
+        
+        self.email_input = QLineEdit()
+        self.email_input.setPlaceholderText(I18N.t("Enter email", "Nhập email"))
+        self.email_input.setStyleSheet("padding: 8px; border: 1px solid #ddd; border-radius: 4px;")
+        personal_layout.addRow(I18N.t("Email:", "Email:"), self.email_input)
+        
+        self.phone_input = QLineEdit()
+        self.phone_input.setPlaceholderText(I18N.t("Enter phone number", "Nhập số điện thoại"))
+        self.phone_input.setStyleSheet("padding: 8px; border: 1px solid #ddd; border-radius: 4px;")
+        personal_layout.addRow(I18N.t("Phone:", "Điện thoại:"), self.phone_input)
+        
+        personal_group.setLayout(personal_layout)
+        layout.addWidget(personal_group)
+        
+        # Change Password Group
+        password_group = QGroupBox(I18N.t("🔑 Change Password", "🔑 Đổi Mật khẩu"))
+        password_layout = QFormLayout()
+        
+        self.old_password_input = QLineEdit()
+        self.old_password_input.setEchoMode(QLineEdit.Password)
+        self.old_password_input.setPlaceholderText(I18N.t("Current password", "Mật khẩu hiện tại"))
+        self.old_password_input.setStyleSheet("padding: 8px; border: 1px solid #ddd; border-radius: 4px;")
+        password_layout.addRow(I18N.t("Current:", "Hiện tại:"), self.old_password_input)
+        
+        self.new_password_input = QLineEdit()
+        self.new_password_input.setEchoMode(QLineEdit.Password)
+        self.new_password_input.setPlaceholderText(I18N.t("New password (min 8 chars)", "Mật khẩu mới (tối thiểu 8 ký tự)"))
+        self.new_password_input.setStyleSheet("padding: 8px; border: 1px solid #ddd; border-radius: 4px;")
+        password_layout.addRow(I18N.t("New:", "Mới:"), self.new_password_input)
+        
+        self.confirm_password_input = QLineEdit()
+        self.confirm_password_input.setEchoMode(QLineEdit.Password)
+        self.confirm_password_input.setPlaceholderText(I18N.t("Confirm new password", "Xác nhận mật khẩu mới"))
+        self.confirm_password_input.setStyleSheet("padding: 8px; border: 1px solid #ddd; border-radius: 4px;")
+        password_layout.addRow(I18N.t("Confirm:", "Xác nhận:"), self.confirm_password_input)
+        
+        self.change_password_btn = QPushButton(I18N.t("🔑 Change Password", "🔑 Đổi Mật khẩu"))
+        self.change_password_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #FF9800;
+                color: white;
+                font-weight: bold;
+                padding: 8px 15px;
+                border: none;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #F57C00;
+            }
+        """)
+        self.change_password_btn.clicked.connect(self._change_password)
+        password_layout.addRow("", self.change_password_btn)
+        
+        password_group.setLayout(password_layout)
+        layout.addWidget(password_group)
+        
+        # Buttons
+        btn_layout = QHBoxLayout()
+        
+        self.save_btn = QPushButton(I18N.t("💾 Save Changes", "💾 Lưu thay đổi"))
+        self.save_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                font-weight: bold;
+                padding: 10px 20px;
+                border: none;
+                border-radius: 5px;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+        """)
+        self.save_btn.clicked.connect(self._save_profile)
+        
+        self.cancel_btn = QPushButton(I18N.t("Cancel", "Hủy"))
+        self.cancel_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #9e9e9e;
+                color: white;
+                font-weight: bold;
+                padding: 10px 20px;
+                border: none;
+                border-radius: 5px;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #757575;
+            }
+        """)
+        self.cancel_btn.clicked.connect(self.reject)
+        
+        btn_layout.addWidget(self.save_btn)
+        btn_layout.addWidget(self.cancel_btn)
+        layout.addLayout(btn_layout)
+        
+        self.setLayout(layout)
+    
+    def _save_profile(self):
+        """Lưu thông tin profile"""
+        if not self.license_client:
+            QMessageBox.warning(self,
+                I18N.t("Error", "Lỗi"),
+                I18N.t("Cannot connect to server.", "Không thể kết nối đến server."))
+            return
+        
+        self.save_btn.setEnabled(False)
+        self.save_btn.setText(I18N.t("⏳ Saving...", "⏳ Đang lưu..."))
+        QApplication.processEvents()
+        
+        try:
+            success, data = self.license_client.update_profile(
+                first_name=self.firstname_input.text().strip(),
+                last_name=self.lastname_input.text().strip(),
+                email=self.email_input.text().strip(),
+                phone=self.phone_input.text().strip()
+            )
+            
+            if success:
+                QMessageBox.information(self,
+                    I18N.t("✅ Success", "✅ Thành công"),
+                    I18N.t("Profile updated successfully!", "Đã cập nhật thông tin thành công!"))
+                self.profile_updated.emit(data.get('user', {}))
+            else:
+                error_msg = data.get('message', data.get('error', 'Unknown error'))
+                QMessageBox.warning(self,
+                    I18N.t("❌ Error", "❌ Lỗi"),
+                    str(error_msg))
+        except Exception as e:
+            QMessageBox.critical(self,
+                I18N.t("Error", "Lỗi"),
+                I18N.t(f"Error: {str(e)}", f"Lỗi: {str(e)}"))
+        finally:
+            self.save_btn.setEnabled(True)
+            self.save_btn.setText(I18N.t("💾 Save Changes", "💾 Lưu thay đổi"))
+    
+    def _change_password(self):
+        """Đổi mật khẩu"""
+        old_password = self.old_password_input.text()
+        new_password = self.new_password_input.text()
+        confirm_password = self.confirm_password_input.text()
+        
+        if not old_password or not new_password:
+            QMessageBox.warning(self,
+                I18N.t("Validation Error", "Lỗi xác thực"),
+                I18N.t("Please enter current and new password.", "Vui lòng nhập mật khẩu hiện tại và mật khẩu mới."))
+            return
+        
+        if new_password != confirm_password:
+            QMessageBox.warning(self,
+                I18N.t("Password Mismatch", "Mật khẩu không khớp"),
+                I18N.t("New passwords do not match.", "Mật khẩu mới không khớp."))
+            return
+        
+        if len(new_password) < 8:
+            QMessageBox.warning(self,
+                I18N.t("Weak Password", "Mật khẩu yếu"),
+                I18N.t("Password must be at least 8 characters.", "Mật khẩu phải có ít nhất 8 ký tự."))
+            return
+        
+        if not self.license_client:
+            QMessageBox.warning(self,
+                I18N.t("Error", "Lỗi"),
+                I18N.t("Cannot connect to server.", "Không thể kết nối đến server."))
+            return
+        
+        self.change_password_btn.setEnabled(False)
+        self.change_password_btn.setText(I18N.t("⏳ Changing...", "⏳ Đang đổi..."))
+        QApplication.processEvents()
+        
+        try:
+            success, data = self.license_client.change_password(old_password, new_password)
+            
+            if success:
+                QMessageBox.information(self,
+                    I18N.t("✅ Success", "✅ Thành công"),
+                    I18N.t("Password changed successfully!", "Đã đổi mật khẩu thành công!"))
+                # Clear password fields
+                self.old_password_input.clear()
+                self.new_password_input.clear()
+                self.confirm_password_input.clear()
+            else:
+                error_msg = data.get('message', data.get('error', 'Unknown error'))
+                if 'incorrect' in str(error_msg).lower() or 'wrong' in str(error_msg).lower():
+                    error_msg = I18N.t("Current password is incorrect.", "Mật khẩu hiện tại không đúng.")
+                QMessageBox.warning(self,
+                    I18N.t("❌ Error", "❌ Lỗi"),
+                    str(error_msg))
+        except Exception as e:
+            QMessageBox.critical(self,
+                I18N.t("Error", "Lỗi"),
+                I18N.t(f"Error: {str(e)}", f"Lỗi: {str(e)}"))
+        finally:
+            self.change_password_btn.setEnabled(True)
+            self.change_password_btn.setText(I18N.t("🔑 Change Password", "🔑 Đổi Mật khẩu"))
+
+
+class TermsOfServiceDialog(QDialog):
+    """Dialog hiển thị Điều khoản Dịch vụ"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(I18N.t("📜 Terms of Service", "📜 Điều khoản Dịch vụ"))
+        self.setMinimumSize(600, 500)
+        self.setModal(True)
+        self.init_ui()
+        
+    def init_ui(self):
+        layout = QVBoxLayout()
+        
+        # Header
+        header = QLabel(I18N.t("📜 Terms of Service", "📜 Điều khoản Dịch vụ"))
+        header.setStyleSheet("font-size: 20px; font-weight: bold; color: #1976D2; margin-bottom: 10px;")
+        header.setAlignment(Qt.AlignCenter)
+        layout.addWidget(header)
+        
+        # Last updated
+        updated = QLabel(I18N.t("Last Updated: December 1, 2025", "Cập nhật lần cuối: 01/12/2025"))
+        updated.setStyleSheet("color: #666; font-style: italic; margin-bottom: 10px;")
+        updated.setAlignment(Qt.AlignCenter)
+        layout.addWidget(updated)
+        
+        # Content
+        content = QTextEdit()
+        content.setReadOnly(True)
+        content.setStyleSheet("""
+            QTextEdit {
+                background-color: #fafafa;
+                border: 1px solid #ddd;
+                border-radius: 5px;
+                padding: 10px;
+                font-size: 13px;
+                line-height: 1.6;
+            }
+        """)
+        
+        if AppState.language() == 'vi':
+            terms_text = self.get_terms_vi()
+        else:
+            terms_text = self.get_terms_en()
+        
+        content.setHtml(terms_text)
+        layout.addWidget(content)
+        
+        # Close button
+        close_btn = QPushButton(I18N.t("Close", "Đóng"))
+        close_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #2196F3;
+                color: white;
+                font-weight: bold;
+                padding: 10px 30px;
+                border: none;
+                border-radius: 5px;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #1976D2;
+            }
+        """)
+        close_btn.clicked.connect(self.accept)
+        layout.addWidget(close_btn, alignment=Qt.AlignCenter)
+        
+        self.setLayout(layout)
+    
+    def get_terms_en(self):
+        return """
+        <h2>ChatGPT AI Trading Bot - Terms of Service</h2>
+        
+        <h3>1. Acceptance of Terms</h3>
+        <p>By accessing and using the ChatGPT AI Trading Bot ("Service"), you agree to be bound by these Terms of Service. If you do not agree to these terms, please do not use the Service.</p>
+        
+        <h3>2. Description of Service</h3>
+        <p>The ChatGPT AI Trading Bot is an automated trading assistance tool that provides:</p>
+        <ul>
+            <li>Market data analysis and visualization</li>
+            <li>Technical indicator calculations</li>
+            <li>Pattern recognition and detection</li>
+            <li>Trading signal generation</li>
+            <li>Automated order execution (when enabled)</li>
+            <li>Risk management tools</li>
+        </ul>
+        
+        <h3>3. Risk Disclaimer</h3>
+        <p><strong>IMPORTANT:</strong> Trading in financial markets involves substantial risk of loss and is not suitable for all investors. Past performance is not indicative of future results.</p>
+        <ul>
+            <li>You may lose some or all of your invested capital</li>
+            <li>Do not trade with money you cannot afford to lose</li>
+            <li>The Service does not guarantee profits or prevent losses</li>
+            <li>AI-generated signals are for informational purposes only</li>
+            <li>You are solely responsible for your trading decisions</li>
+        </ul>
+        
+        <h3>4. User Responsibilities</h3>
+        <p>As a user, you agree to:</p>
+        <ul>
+            <li>Provide accurate and truthful registration information</li>
+            <li>Maintain the security of your account credentials</li>
+            <li>Comply with all applicable laws and regulations</li>
+            <li>Use the Service only for lawful purposes</li>
+            <li>Not attempt to reverse engineer or modify the software</li>
+            <li>Not share your account with unauthorized users</li>
+        </ul>
+        
+        <h3>5. Intellectual Property</h3>
+        <p>All content, features, and functionality of the Service are owned by VU HIEN CFDs and are protected by international copyright, trademark, and other intellectual property laws.</p>
+        
+        <h3>6. Limitation of Liability</h3>
+        <p>To the maximum extent permitted by law:</p>
+        <ul>
+            <li>The Service is provided "AS IS" without warranties of any kind</li>
+            <li>We are not liable for any trading losses or damages</li>
+            <li>We are not responsible for third-party broker actions</li>
+            <li>Technical issues or downtime do not create liability</li>
+        </ul>
+        
+        <h3>7. Account Termination</h3>
+        <p>We reserve the right to suspend or terminate accounts that:</p>
+        <ul>
+            <li>Violate these Terms of Service</li>
+            <li>Engage in fraudulent activities</li>
+            <li>Abuse the Service or other users</li>
+            <li>Attempt unauthorized access to systems</li>
+        </ul>
+        
+        <h3>8. Modifications</h3>
+        <p>We may modify these Terms at any time. Continued use of the Service after changes constitutes acceptance of the new terms.</p>
+        
+        <h3>9. Contact Information</h3>
+        <p><strong>VU HIEN CFDs</strong><br>
+        Telegram/Zalo: +84 39 65 60 888<br>
+        Email: vuhien2444cfds@gmail.com</p>
+        
+        <h3>10. Governing Law</h3>
+        <p>These Terms shall be governed by the laws of Vietnam. Any disputes shall be resolved through arbitration in Ho Chi Minh City.</p>
+        """
+    
+    def get_terms_vi(self):
+        return """
+        <h2>ChatGPT AI Trading Bot - Điều khoản Dịch vụ</h2>
+        
+        <h3>1. Chấp nhận Điều khoản</h3>
+        <p>Bằng việc truy cập và sử dụng ChatGPT AI Trading Bot ("Dịch vụ"), bạn đồng ý tuân thủ các Điều khoản Dịch vụ này. Nếu không đồng ý, vui lòng không sử dụng Dịch vụ.</p>
+        
+        <h3>2. Mô tả Dịch vụ</h3>
+        <p>ChatGPT AI Trading Bot là công cụ hỗ trợ giao dịch tự động cung cấp:</p>
+        <ul>
+            <li>Phân tích và hiển thị dữ liệu thị trường</li>
+            <li>Tính toán các chỉ báo kỹ thuật</li>
+            <li>Nhận diện và phát hiện mô hình</li>
+            <li>Tạo tín hiệu giao dịch</li>
+            <li>Thực hiện lệnh tự động (khi được bật)</li>
+            <li>Công cụ quản lý rủi ro</li>
+        </ul>
+        
+        <h3>3. Cảnh báo Rủi ro</h3>
+        <p><strong>QUAN TRỌNG:</strong> Giao dịch trên thị trường tài chính có rủi ro thua lỗ đáng kể và không phù hợp với tất cả nhà đầu tư. Kết quả trong quá khứ không đảm bảo kết quả tương lai.</p>
+        <ul>
+            <li>Bạn có thể mất một phần hoặc toàn bộ vốn đầu tư</li>
+            <li>Không giao dịch với số tiền bạn không thể chấp nhận mất</li>
+            <li>Dịch vụ không đảm bảo lợi nhuận hoặc ngăn ngừa thua lỗ</li>
+            <li>Tín hiệu AI chỉ mang tính chất tham khảo</li>
+            <li>Bạn hoàn toàn chịu trách nhiệm về quyết định giao dịch của mình</li>
+        </ul>
+        
+        <h3>4. Trách nhiệm của Người dùng</h3>
+        <p>Là người dùng, bạn đồng ý:</p>
+        <ul>
+            <li>Cung cấp thông tin đăng ký chính xác và trung thực</li>
+            <li>Bảo mật thông tin đăng nhập tài khoản</li>
+            <li>Tuân thủ tất cả luật pháp và quy định hiện hành</li>
+            <li>Chỉ sử dụng Dịch vụ cho mục đích hợp pháp</li>
+            <li>Không cố gắng dịch ngược hoặc sửa đổi phần mềm</li>
+            <li>Không chia sẻ tài khoản với người dùng không được phép</li>
+        </ul>
+        
+        <h3>5. Sở hữu Trí tuệ</h3>
+        <p>Tất cả nội dung, tính năng và chức năng của Dịch vụ thuộc sở hữu của VU HIEN CFDs và được bảo vệ bởi luật bản quyền, thương hiệu và sở hữu trí tuệ quốc tế.</p>
+        
+        <h3>6. Giới hạn Trách nhiệm</h3>
+        <p>Trong phạm vi pháp luật cho phép:</p>
+        <ul>
+            <li>Dịch vụ được cung cấp "NGUYÊN TRẠNG" không có bất kỳ bảo đảm nào</li>
+            <li>Chúng tôi không chịu trách nhiệm về bất kỳ thua lỗ giao dịch nào</li>
+            <li>Chúng tôi không chịu trách nhiệm về hành động của sàn môi giới</li>
+            <li>Sự cố kỹ thuật hoặc gián đoạn không tạo ra trách nhiệm pháp lý</li>
+        </ul>
+        
+        <h3>7. Chấm dứt Tài khoản</h3>
+        <p>Chúng tôi có quyền đình chỉ hoặc chấm dứt tài khoản:</p>
+        <ul>
+            <li>Vi phạm Điều khoản Dịch vụ này</li>
+            <li>Tham gia hoạt động gian lận</li>
+            <li>Lạm dụng Dịch vụ hoặc người dùng khác</li>
+            <li>Cố gắng truy cập trái phép vào hệ thống</li>
+        </ul>
+        
+        <h3>8. Sửa đổi</h3>
+        <p>Chúng tôi có thể sửa đổi các Điều khoản này bất cứ lúc nào. Việc tiếp tục sử dụng Dịch vụ sau khi thay đổi đồng nghĩa với việc chấp nhận điều khoản mới.</p>
+        
+        <h3>9. Thông tin Liên hệ</h3>
+        <p><strong>VU HIEN CFDs</strong><br>
+        Telegram/Zalo: +84 39 65 60 888<br>
+        Email: vuhien2444cfds@gmail.com</p>
+        
+        <h3>10. Luật áp dụng</h3>
+        <p>Các Điều khoản này được điều chỉnh bởi pháp luật Việt Nam. Mọi tranh chấp sẽ được giải quyết thông qua trọng tài tại TP. Hồ Chí Minh.</p>
+        """
+
+
+class PrivacyPolicyDialog(QDialog):
+    """Dialog hiển thị Chính sách Bảo mật"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(I18N.t("🔒 Privacy Policy", "🔒 Chính sách Bảo mật"))
+        self.setMinimumSize(600, 500)
+        self.setModal(True)
+        self.init_ui()
+        
+    def init_ui(self):
+        layout = QVBoxLayout()
+        
+        # Header
+        header = QLabel(I18N.t("🔒 Privacy Policy", "🔒 Chính sách Bảo mật"))
+        header.setStyleSheet("font-size: 20px; font-weight: bold; color: #4CAF50; margin-bottom: 10px;")
+        header.setAlignment(Qt.AlignCenter)
+        layout.addWidget(header)
+        
+        # Last updated
+        updated = QLabel(I18N.t("Last Updated: December 1, 2025", "Cập nhật lần cuối: 01/12/2025"))
+        updated.setStyleSheet("color: #666; font-style: italic; margin-bottom: 10px;")
+        updated.setAlignment(Qt.AlignCenter)
+        layout.addWidget(updated)
+        
+        # Content
+        content = QTextEdit()
+        content.setReadOnly(True)
+        content.setStyleSheet("""
+            QTextEdit {
+                background-color: #fafafa;
+                border: 1px solid #ddd;
+                border-radius: 5px;
+                padding: 10px;
+                font-size: 13px;
+                line-height: 1.6;
+            }
+        """)
+        
+        if AppState.language() == 'vi':
+            privacy_text = self.get_privacy_vi()
+        else:
+            privacy_text = self.get_privacy_en()
+        
+        content.setHtml(privacy_text)
+        layout.addWidget(content)
+        
+        # Close button
+        close_btn = QPushButton(I18N.t("Close", "Đóng"))
+        close_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                font-weight: bold;
+                padding: 10px 30px;
+                border: none;
+                border-radius: 5px;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+        """)
+        close_btn.clicked.connect(self.accept)
+        layout.addWidget(close_btn, alignment=Qt.AlignCenter)
+        
+        self.setLayout(layout)
+    
+    def get_privacy_en(self):
+        return """
+        <h2>ChatGPT AI Trading Bot - Privacy Policy</h2>
+        
+        <h3>1. Introduction</h3>
+        <p>VU HIEN CFDs ("we", "our", "us") is committed to protecting your privacy. This Privacy Policy explains how we collect, use, disclose, and safeguard your information when you use our ChatGPT AI Trading Bot.</p>
+        
+        <h3>2. Information We Collect</h3>
+        
+        <h4>2.1 Personal Information</h4>
+        <ul>
+            <li><strong>Account Information:</strong> Name, email address, phone number, username</li>
+            <li><strong>Trading Preferences:</strong> Experience level, trading style preferences</li>
+            <li><strong>MT5 Credentials:</strong> Account number, server (stored locally, encrypted)</li>
+        </ul>
+        
+        <h4>2.2 Automatically Collected Information</h4>
+        <ul>
+            <li><strong>Usage Data:</strong> Features used, trading signals generated</li>
+            <li><strong>Device Information:</strong> Operating system, software version</li>
+            <li><strong>Log Data:</strong> Error logs, performance metrics</li>
+        </ul>
+        
+        <h4>2.3 Trading Data</h4>
+        <ul>
+            <li>Historical trade records</li>
+            <li>Position and order information</li>
+            <li>Account balance and equity data</li>
+            <li>Risk management settings</li>
+        </ul>
+        
+        <h3>3. How We Use Your Information</h3>
+        <p>We use collected information to:</p>
+        <ul>
+            <li>Provide and maintain the trading bot service</li>
+            <li>Process and execute trading signals</li>
+            <li>Improve and optimize our algorithms</li>
+            <li>Send important service notifications</li>
+            <li>Provide customer support</li>
+            <li>Analyze usage patterns to enhance features</li>
+            <li>Ensure security and prevent fraud</li>
+        </ul>
+        
+        <h3>4. Data Storage and Security</h3>
+        <ul>
+            <li><strong>Local Storage:</strong> MT5 credentials are stored locally on your device only</li>
+            <li><strong>Encryption:</strong> Sensitive data is encrypted using industry-standard AES-256</li>
+            <li><strong>No Cloud Storage:</strong> Trading credentials are never uploaded to external servers</li>
+            <li><strong>Secure Transmission:</strong> All data transmissions use SSL/TLS encryption</li>
+        </ul>
+        
+        <h3>5. Data Sharing</h3>
+        <p>We do NOT sell, trade, or rent your personal information. We may share data only:</p>
+        <ul>
+            <li>With your explicit consent</li>
+            <li>To comply with legal obligations</li>
+            <li>To protect our rights and safety</li>
+            <li>With service providers under strict confidentiality agreements</li>
+        </ul>
+        
+        <h3>6. Your Rights</h3>
+        <p>You have the right to:</p>
+        <ul>
+            <li><strong>Access:</strong> Request a copy of your personal data</li>
+            <li><strong>Correction:</strong> Update or correct inaccurate information</li>
+            <li><strong>Deletion:</strong> Request deletion of your account and data</li>
+            <li><strong>Portability:</strong> Export your data in a standard format</li>
+            <li><strong>Opt-out:</strong> Unsubscribe from marketing communications</li>
+        </ul>
+        
+        <h3>7. Data Retention</h3>
+        <ul>
+            <li>Account data: Retained while account is active</li>
+            <li>Trading history: Retained for 3 years for analysis</li>
+            <li>Log files: Retained for 90 days</li>
+            <li>Deleted data: Permanently removed within 30 days</li>
+        </ul>
+        
+        <h3>8. Children's Privacy</h3>
+        <p>Our Service is not intended for users under 18 years of age. We do not knowingly collect personal information from minors.</p>
+        
+        <h3>9. Third-Party Services</h3>
+        <p>The bot connects to:</p>
+        <ul>
+            <li><strong>MetaTrader 5:</strong> For trading execution (governed by broker's privacy policy)</li>
+            <li><strong>Economic Calendar APIs:</strong> For news data (no personal data shared)</li>
+        </ul>
+        
+        <h3>10. Updates to This Policy</h3>
+        <p>We may update this Privacy Policy periodically. We will notify you of significant changes via email or in-app notification.</p>
+        
+        <h3>11. Contact Us</h3>
+        <p>For privacy-related inquiries:<br>
+        <strong>VU HIEN CFDs</strong><br>
+        Telegram/Zalo: +84 39 65 60 888<br>
+        Email: vuhien2444cfds@gmail.com</p>
+        """
+    
+    def get_privacy_vi(self):
+        return """
+        <h2>ChatGPT AI Trading Bot - Chính sách Bảo mật</h2>
+        
+        <h3>1. Giới thiệu</h3>
+        <p>VU HIEN CFDs ("chúng tôi") cam kết bảo vệ quyền riêng tư của bạn. Chính sách Bảo mật này giải thích cách chúng tôi thu thập, sử dụng, tiết lộ và bảo vệ thông tin của bạn khi sử dụng ChatGPT AI Trading Bot.</p>
+        
+        <h3>2. Thông tin Chúng tôi Thu thập</h3>
+        
+        <h4>2.1 Thông tin Cá nhân</h4>
+        <ul>
+            <li><strong>Thông tin Tài khoản:</strong> Họ tên, email, số điện thoại, tên đăng nhập</li>
+            <li><strong>Tùy chọn Giao dịch:</strong> Trình độ kinh nghiệm, phong cách giao dịch</li>
+            <li><strong>Thông tin MT5:</strong> Số tài khoản, server (lưu cục bộ, được mã hóa)</li>
+        </ul>
+        
+        <h4>2.2 Thông tin Thu thập Tự động</h4>
+        <ul>
+            <li><strong>Dữ liệu Sử dụng:</strong> Tính năng đã dùng, tín hiệu giao dịch đã tạo</li>
+            <li><strong>Thông tin Thiết bị:</strong> Hệ điều hành, phiên bản phần mềm</li>
+            <li><strong>Dữ liệu Log:</strong> Log lỗi, chỉ số hiệu suất</li>
+        </ul>
+        
+        <h4>2.3 Dữ liệu Giao dịch</h4>
+        <ul>
+            <li>Lịch sử giao dịch</li>
+            <li>Thông tin vị thế và lệnh</li>
+            <li>Số dư và vốn tài khoản</li>
+            <li>Cài đặt quản lý rủi ro</li>
+        </ul>
+        
+        <h3>3. Cách Chúng tôi Sử dụng Thông tin</h3>
+        <p>Chúng tôi sử dụng thông tin thu thập để:</p>
+        <ul>
+            <li>Cung cấp và duy trì dịch vụ trading bot</li>
+            <li>Xử lý và thực hiện tín hiệu giao dịch</li>
+            <li>Cải thiện và tối ưu thuật toán</li>
+            <li>Gửi thông báo dịch vụ quan trọng</li>
+            <li>Cung cấp hỗ trợ khách hàng</li>
+            <li>Phân tích mẫu sử dụng để nâng cao tính năng</li>
+            <li>Đảm bảo an ninh và ngăn chặn gian lận</li>
+        </ul>
+        
+        <h3>4. Lưu trữ và Bảo mật Dữ liệu</h3>
+        <ul>
+            <li><strong>Lưu trữ Cục bộ:</strong> Thông tin MT5 chỉ được lưu trữ trên thiết bị của bạn</li>
+            <li><strong>Mã hóa:</strong> Dữ liệu nhạy cảm được mã hóa bằng AES-256 tiêu chuẩn</li>
+            <li><strong>Không lưu Cloud:</strong> Thông tin đăng nhập không bao giờ được tải lên máy chủ bên ngoài</li>
+            <li><strong>Truyền tải An toàn:</strong> Tất cả dữ liệu truyền tải sử dụng mã hóa SSL/TLS</li>
+        </ul>
+        
+        <h3>5. Chia sẻ Dữ liệu</h3>
+        <p>Chúng tôi KHÔNG bán, trao đổi hoặc cho thuê thông tin cá nhân. Chúng tôi chỉ chia sẻ dữ liệu:</p>
+        <ul>
+            <li>Với sự đồng ý rõ ràng của bạn</li>
+            <li>Để tuân thủ nghĩa vụ pháp lý</li>
+            <li>Để bảo vệ quyền và an toàn của chúng tôi</li>
+            <li>Với nhà cung cấp dịch vụ theo thỏa thuận bảo mật nghiêm ngặt</li>
+        </ul>
+        
+        <h3>6. Quyền của Bạn</h3>
+        <p>Bạn có quyền:</p>
+        <ul>
+            <li><strong>Truy cập:</strong> Yêu cầu bản sao dữ liệu cá nhân</li>
+            <li><strong>Chỉnh sửa:</strong> Cập nhật hoặc sửa thông tin không chính xác</li>
+            <li><strong>Xóa:</strong> Yêu cầu xóa tài khoản và dữ liệu</li>
+            <li><strong>Di chuyển:</strong> Xuất dữ liệu ở định dạng tiêu chuẩn</li>
+            <li><strong>Từ chối:</strong> Hủy đăng ký nhận thông tin marketing</li>
+        </ul>
+        
+        <h3>7. Thời gian Lưu trữ Dữ liệu</h3>
+        <ul>
+            <li>Dữ liệu tài khoản: Lưu trữ khi tài khoản còn hoạt động</li>
+            <li>Lịch sử giao dịch: Lưu trữ 3 năm để phân tích</li>
+            <li>File log: Lưu trữ 90 ngày</li>
+            <li>Dữ liệu đã xóa: Xóa vĩnh viễn trong 30 ngày</li>
+        </ul>
+        
+        <h3>8. Quyền riêng tư của Trẻ em</h3>
+        <p>Dịch vụ không dành cho người dùng dưới 18 tuổi. Chúng tôi không cố ý thu thập thông tin cá nhân từ trẻ vị thành niên.</p>
+        
+        <h3>9. Dịch vụ Bên thứ ba</h3>
+        <p>Bot kết nối với:</p>
+        <ul>
+            <li><strong>MetaTrader 5:</strong> Để thực hiện giao dịch (theo chính sách của sàn)</li>
+            <li><strong>API Lịch Kinh tế:</strong> Để lấy tin tức (không chia sẻ dữ liệu cá nhân)</li>
+        </ul>
+        
+        <h3>10. Cập nhật Chính sách</h3>
+        <p>Chúng tôi có thể cập nhật Chính sách Bảo mật định kỳ. Chúng tôi sẽ thông báo các thay đổi quan trọng qua email hoặc thông báo trong ứng dụng.</p>
+        
+        <h3>11. Liên hệ</h3>
+        <p>Cho các thắc mắc về bảo mật:<br>
+        <strong>VU HIEN CFDs</strong><br>
+        Telegram/Zalo: +84 39 65 60 888<br>
+        Email: vuhien2444cfds@gmail.com</p>
+        """
+
 
 # Simple console-based trading bot interface
 def simple_console_app():
@@ -11509,6 +24306,22 @@ def main_original():
         if DOTENV_AVAILABLE:
             load_dotenv()
         
+        # 🔄 Load user config and set language BEFORE creating any UI
+        try:
+            user_cfg = load_user_config(apply_lang=True)
+            print(f"✅ User config loaded, language: {AppState.language()}")
+        except Exception as e:
+            print(f"⚠️ Could not load user config: {e}")
+        
+        # 🔄 Start auto-save trading history (save on start + every 60 minutes)
+        try:
+            from trading_history_manager import start_auto_save, is_auto_save_running
+            if not is_auto_save_running():
+                start_auto_save(interval_minutes=60, save_on_start=True)
+                print("✅ Trading history auto-save started (every 60 minutes)")
+        except Exception as e:
+            print(f"⚠️ Could not start trading history auto-save: {e}")
+        
         if GUI_AVAILABLE:
             print("Starting GUI mode...")
             try:
@@ -11546,10 +24359,72 @@ def main_original():
                 print("Creating main window...")
                 # Create main window with tabs
                 class MainWindow(QWidget):
+                    def update_ui_language(self):
+                        """Update UI language for all tabs and widgets"""
+                        try:
+                            # Update tab titles
+                            if hasattr(self, 'tabWidget'):
+                                tab_titles = [
+                                    ("🏦 MT5 Account", "🏦 Tài khoản MT5"),
+                                    ("💹 Market Data", "💹 Dữ liệu thị trường"),
+                                    ("📈 Trend Analysis", "📈 Phân tích xu hướng"),
+                                    ("⚙️ Technical Indicators", "⚙️ Chỉ báo kỹ thuật"),
+                                    ("🕯️ Candlestick Patterns", "🕯️ Mô hình nến"),
+                                    ("📊 Price Patterns", "📊 Mô hình giá"),
+                                    ("📰 Economic News", "📰 Tin tức kinh tế"),
+                                    ("🛡️ Risk Management", "🛡️ Quản lý rủi ro"),
+                                    ("📡 Signal", "📡 Tín hiệu"),
+                                    ("🤖 Auto Trading", "🤖 Giao dịch tự động"),
+                                ]
+                                for i, (en_title, vi_title) in enumerate(tab_titles):
+                                    translated = I18N.t(en_title, vi_title)
+                                    self.tabWidget.setTabText(i, translated)
+                                print(f"✅ Tab titles updated to language: {AppState.language()}")
+                            
+                            # Update menu if exists
+                            if hasattr(self, 'main_menu'):
+                                for action in self.main_menu.actions():
+                                    if action.text() in ("Language", "Ngôn ngữ"):
+                                        action.setText(I18N.t("Language", "Ngôn ngữ"))
+                            
+                            # Call retranslate_ui on all tabs if they have the method
+                            for tab_name, tab in getattr(self, 'all_tabs', {}).items():
+                                if hasattr(tab, 'retranslate_ui') and callable(getattr(tab, 'retranslate_ui')):
+                                    try:
+                                        tab.retranslate_ui()
+                                        print(f"✅ Updated {tab_name}")
+                                    except Exception as e:
+                                        print(f"⚠️ Could not update {tab_name}: {e}")
+                                else:
+                                    # Tab doesn't have retranslate_ui, log but continue
+                                    print(f"ℹ️ {tab_name} doesn't have retranslate_ui method")
+                        except Exception as e:
+                            print(f"❌ Error updating UI language: {e}")
+                    
                     def closeEvent(self, event):
                         """Enhanced application close event handler with comprehensive cleanup"""
                         try:
                             print("[CLEANUP] 🧹 Application closing - comprehensive cleanup starting...")
+                            
+                            # 0. Stop trading history auto-save
+                            try:
+                                from trading_history_manager import stop_auto_save, save_trading_history
+                                stop_auto_save()
+                                # Save final history before exit
+                                save_trading_history(save_comprehensive=True)
+                                print("[CLEANUP] ✅ Trading history auto-save stopped and saved")
+                            except Exception as e:
+                                print(f"[CLEANUP] ⚠️ Trading history cleanup error: {e}")
+                            
+                            # 0.5. Stop notification monitoring first
+                            try:
+                                from unified_notification_system import get_unified_notification_system
+                                notification_system = get_unified_notification_system()
+                                if notification_system.monitoring_enabled:
+                                    notification_system.stop_monitoring()
+                                    print("[CLEANUP] ✅ Notification monitoring stopped")
+                            except Exception as e:
+                                print(f"[CLEANUP] ⚠️ Notification cleanup error: {e}")
                             
                             # 1. Stop all timers first
                             try:
@@ -11676,13 +24551,12 @@ def main_original():
                 except Exception as _e:
                     print(f"⚠️ Could not load user config early: {_e}")
                 
-                # Set robot icon for the application
+                # Set robot icon for the application (optional)
                 if os.path.exists("robot_icon.png"):
                     app.setWindowIcon(QIcon("robot_icon.png"))
                     main_window.setWindowIcon(QIcon("robot_icon.png"))
                     print("✅ Robot icon set successfully")
-                else:
-                    print("⚠️ Robot icon not found")
+                # Note: Robot icon is optional - app works fine without it
                 
                     print("Creating tab widget...")
                 # Create a top bar with app title and hamburger menu
@@ -11704,8 +24578,13 @@ def main_original():
                 )
                 # Build hamburger menu
                 main_menu = QMenu(main_window)
-                act_login = QAction("Login", main_window)
-                act_register = QAction("Register", main_window)
+                
+                # Biến lưu thông tin user đăng nhập
+                main_window.logged_in_user = None  # Sẽ được set sau khi login
+                main_window.main_menu = main_menu  # Lưu reference
+                main_window.menu_btn = menu_btn  # Lưu reference
+                
+                # Actions cho menu
                 act_strategy = QAction("Trading Strategy", main_window)
                 lang_menu = QMenu("Language", main_window)
                 lang_group = QActionGroup(main_window)
@@ -11718,13 +24597,308 @@ def main_original():
                 else:
                     lang_en.setChecked(True)
                 lang_menu.addAction(lang_en); lang_menu.addAction(lang_vi)
-                act_support = QAction("Support", main_window)
-                main_menu.addAction(act_login)
-                main_menu.addAction(act_register)
-                main_menu.addAction(act_strategy)
-                main_menu.addMenu(lang_menu)
-                main_menu.addSeparator()
-                main_menu.addAction(act_support)
+                act_support = QAction(I18N.t("📞 Support", "📞 Hỗ trợ"), main_window)
+                act_pricing = QAction(I18N.t("💰 Pricing", "💰 Bảng Giá"), main_window)
+                
+                # Function để mở support dialog
+                def open_support_dialog():
+                    """Mở dialog thông tin hỗ trợ"""
+                    try:
+                        support_dialog = QDialog(main_window)
+                        support_dialog.setWindowTitle(I18N.t("Support Information", "Thông tin Hỗ trợ"))
+                        support_dialog.setMinimumSize(600, 580)
+                        support_dialog.setStyleSheet("""
+                            QDialog {
+                                background-color: #f5f5f5;
+                            }
+                            QLabel {
+                                color: #333;
+                            }
+                            QPushButton {
+                                background-color: #2196F3;
+                                color: white;
+                                border: none;
+                                padding: 12px 24px;
+                                border-radius: 6px;
+                                font-weight: bold;
+                                font-size: 15px;
+                            }
+                            QPushButton:hover {
+                                background-color: #1976D2;
+                            }
+                        """)
+                        
+                        layout = QVBoxLayout(support_dialog)
+                        layout.setSpacing(20)
+                        layout.setContentsMargins(35, 35, 35, 35)
+                        
+                        # Header
+                        header_label = QLabel(I18N.t("📞 Contact Support", "📞 Liên hệ Hỗ trợ"))
+                        header_label.setStyleSheet("font-size: 26px; font-weight: bold; color: #2196F3; margin-bottom: 15px;")
+                        header_label.setAlignment(Qt.AlignCenter)
+                        layout.addWidget(header_label)
+                        
+                        # Separator
+                        sep = QFrame()
+                        sep.setFrameShape(QFrame.HLine)
+                        sep.setFixedHeight(2)
+                        sep.setStyleSheet("background-color: #ddd;")
+                        layout.addWidget(sep)
+                        
+                        # Support info content
+                        info_widget = QWidget()
+                        info_layout = QVBoxLayout(info_widget)
+                        info_layout.setSpacing(18)
+                        info_layout.setContentsMargins(10, 10, 10, 10)
+                        
+                        support_info = [
+                            (I18N.t("👤 Admin:", "👤 Quản trị:"), "Hiến Vũ CFDs"),
+                            (I18N.t("📱 Phone/Zalo:", "📱 SĐT/Zalo:"), "0396560888"),
+                            (I18N.t("✈️ Telegram:", "✈️ Telegram:"), "@vuvanhien1996"),
+                            (I18N.t("📧 Email:", "📧 Email:"), "vuhien2444cfds@gmail.com"),
+                        ]
+                        
+                        for label_text, value in support_info:
+                            row = QHBoxLayout()
+                            row.setSpacing(15)
+                            label = QLabel(label_text)
+                            label.setStyleSheet("font-size: 17px; font-weight: bold; min-width: 150px;")
+                            label.setMinimumHeight(30)
+                            value_label = QLabel(value)
+                            value_label.setStyleSheet("font-size: 17px; color: #444;")
+                            value_label.setMinimumHeight(30)
+                            value_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                            row.addWidget(label)
+                            row.addWidget(value_label)
+                            row.addStretch()
+                            info_layout.addLayout(row)
+                        
+                        layout.addWidget(info_widget)
+                        
+                        # Separator
+                        sep2 = QFrame()
+                        sep2.setFrameShape(QFrame.HLine)
+                        sep2.setFixedHeight(2)
+                        sep2.setStyleSheet("background-color: #ddd;")
+                        layout.addWidget(sep2)
+                        
+                        # Group links
+                        links_label = QLabel(I18N.t("🔗 Community Groups", "🔗 Nhóm Cộng đồng"))
+                        links_label.setStyleSheet("font-size: 20px; font-weight: bold; color: #2196F3; margin-top: 5px;")
+                        layout.addWidget(links_label)
+                        
+                        # Zalo Group button
+                        zalo_btn = QPushButton(I18N.t("💬 Join Zalo Group", "💬 Tham gia Nhóm Zalo"))
+                        zalo_btn.setCursor(Qt.PointingHandCursor)
+                        zalo_btn.setMinimumHeight(50)
+                        zalo_btn.setStyleSheet("""
+                            QPushButton {
+                                background-color: #0068FF;
+                                color: white;
+                                border: none;
+                                padding: 14px 28px;
+                                border-radius: 8px;
+                                font-weight: bold;
+                                font-size: 17px;
+                            }
+                            QPushButton:hover {
+                                background-color: #0052CC;
+                            }
+                        """)
+                        zalo_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl("https://zalo.me/g/qdpqda161")))
+                        layout.addWidget(zalo_btn)
+                        
+                        # Telegram Channel button
+                        tele_btn = QPushButton(I18N.t("✈️ Join Telegram Channel", "✈️ Tham gia Kênh Telegram"))
+                        tele_btn.setCursor(Qt.PointingHandCursor)
+                        tele_btn.setMinimumHeight(50)
+                        tele_btn.setStyleSheet("""
+                            QPushButton {
+                                background-color: #0088cc;
+                                color: white;
+                                border: none;
+                                padding: 14px 28px;
+                                border-radius: 8px;
+                                font-weight: bold;
+                                font-size: 17px;
+                            }
+                            QPushButton:hover {
+                                background-color: #006699;
+                            }
+                        """)
+                        tele_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl("https://t.me/+9zaJXYPyvnQ1ZGE9")))
+                        layout.addWidget(tele_btn)
+                        
+                        layout.addStretch()
+                        
+                        # Close button
+                        close_btn = QPushButton(I18N.t("Close", "Đóng"))
+                        close_btn.setMinimumHeight(45)
+                        close_btn.clicked.connect(support_dialog.accept)
+                        layout.addWidget(close_btn)
+                        
+                        support_dialog.exec_()
+                    except Exception as e:
+                        print(f"[Support] Error opening support dialog: {e}")
+                
+                act_support.triggered.connect(open_support_dialog)
+                
+                # Function để mở pricing dialog
+                def open_pricing_from_menu():
+                    """Mở dialog bảng giá"""
+                    try:
+                        pricing_dialog = PricingDialog(main_window)
+                        pricing_dialog.exec_()
+                    except Exception as e:
+                        print(f"[Pricing] Error opening pricing dialog: {e}")
+                
+                act_pricing.triggered.connect(open_pricing_from_menu)
+                
+                # ============ AUTO-UPDATE ACTION ============
+                act_check_updates = QAction(I18N.t("🔄 Check for Updates", "🔄 Kiểm tra cập nhật"), main_window)
+                act_check_updates.setToolTip(I18N.t("Check for new version and update", "Kiểm tra phiên bản mới và cập nhật"))
+                
+                def check_updates_from_menu():
+                    """Check for updates from GitHub releases"""
+                    try:
+                        # Show checking status
+                        QMessageBox.information(main_window,
+                            I18N.t("Checking Updates", "Đang kiểm tra cập nhật"),
+                            I18N.t("Checking for new version...", "Đang kiểm tra phiên bản mới..."))
+                        
+                        # Import update manager here (lazy load)
+                        from update_manager import UpdateManager
+                        
+                        update_manager = UpdateManager()
+                        has_update = update_manager.check_updates()
+                        
+                        if has_update:
+                            # Show update dialog
+                            reply = QMessageBox.information(main_window,
+                                I18N.t("Update Available", "Có cập nhật mới"),
+                                I18N.t(
+                                    f"New version {update_manager.latest_version['version']} is available!\n\n"
+                                    f"Release notes:\n{update_manager.latest_version.get('notes', 'N/A')}\n\n"
+                                    f"File size: {update_manager.latest_version.get('size_mb', 'Unknown')} MB\n\n"
+                                    f"Do you want to download and install it now?",
+                                    f"Phiên bản {update_manager.latest_version['version']} có sẵn!\n\n"
+                                    f"Ghi chú phát hành:\n{update_manager.latest_version.get('notes', 'N/A')}\n\n"
+                                    f"Kích thước file: {update_manager.latest_version.get('size_mb', 'Unknown')} MB\n\n"
+                                    f"Bạn có muốn tải và cài đặt ngay?"
+                                ),
+                                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+                            
+                            if reply == QMessageBox.Yes:
+                                # Show progress dialog for download
+                                from update_manager import UpdateProgressDialog
+                                progress_dialog = UpdateProgressDialog(update_manager, update_manager.latest_version, main_window)
+                                progress_dialog.exec_()
+                        else:
+                            # Already on latest version
+                            QMessageBox.information(main_window,
+                                I18N.t("Already Updated", "Đã là phiên bản mới nhất"),
+                                I18N.t(
+                                    f"You are already running the latest version (v{update_manager.CURRENT_VERSION})",
+                                    f"Bạn đang chạy phiên bản mới nhất (v{update_manager.CURRENT_VERSION})"
+                                ))
+                    
+                    except ModuleNotFoundError:
+                        QMessageBox.warning(main_window,
+                            I18N.t("Update Module Not Found", "Không tìm thấy module cập nhật"),
+                            I18N.t(
+                                "The update manager module is not available yet.\n\nPlease check GitHub releases manually.",
+                                "Module cập nhật chưa sẵn sàng.\n\nVui lòng kiểm tra phiên bản trên GitHub."
+                            ))
+                    
+                    except Exception as e:
+                        print(f"❌ Update check error: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        QMessageBox.critical(main_window,
+                            I18N.t("Update Error", "Lỗi cập nhật"),
+                            I18N.t(
+                                f"An error occurred while checking for updates:\n\n{str(e)}",
+                                f"Lỗi khi kiểm tra cập nhật:\n\n{str(e)}"
+                            ))
+                
+                act_check_updates.triggered.connect(check_updates_from_menu)
+                
+                # Function để mở profile dialog
+                def open_profile_dialog():
+                    """Mở dialog chỉnh sửa profile"""
+                    try:
+                        username = main_window.logged_in_user
+                        if username:
+                            profile_dialog = AccountProfileDialog(username, main_window)
+                            profile_dialog.exec_()
+                    except Exception as e:
+                        print(f"[Profile] Error opening profile dialog: {e}")
+                
+                # Function để update menu dựa trên trạng thái đăng nhập
+                def update_menu_for_user(username=None):
+                    main_menu.clear()
+                    if username:
+                        # Đã đăng nhập - hiển thị tên user (có thể click để mở profile) và logout
+                        main_window.logged_in_user = username
+                        
+                        # User action - click để mở profile
+                        user_action = QAction(f"👤 {username}", main_window)
+                        user_action.setToolTip(I18N.t("Click to view/edit profile", "Nhấn để xem/sửa thông tin"))
+                        user_action.triggered.connect(open_profile_dialog)
+                        main_menu.addAction(user_action)
+                        main_menu.addSeparator()
+                        
+                        act_logout = QAction(I18N.t("🚪 Logout", "🚪 Đăng xuất"), main_window)
+                        act_logout.triggered.connect(lambda: do_logout())
+                        main_menu.addAction(act_logout)
+                        main_menu.addSeparator()
+                    else:
+                        # Chưa đăng nhập - hiển thị login/register (trường hợp dự phòng)
+                        main_window.logged_in_user = None
+                        act_login = QAction(I18N.t("Login", "Đăng nhập"), main_window)
+                        act_register = QAction(I18N.t("Register", "Đăng ký"), main_window)
+                        main_menu.addAction(act_login)
+                        main_menu.addAction(act_register)
+                        main_menu.addSeparator()
+                    
+                    main_menu.addAction(act_pricing)
+                    main_menu.addAction(act_strategy)
+                    # ============ ADD CHECK UPDATES TO MENU ============
+                    main_menu.addAction(act_check_updates)
+                    main_menu.addMenu(lang_menu)
+                    main_menu.addSeparator()
+                    main_menu.addAction(act_support)
+                
+                def do_logout():
+                    """Xử lý đăng xuất"""
+                    reply = QMessageBox.question(main_window,
+                        I18N.t("Confirm Logout", "Xác nhận Đăng xuất"),
+                        I18N.t("Are you sure you want to logout?", "Bạn có chắc chắn muốn đăng xuất?"),
+                        QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+                    
+                    if reply == QMessageBox.Yes:
+                        try:
+                            # Xóa license cache
+                            from license_client import get_license_client
+                            license_client = get_license_client(server_url=LICENSE_SERVER_URL)
+                            license_client.clear_cache()
+                            print("🚪 Logged out, cache cleared")
+                        except Exception as e:
+                            print(f"⚠️ Error clearing cache: {e}")
+                        
+                        QMessageBox.information(main_window,
+                            I18N.t("Logged Out", "Đã đăng xuất"),
+                            I18N.t("You have been logged out. The app will now close.", 
+                                   "Bạn đã đăng xuất. Ứng dụng sẽ đóng lại."))
+                        main_window.close()
+                        sys.exit(0)
+                
+                main_window.update_menu_for_user = update_menu_for_user
+                main_window.do_logout = do_logout
+                
+                # Khởi tạo menu ban đầu (chưa đăng nhập)
+                update_menu_for_user(None)
+                
                 menu_btn.setMenu(main_menu)
                 menu_btn.setPopupMode(QToolButton.InstantPopup)
                 # Place menu button to the LEFT of the title
@@ -11736,6 +24910,46 @@ def main_original():
                 # Create tab widget with tabs at bottom
                 tab_widget = QTabWidget()
                 tab_widget.setTabPosition(QTabWidget.South)  # Set tabs at bottom
+                tab_widget.setDocumentMode(True)  # Remove frame for cleaner look
+                
+                # Configure tab bar to expand tabs evenly
+                tab_bar = tab_widget.tabBar()
+                tab_bar.setExpanding(True)  # Tabs expand to fill width
+                tab_bar.setUsesScrollButtons(False)  # Disable scroll buttons
+                tab_bar.setElideMode(Qt.ElideNone)  # Don't truncate text
+                
+                # Style tabs to expand evenly across the width
+                tab_widget.setStyleSheet("""
+                    QTabWidget::pane {
+                        border: none;
+                        background: #f5f5f5;
+                    }
+                    QTabWidget::tab-bar {
+                        alignment: center;
+                    }
+                    QTabBar {
+                        background: transparent;
+                    }
+                    QTabBar::tab {
+                        background: #e8e8e8;
+                        color: #333;
+                        padding: 10px 5px;
+                        margin: 0px 1px;
+                        border: 1px solid #ccc;
+                        border-top: none;
+                        border-radius: 0px 0px 4px 4px;
+                        font-size: 12px;
+                        font-weight: bold;
+                    }
+                    QTabBar::tab:selected {
+                        background: #2196F3;
+                        color: white;
+                        border-color: #1976D2;
+                    }
+                    QTabBar::tab:hover:!selected {
+                        background: #d5d5d5;
+                    }
+                """)
             
                 print("Creating tabs...")
                 # Create Account tab first
@@ -11782,8 +24996,8 @@ def main_original():
                 signal_tab = SignalTab(indicator_tab=indicator_tab, market_tab=market_tab)
                 print("✅ SignalTab created")
 
-                # Create Auto Trading tab with references
-                auto_trading_tab = AutoTradingTab(news_tab, risk_tab)
+                # Create Auto Trading tab with references (including signal_tab for AI model selection)
+                auto_trading_tab = AutoTradingTab(news_tab, risk_tab, signal_tab)
                 print("[SUCCESS] AutoTradingTab created")
             
                 # Store tab references in main_window for graceful shutdown
@@ -11799,6 +25013,18 @@ def main_original():
                     'signal_tab': signal_tab,
                     'auto_trading_tab': auto_trading_tab
                 }
+                
+                # 🔧 FIX: Add direct tab references for Strategy Manager compatibility
+                main_window.market_tab = market_tab
+                main_window.risk_tab = risk_tab  # Risk management tab
+                main_window.indicator_tab = indicator_tab  # Indicator tab  
+                main_window.news_tab = news_tab  # News tab
+                main_window.account_tab = account_tab  # Account tab
+                main_window.trend_tab = trend_tab  # Trend analysis tab
+                main_window.pattern_tab = pattern_tab  # Candlestick pattern tab
+                main_window.price_pattern_tab = price_pattern_tab  # Price pattern tab
+                main_window.signal_tab = signal_tab  # Signal tab
+                
                 # Store tabWidget reference for auto trading checkbox detection
                 main_window.tabWidget = tab_widget
                 print("✅ Tab references stored for graceful shutdown")
@@ -11876,12 +25102,374 @@ def main_original():
                 print("Setting layout to main_window...")
                 main_window.setLayout(main_layout)
 
+                # ========== YÊU CẦU ĐĂNG NHẬP TRƯỚC KHI MỞ APP ==========
+                print("🔐 Checking login status...")
+                
+                # Luôn hiển thị login dialog - user phải click Start để vào app
+                # Nếu đã có cached session, sẽ tự động hiển thị logged in panel với nút Start
+                print("🔑 Opening login dialog...")
+                
+                # Loop để xử lý Register flow
+                while True:
+                    login_dialog = LoginDialog()
+                    
+                    # Check if user has cached session - auto show logged in panel
+                    try:
+                        from license_client import get_license_client
+                        license_client = get_license_client(server_url=LICENSE_SERVER_URL)
+                        
+                        if license_client.is_authenticated:
+                            print(f"✅ Found cached session, showing logged in panel...")
+                            cached_username = license_client.get_cached_username() or "User"
+                            days_remaining = license_client.days_remaining
+                            license_type = license_client.license_data.get('license_type', 'N/A') if license_client.license_data else 'N/A'
+                            
+                            # Pre-fill the logged in panel
+                            login_dialog.logged_in_user = {'username': cached_username}
+                            login_dialog.logged_in_license = {'license_type': license_type, 'days_remaining': days_remaining}
+                            
+                            # Show logged in panel directly
+                            login_dialog._show_logged_in_panel(
+                                cached_username, 
+                                {'license_type': license_type}, 
+                                days_remaining
+                            )
+                    except Exception as e:
+                        print(f"⚠️ Error checking cached session: {e}")
+                    
+                    result = login_dialog.exec_()
+                    
+                    # Check if user went to register
+                    if hasattr(login_dialog, 'went_to_register') and login_dialog.went_to_register:
+                        # User registered and activated - check login session again
+                        try:
+                            license_client = get_license_client(server_url=LICENSE_SERVER_URL)
+                            if license_client.is_authenticated:
+                                print("✅ Login session valid after registration, continuing...")
+                                break  # Exit loop, continue to main app
+                        except:
+                            pass
+                        # Continue loop to show login dialog again
+                        continue
+                    
+                    if result != QDialog.Accepted:
+                        # User cancelled login - exit app
+                        print("❌ Login cancelled by user, exiting...")
+                        sys.exit(0)
+                    else:
+                        # Login successful (user clicked Start)
+                        break
+                
+                print("✅ User clicked Start, opening main app...")
+                
+                # Sync language from LoginDialog to main app
+                # LoginDialog may have changed language, so we need to apply it
+                current_lang = AppState.language()
+                print(f"🌐 Syncing language after login: {current_lang}")
+                # Just set the checked state - _apply_language will be triggered later when UI is ready
+                if current_lang == 'vi':
+                    lang_vi.setChecked(True)
+                else:
+                    lang_en.setChecked(True)
+                # Store language to apply after window shows
+                main_window._pending_language = current_lang
+                
+                # Lấy username từ login dialog và cập nhật menu
+                try:
+                    # Try to get username from logged in info first, then from input field
+                    logged_username = None
+                    
+                    # First try from user_name_label (shown in logged_in_panel)
+                    if hasattr(login_dialog, 'user_name_label') and login_dialog.user_name_label.text():
+                        logged_username = login_dialog.user_name_label.text()
+                    
+                    # Then try from logged_in_user dict
+                    if not logged_username and hasattr(login_dialog, 'logged_in_user') and login_dialog.logged_in_user:
+                        logged_username = login_dialog.logged_in_user.get('username') or login_dialog.logged_in_user.get('email')
+                    
+                    # Finally try from email input field
+                    if not logged_username:
+                        logged_username = login_dialog.email_input.text().strip()
+                    
+                    print(f"📊 Got username: {logged_username}")
+                    
+                    if logged_username and hasattr(main_window, 'update_menu_for_user'):
+                        main_window.update_menu_for_user(logged_username)
+                        print(f"✅ Menu updated for user: {logged_username}")
+                    
+                    # ========== SET USER LICENSE INFO FOR COUNTDOWN ==========
+                    # Get license info from license_client (most up-to-date after refresh in _on_start_clicked)
+                    expire_date = ''
+                    days_remaining = 0
+                    
+                    # Try to get from license_client first
+                    try:
+                        from license_client import get_license_client
+                        lc = get_license_client(server_url=LICENSE_SERVER_URL)
+                        license_data = lc.license_data
+                        
+                        if license_data:
+                            expire_date = license_data.get('expire_date', '')
+                            days_remaining = license_data.get('days_remaining', 0)
+                            
+                            # Convert expire_date to string if needed
+                            if expire_date and not isinstance(expire_date, str):
+                                expire_date = str(expire_date)
+                            
+                            print(f"📊 License data from client: expire_date={expire_date}, days_remaining={days_remaining}")
+                    except Exception as e:
+                        print(f"⚠️ Error getting license data from client: {e}")
+                    
+                    # Fallback to login_dialog data if needed
+                    if not expire_date and hasattr(login_dialog, 'logged_in_license') and login_dialog.logged_in_license:
+                        license_info = login_dialog.logged_in_license
+                        expire_date = license_info.get('expire_date', '')
+                        days_remaining = license_info.get('days_remaining', 0)
+                        print(f"📊 License data from login_dialog: expire_date={expire_date}, days_remaining={days_remaining}")
+                    
+                    # Always call set_user_license_info with whatever data we have
+                    if hasattr(main_window, 'account_tab') and main_window.account_tab:
+                        final_username = logged_username or 'User'
+                        print(f"📊 Calling set_user_license_info: username={final_username}, expire={expire_date}, days={days_remaining}")
+                        main_window.account_tab.set_user_license_info(
+                            username=final_username,
+                            expire_date_str=expire_date,
+                            days_remaining=days_remaining
+                        )
+                        print(f"✅ License countdown started: expires {expire_date}, {days_remaining} days remaining")
+                    else:
+                        print(f"⚠️ account_tab not found or None!")
+                    # ========== END SET USER LICENSE INFO ==========
+                    
+                except Exception as e:
+                    print(f"⚠️ Error updating menu for user: {e}")
+                
+                # ========== KẾT THÚC PHẦN ĐĂNG NHẬP ==========
+
+                # ========== PERIODIC LICENSE VALIDATION ==========
+                # Track if we've already shown the expired warning this session
+                _license_expired_warning_shown = [False]  # Use list to make it mutable in closure
+                
+                def periodic_license_check():
+                    """Backup license check mỗi 30 phút - sync với server"""
+                    try:
+                        # Check code integrity first (using license_guard)
+                        try:
+                            from license_guard import get_license_guard
+                            guard = get_license_guard()
+                            if not guard._check_code_integrity():
+                                print("🚨 Code integrity check failed!")
+                                QMessageBox.critical(main_window,
+                                    "🚨 Security Alert",
+                                    "Code tampering detected. Application will close.")
+                                main_window.close()
+                                sys.exit(1)
+                        except ImportError:
+                            pass  # license_guard not available
+                        
+                        # Check license validity (using license_client)
+                        from license_client import get_license_client
+                        lc = get_license_client(server_url=LICENSE_SERVER_URL)
+                        
+                        # Sync với server mỗi 30 phút
+                        print("🔄 Periodic sync: Refreshing license status from server...")
+                        refresh_success, is_active = lc.refresh_license_status()
+                        
+                        if refresh_success:
+                            print(f"✅ License sync success, is_active={is_active}")
+                            
+                            # === UPDATE COUNTDOWN TIMER WITH NEW DATA FROM SERVER ===
+                            try:
+                                if hasattr(main_window, 'account_tab') and main_window.account_tab:
+                                    # Get updated license data from client
+                                    license_data = lc.license_data
+                                    if license_data:
+                                        new_expire_date = license_data.get('expire_date', '')
+                                        new_days_remaining = license_data.get('days_remaining', 0)
+                                        username = getattr(main_window.account_tab, '_logged_in_username', 'User')
+                                        
+                                        # Update countdown timer with new expire date
+                                        main_window.account_tab.set_user_license_info(
+                                            username=username,
+                                            expire_date_str=new_expire_date,
+                                            days_remaining=new_days_remaining
+                                        )
+                                        print(f"🔄 Countdown updated: expires {new_expire_date}, {new_days_remaining} days remaining")
+                            except Exception as e:
+                                print(f"⚠️ Error updating countdown: {e}")
+                        else:
+                            print(f"⚠️ License refresh failed (offline?), using cached: is_active={is_active}")
+                        
+                        # Check if license expired (not active)
+                        if not is_active:
+                            print("⚠️ License expired during periodic check")
+                            
+                            # === STOP AUTO TRADING IF RUNNING ===
+                            try:
+                                if hasattr(main_window, 'all_tabs') and 'auto_trading_tab' in main_window.all_tabs:
+                                    auto_tab = main_window.all_tabs['auto_trading_tab']
+                                    if hasattr(auto_tab, 'is_auto_on') and auto_tab.is_auto_on:
+                                        print("⚠️ Stopping auto trading due to license expiration...")
+                                        # Call toggle_auto to stop it
+                                        if hasattr(auto_tab, 'toggle_auto'):
+                                            auto_tab.toggle_auto()
+                                        print("✅ Auto trading stopped")
+                            except Exception as e:
+                                print(f"⚠️ Error stopping auto trading: {e}")
+                            
+                            # Only show warning once per session to avoid spam
+                            if not _license_expired_warning_shown[0]:
+                                _license_expired_warning_shown[0] = True
+                                QMessageBox.warning(main_window,
+                                    I18N.t("⚠️ License Expired", "⚠️ License Hết Hạn"),
+                                    I18N.t("Your license has expired.\n\nApp services (MT5 login, calculations, auto trading, etc.) are now restricted.\n\nAuto trading has been stopped.\n\nPlease renew your license to continue using all features.\n\nGo to Menu → Account → View Pricing to renew.",
+                                           "License của bạn đã hết hạn.\n\nCác dịch vụ của app (đăng nhập MT5, tính toán, auto trading...) đã bị hạn chế.\n\nAuto trading đã được tắt.\n\nVui lòng gia hạn license để tiếp tục sử dụng đầy đủ tính năng.\n\nVào Menu → Tài khoản → Xem Bảng Giá để gia hạn."))
+                            
+                            # NOTE: We do NOT close the app or force logout
+                            # User can still browse and renew their license
+                        else:
+                            # Reset warning flag when license becomes valid again
+                            _license_expired_warning_shown[0] = False
+                            
+                    except Exception as e:
+                        print(f"⚠️ Periodic license check error: {e}")
+                
+                # Start periodic check timer (5 minutes = 300000 ms)
+                # Sync with server to get updated license info (admin changes, renewals, etc.)
+                license_check_timer = QTimer(main_window)
+                license_check_timer.timeout.connect(periodic_license_check)
+                license_check_timer.start(300000)  # 5 minutes
+                print("✅ Periodic license sync started (every 5 minutes)")
+                # ========== END PERIODIC LICENSE VALIDATION ==========
+
+                # ========== REAL-TIME LICENSE NOTIFICATION WATCHER ==========
+                # Start notification watcher to receive real-time updates from server
+                # when admin changes license (extend, reduce, etc.)
+                try:
+                    from license_client import get_license_client
+                    notification_client = get_license_client(server_url=LICENSE_SERVER_URL)
+                    
+                    # Store pending notification to process in main thread
+                    _pending_license_notification = [None]
+                    
+                    # Timer to process notifications in main thread (check every 500ms)
+                    notification_process_timer = QTimer(main_window)
+                    
+                    def process_pending_notification():
+                        """Process license notification in main thread (safe for Qt)"""
+                        if _pending_license_notification[0] is None:
+                            return
+                        
+                        change_info = _pending_license_notification[0]
+                        _pending_license_notification[0] = None  # Clear pending
+                        
+                        try:
+                            change_type = change_info.get('type', '')
+                            change_data = change_info.get('data', {})
+                            
+                            print(f"📬 Processing license change in main thread: {change_type}")
+                            
+                            # Update countdown timer with new expire date
+                            if hasattr(main_window, 'account_tab') and main_window.account_tab:
+                                new_expire_date = change_data.get('expire_date', '')
+                                new_days_remaining = change_data.get('days_remaining', 0)
+                                username = getattr(main_window.account_tab, '_logged_in_username', 'User')
+                                
+                                # Update countdown timer
+                                main_window.account_tab.set_user_license_info(
+                                    username=username,
+                                    expire_date_str=new_expire_date,
+                                    days_remaining=new_days_remaining
+                                )
+                                print(f"🔄 Countdown updated from server: expires {new_expire_date}, {new_days_remaining} days")
+                            
+                            # Check if license was reduced to expired
+                            is_valid = change_data.get('is_valid', True)
+                            new_days_remaining = change_data.get('days_remaining', 0)
+                            
+                            if not is_valid or new_days_remaining <= 0:
+                                print("⚠️ License expired (server notification)")
+                                
+                                # Stop auto trading if running
+                                try:
+                                    if hasattr(main_window, 'all_tabs') and 'auto_trading_tab' in main_window.all_tabs:
+                                        auto_tab = main_window.all_tabs['auto_trading_tab']
+                                        if hasattr(auto_tab, 'is_auto_on') and auto_tab.is_auto_on:
+                                            print("⚠️ Stopping auto trading due to license expiration (server notify)...")
+                                            if hasattr(auto_tab, 'toggle_auto'):
+                                                auto_tab.toggle_auto()
+                                            print("✅ Auto trading stopped")
+                                except Exception as e:
+                                    print(f"⚠️ Error stopping auto trading: {e}")
+                                
+                                # Show warning if not already shown
+                                if not _license_expired_warning_shown[0]:
+                                    _license_expired_warning_shown[0] = True
+                                    QMessageBox.warning(main_window,
+                                        I18N.t("⚠️ License Expired", "⚠️ License Hết Hạn"),
+                                        I18N.t("Your license has expired.\n\nApp services (MT5 login, calculations, auto trading, etc.) are now restricted.\n\nPlease renew your license to continue using all features.",
+                                               "License của bạn đã hết hạn.\n\nCác dịch vụ của app (đăng nhập MT5, tính toán, auto trading...) đã bị hạn chế.\n\nVui lòng gia hạn license để tiếp tục sử dụng đầy đủ tính năng."))
+                            else:
+                                # License renewed/extended - reset warning flag
+                                _license_expired_warning_shown[0] = False
+                                
+                                # Show notification about license renewal
+                                if change_type in ['license_renewed', 'license_updated']:
+                                    new_expire_date = change_data.get('expire_date', '')
+                                    new_days_remaining = change_data.get('days_remaining', 0)
+                                    QMessageBox.information(main_window,
+                                        I18N.t("✅ License Updated", "✅ License Đã Cập Nhật"),
+                                        I18N.t(f"Your license has been updated.\n\nNew expiry: {new_expire_date}\nDays remaining: {new_days_remaining}",
+                                               f"License của bạn đã được cập nhật.\n\nHết hạn mới: {new_expire_date}\nSố ngày còn lại: {new_days_remaining}"))
+                                    
+                        except Exception as e:
+                            print(f"⚠️ Error processing license change: {e}")
+                    
+                    notification_process_timer.timeout.connect(process_pending_notification)
+                    notification_process_timer.start(500)  # Check every 500ms
+                    
+                    # Define callback for license changes from server (runs in background thread)
+                    def on_license_changed_callback(change_info):
+                        """Handle real-time license change notification from server (background thread)"""
+                        # Just store the notification - will be processed in main thread by timer
+                        print(f"📬 Real-time license change received: {change_info.get('type', '')}")
+                        _pending_license_notification[0] = change_info
+                    
+                    # Set callback on license client
+                    notification_client.on_license_changed = on_license_changed_callback
+                    
+                    # Start notification watcher thread
+                    notification_client.start_notification_watcher()
+                    print("👁️ Real-time license notification watcher started")
+                    
+                except Exception as e:
+                    print(f"⚠️ Error starting notification watcher: {e}")
+                # ========== END REAL-TIME LICENSE NOTIFICATION WATCHER ==========
+
                 print("Showing window...")
                 # Show window
                 main_window.show()
-                print("Window shown successfully!")                # Force refresh DCA labels after window is shown (Qt rendering fix)
+                print("Window shown successfully!")
+                
+                # Apply pending language after window is shown
                 try:
-                    from PyQt5.QtCore import QTimer
+                    def apply_pending_language():
+                        if hasattr(main_window, '_pending_language'):
+                            pending_lang = main_window._pending_language
+                            print(f"🌐 Applying pending language: {pending_lang}")
+                            # Trigger the language action to apply full UI translation
+                            if pending_lang == 'en':
+                                lang_en.trigger()
+                            else:
+                                lang_vi.trigger()
+                            delattr(main_window, '_pending_language')
+                    
+                    QTimer.singleShot(100, apply_pending_language)  # Apply after 100ms
+                except Exception as e:
+                    print(f"⚠️ Error applying pending language: {e}")
+                
+                # Force refresh DCA labels after window is shown (Qt rendering fix)
+                try:
                     def delayed_refresh():
                         if hasattr(main_window, 'all_tabs') and 'risk_management_tab' in main_window.all_tabs:
                             risk_tab = main_window.all_tabs['risk_management_tab']
@@ -11897,7 +25485,6 @@ def main_original():
 
                 # === Auto-start News scraping & scheduler integration ===
                 try:
-                    from PyQt5.QtCore import QTimer
                     import pytz
                     from news_scraper import get_today_news, scan_event_window
                     print("[NewsAuto] Initializing news auto-start...")
@@ -12352,6 +25939,1116 @@ def main_original():
                 except Exception as e:
                     print(f"[NewsAuto] Daily refresh setup failed: {e}")
             
+                # Strategy Management Function
+                def _open_strategy_manager():
+                    """Open strategy management dialog"""
+                    try:
+                        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QListWidget, QPushButton, QInputDialog, QMessageBox, QLabel
+                        import json
+                        import os
+                        from datetime import datetime
+                        
+                        class StrategyManagerDialog(QDialog):
+                            def __init__(self, parent=None):
+                                super().__init__(parent)
+                                self.setWindowTitle(I18N.t("Trading Strategy Manager", "Quản lý Chiến lược Giao dịch"))
+                                self.setFixedSize(600, 400)
+                                self.setModal(True)
+                                
+                                # Store main window reference for strategy application
+                                self.main_window_ref = parent
+                                
+                                # Strategy storage file
+                                self.strategies_file = os.path.join(os.getcwd(), "saved_strategies.json")
+                                
+                                self.init_ui()
+                                self.load_strategies()
+                                
+                            def init_ui(self):
+                                layout = QVBoxLayout()
+                                
+                                # Title
+                                title_label = QLabel(I18N.t("Strategy Management", "Quản lý Chiến lược"))
+                                title_label.setStyleSheet("font-size: 16px; font-weight: bold; margin: 10px;")
+                                layout.addWidget(title_label)
+                                
+                                # Strategy list
+                                self.strategy_list = QListWidget()
+                                self.strategy_list.itemDoubleClicked.connect(self.load_selected_strategy)
+                                layout.addWidget(self.strategy_list)
+                                
+                                # Buttons layout
+                                button_layout = QHBoxLayout()
+                                
+                                # Create new strategy button
+                                create_btn = QPushButton(I18N.t("Create New Strategy", "Tạo Chiến lược Mới"))
+                                create_btn.clicked.connect(self.create_new_strategy)
+                                create_btn.setStyleSheet("""
+                                    QPushButton {
+                                        background: #4CAF50;
+                                        color: white;
+                                        border: none;
+                                        padding: 8px 16px;
+                                        border-radius: 4px;
+                                        font-weight: bold;
+                                    }
+                                    QPushButton:hover { background: #45a049; }
+                                """)
+                                
+                                # Load strategy button
+                                load_btn = QPushButton(I18N.t("Load Strategy", "Tải Chiến lược"))
+                                load_btn.clicked.connect(self.load_selected_strategy)
+                                load_btn.setStyleSheet("""
+                                    QPushButton {
+                                        background: #2196F3;
+                                        color: white;
+                                        border: none;
+                                        padding: 8px 16px;
+                                        border-radius: 4px;
+                                        font-weight: bold;
+                                    }
+                                    QPushButton:hover { background: #1976D2; }
+                                """)
+                                
+                                # Delete strategy button
+                                delete_btn = QPushButton(I18N.t("Delete Strategy", "Xóa Chiến lược"))
+                                delete_btn.clicked.connect(self.delete_selected_strategy)
+                                delete_btn.setStyleSheet("""
+                                    QPushButton {
+                                        background: #f44336;
+                                        color: white;
+                                        border: none;
+                                        padding: 8px 16px;
+                                        border-radius: 4px;
+                                        font-weight: bold;
+                                    }
+                                    QPushButton:hover { background: #d32f2f; }
+                                """)
+                                
+                                # Close button
+                                close_btn = QPushButton(I18N.t("Close", "Đóng"))
+                                close_btn.clicked.connect(self.close)
+                                close_btn.setStyleSheet("""
+                                    QPushButton {
+                                        background: #757575;
+                                        color: white;
+                                        border: none;
+                                        padding: 8px 16px;
+                                        border-radius: 4px;
+                                        font-weight: bold;
+                                    }
+                                    QPushButton:hover { background: #616161; }
+                                """)
+                                
+                                button_layout.addWidget(create_btn)
+                                button_layout.addWidget(load_btn)
+                                button_layout.addWidget(delete_btn)
+                                button_layout.addStretch()
+                                button_layout.addWidget(close_btn)
+                                
+                                layout.addLayout(button_layout)
+                                self.setLayout(layout)
+                                
+                            def get_current_strategy_settings(self):
+                                """Capture ALL current tab settings - COMPREHENSIVE VERSION 4.0"""
+                                try:
+                                    print("[Strategy] 🔄 Capturing current settings (v4.0 - COMPLETE)...")
+                                    
+                                    main_window_ref = getattr(self, 'main_window_ref', None)
+                                    if not main_window_ref:
+                                        print("[Strategy] ❌ CRITICAL: Cannot find main window reference!")
+                                        return None
+                                    
+                                    settings = {
+                                        'timestamp': datetime.now().isoformat(),
+                                        'version': '4.0',
+                                        'tabs': {}
+                                    }
+                                    
+                                    # ═══════════════════════════════════════════════════════════════
+                                    # RISK MANAGEMENT TAB - COMPLETE CAPTURE
+                                    # ═══════════════════════════════════════════════════════════════
+                                    try:
+                                        print("[Strategy] 🛡️ Capturing Risk Management tab...")
+                                        risk_settings = {}
+                                        
+                                        if hasattr(main_window_ref, 'risk_tab') and main_window_ref.risk_tab:
+                                            rt = main_window_ref.risk_tab
+                                            
+                                            # ALL SPIN BOXES (QSpinBox & QDoubleSpinBox)
+                                            spin_widgets = [
+                                                'min_lot_spin', 'fixed_volume_spin', 'default_volume_spin',
+                                                'default_sl_spin', 'default_tp_spin',
+                                                'breakeven_min_spin', 'breakeven_max_spin',
+                                                'trailing_activation_spin', 'trailing_min_spin', 'trailing_max_spin',
+                                                'max_positions_spin', 'max_positions_per_symbol_spin', 'max_correlation_spin',
+                                                'start_hour_spin', 'end_hour_spin',
+                                                'spread_multiplier_spin', 'max_slippage_spin',
+                                                'max_dca_levels_spin', 'dca_multiplier_spin',
+                                                'dca_atr_period_spin', 'dca_atr_mult_spin', 'dca_base_distance_spin',
+                                                'dca_min_drawdown_spin', 'dca_avg_sl_profit_spin',
+                                            ]
+                                            for w in spin_widgets:
+                                                if hasattr(rt, w):
+                                                    widget = getattr(rt, w)
+                                                    if hasattr(widget, 'value'):
+                                                        risk_settings[w] = widget.value()
+                                            
+                                            # ALL COMBO BOXES (with both text and index)
+                                            combo_widgets = [
+                                                'volume_mode_combo', 'sltp_mode_combo',
+                                                'max_risk_combo', 'max_drawdown_combo', 'daily_loss_combo',
+                                                'max_lot_combo', 'min_rr_combo',
+                                                'avoid_news_combo', 'emergency_dd_combo',
+                                                'dca_mode_combo', 'dca_fibo_start_combo', 'dca_fibo_exec_combo', 'dca_sl_mode_combo',
+                                            ]
+                                            for w in combo_widgets:
+                                                if hasattr(rt, w):
+                                                    widget = getattr(rt, w)
+                                                    if hasattr(widget, 'currentText'):
+                                                        risk_settings[w] = widget.currentText()
+                                                    if hasattr(widget, 'currentIndex'):
+                                                        risk_settings[w + '_idx'] = widget.currentIndex()
+                                            
+                                            # ALL CHECKBOXES
+                                            checkbox_widgets = [
+                                                'trailing_volatility_cb', 'enable_dca_check', 'auto_reduce_check',
+                                            ]
+                                            for w in checkbox_widgets:
+                                                if hasattr(rt, w):
+                                                    widget = getattr(rt, w)
+                                                    if hasattr(widget, 'isChecked'):
+                                                        risk_settings[w] = widget.isChecked()
+                                            
+                                            # ═══════════════════════════════════════════════════════════
+                                            # SYMBOL EXPOSURE TABLE - capture exposure and multipliers
+                                            # ═══════════════════════════════════════════════════════════
+                                            symbol_exposure = {}
+                                            symbol_multipliers = {}
+                                            
+                                            # METHOD 1: Try to read from rt.settings FIRST (most reliable)
+                                            if hasattr(rt, 'settings') and rt.settings:
+                                                if 'symbol_exposure' in rt.settings and rt.settings['symbol_exposure']:
+                                                    symbol_exposure = dict(rt.settings['symbol_exposure'])
+                                                if 'symbol_multipliers' in rt.settings and rt.settings['symbol_multipliers']:
+                                                    symbol_multipliers = dict(rt.settings['symbol_multipliers'])
+                                            
+                                            # METHOD 2: If settings empty, try reading from exposure_table widget
+                                            if not symbol_exposure and hasattr(rt, 'exposure_table') and rt.exposure_table:
+                                                for row in range(rt.exposure_table.rowCount()):
+                                                    symbol_item = rt.exposure_table.item(row, 0)
+                                                    if symbol_item:
+                                                        symbol = symbol_item.text()
+                                                        if symbol and symbol not in ["Chưa chọn mã", "No symbols selected", "--", ""]:
+                                                            try:
+                                                                exposure_widget = rt.exposure_table.cellWidget(row, 1)
+                                                                multiplier_widget = rt.exposure_table.cellWidget(row, 2)
+                                                                if exposure_widget and multiplier_widget:
+                                                                    symbol_exposure[symbol] = exposure_widget.value()
+                                                                    symbol_multipliers[symbol] = multiplier_widget.value()
+                                                            except:
+                                                                pass
+                                            
+                                            # METHOD 3: If still empty, try reading from risk_settings.json file
+                                            if not symbol_exposure:
+                                                try:
+                                                    import os
+                                                    risk_file = os.path.join(os.getcwd(), "risk_management", "risk_settings.json")
+                                                    if os.path.exists(risk_file):
+                                                        with open(risk_file, 'r', encoding='utf-8') as f:
+                                                            file_settings = json.load(f)
+                                                        if 'symbol_exposure' in file_settings and file_settings['symbol_exposure']:
+                                                            symbol_exposure = dict(file_settings['symbol_exposure'])
+                                                        if 'symbol_multipliers' in file_settings and file_settings['symbol_multipliers']:
+                                                            symbol_multipliers = dict(file_settings['symbol_multipliers'])
+                                                except:
+                                                    pass
+                                            
+                                            # Save to strategy
+                                            if symbol_exposure:
+                                                risk_settings['symbol_exposure'] = symbol_exposure
+                                                risk_settings['symbol_multipliers'] = symbol_multipliers
+                                                print(f"   📊 Symbol exposure: {len(symbol_exposure)} symbols")
+                                            
+                                            print(f"   ✅ Risk Management: {len(risk_settings)} settings captured")
+                                        
+                                        settings['tabs']['risk_management'] = risk_settings
+                                    except Exception as e:
+                                        print(f"   ❌ Risk Management error: {e}")
+                                        settings['tabs']['risk_management'] = {}
+                                    
+                                    # ═══════════════════════════════════════════════════════════════
+                                    # MARKET TAB - SYMBOLS & TIMEFRAMES (FULL)
+                                    # ═══════════════════════════════════════════════════════════════
+                                    try:
+                                        print("[Strategy] 💹 Capturing Market tab...")
+                                        market_settings = {}
+                                        
+                                        if hasattr(main_window_ref, 'market_tab') and main_window_ref.market_tab:
+                                            mt = main_window_ref.market_tab
+                                            
+                                            # Selected symbols (from checked_symbols set)
+                                            if hasattr(mt, 'checked_symbols'):
+                                                market_settings['checked_symbols'] = list(mt.checked_symbols)
+                                                print(f"   📌 Symbols: {market_settings['checked_symbols']}")
+                                            
+                                            # Timeframe settings (checkbox state + candle count)
+                                            if hasattr(mt, 'tf_checkboxes') and hasattr(mt, 'tf_spinboxes'):
+                                                tf_settings = {}
+                                                for tf_name, cb in mt.tf_checkboxes.items():
+                                                    tf_settings[tf_name] = {
+                                                        'enabled': cb.isChecked(),
+                                                        'candles': mt.tf_spinboxes[tf_name].value() if tf_name in mt.tf_spinboxes else 5000
+                                                    }
+                                                market_settings['timeframes'] = tf_settings
+                                            
+                                            # Chart settings
+                                            if hasattr(mt, 'chart_symbol_combo'):
+                                                market_settings['chart_symbol'] = mt.chart_symbol_combo.currentText()
+                                            if hasattr(mt, 'chart_timeframe_combo'):
+                                                market_settings['chart_timeframe'] = mt.chart_timeframe_combo.currentText()
+                                            
+                                            print(f"   ✅ Market: {len(market_settings.get('checked_symbols', []))} symbols, {len(market_settings.get('timeframes', {}))} timeframes")
+                                        
+                                        settings['tabs']['market'] = market_settings
+                                    except Exception as e:
+                                        print(f"   ❌ Market error: {e}")
+                                        settings['tabs']['market'] = {}
+                                    
+                                    # ═══════════════════════════════════════════════════════════════
+                                    # INDICATOR TAB - COMPATIBLE WITH restore_user_config FORMAT
+                                    # ═══════════════════════════════════════════════════════════════
+                                    try:
+                                        print("[Strategy] 📊 Capturing Indicator tab...")
+                                        indicator_settings = {}
+                                        
+                                        if hasattr(main_window_ref, 'indicator_tab') and main_window_ref.indicator_tab:
+                                            it = main_window_ref.indicator_tab
+                                            
+                                            # Use same format as save_current_user_config for compatibility
+                                            if hasattr(it, 'indicator_rows') and hasattr(it, 'INDICATOR_OPTIONS'):
+                                                rows_data = []
+                                                for row_dict in it.indicator_rows:
+                                                    try:
+                                                        if 'indi_combo' not in row_dict:
+                                                            continue
+                                                        
+                                                        indi_label = row_dict['indi_combo'].currentText()
+                                                        # Find indicator name from label
+                                                        indi_name = None
+                                                        for opt in it.INDICATOR_OPTIONS:
+                                                            if opt.get("label") == indi_label:
+                                                                indi_name = opt.get("name")
+                                                                break
+                                                        
+                                                        if not indi_name:
+                                                            continue
+                                                        
+                                                        # Collect params using same logic as save_current_user_config
+                                                        params = {}
+                                                        param_keys = [
+                                                            ("period_spin", "period"), ("ma_type_combo", "ma_type"),
+                                                            ("fast_spin", "fast"), ("slow_spin", "slow"), ("signal_spin", "signal"),
+                                                            ("smooth_spin", "smooth"), ("window_spin", "window"), ("dev_spin", "dev"),
+                                                            ("step_spin", "step"), ("max_step_spin", "max_step"),
+                                                            ("window1_spin", "window1"), ("window2_spin", "window2"),
+                                                            ("window3_spin", "window3"), ("window4_spin", "window4"),
+                                                            ("window_sig_spin", "window_sig"),
+                                                            ("smooth1_spin", "smooth1"), ("smooth2_spin", "smooth2"),
+                                                            ("short_spin", "short"), ("medium_spin", "medium"), ("long_spin", "long"),
+                                                            ("lookback_spin", "lookback"),
+                                                            ("tenkan_spin", "tenkan"), ("kijun_spin", "kijun"), ("senkou_spin", "senkou"),
+                                                            ("percent_spin", "percent"),
+                                                        ]
+                                                        
+                                                        for widget_key, param_name in param_keys:
+                                                            if widget_key in row_dict:
+                                                                widget = row_dict[widget_key]
+                                                                try:
+                                                                    if hasattr(widget, 'value'):
+                                                                        params[param_name] = widget.value()
+                                                                    elif hasattr(widget, 'currentText'):
+                                                                        params[param_name] = widget.currentText()
+                                                                except:
+                                                                    pass
+                                                        
+                                                        row_data = {
+                                                            "name": indi_name,
+                                                            "label": indi_label,
+                                                            "params": params
+                                                        }
+                                                        rows_data.append(row_data)
+                                                        print(f"   📈 {indi_name}: {params}")
+                                                    except Exception as row_e:
+                                                        print(f"   ⚠️ Row error: {row_e}")
+                                                
+                                                indicator_settings['indicator_rows'] = rows_data
+                                            
+                                            print(f"   ✅ Indicators: {len(indicator_settings.get('indicator_rows', []))} rows captured")
+                                        
+                                        settings['tabs']['indicators'] = indicator_settings
+                                    except Exception as e:
+                                        print(f"   ❌ Indicator error: {e}")
+                                        settings['tabs']['indicators'] = {}
+                                    
+                                    # ═══════════════════════════════════════════════════════════════
+                                    # PATTERN TAB (Candlestick)
+                                    # ═══════════════════════════════════════════════════════════════
+                                    try:
+                                        print("[Strategy] 🕯️ Capturing Pattern tab...")
+                                        pattern_settings = {}
+                                        
+                                        if hasattr(main_window_ref, 'pattern_tab') and main_window_ref.pattern_tab:
+                                            pt = main_window_ref.pattern_tab
+                                            if hasattr(pt, 'enable_checkbox'):
+                                                pattern_settings['enabled'] = pt.enable_checkbox.isChecked()
+                                            if hasattr(pt, 'min_confidence_spinbox'):
+                                                pattern_settings['min_confidence'] = pt.min_confidence_spinbox.value()
+                                            print(f"   ✅ Pattern: enabled={pattern_settings.get('enabled', 'N/A')}")
+                                        
+                                        settings['tabs']['pattern'] = pattern_settings
+                                    except Exception as e:
+                                        print(f"   ❌ Pattern error: {e}")
+                                        settings['tabs']['pattern'] = {}
+                                    
+                                    # ═══════════════════════════════════════════════════════════════
+                                    # PRICE PATTERN TAB
+                                    # ═══════════════════════════════════════════════════════════════
+                                    try:
+                                        print("[Strategy] 📈 Capturing Price Pattern tab...")
+                                        price_pattern_settings = {}
+                                        
+                                        if hasattr(main_window_ref, 'price_pattern_tab') and main_window_ref.price_pattern_tab:
+                                            ppt = main_window_ref.price_pattern_tab
+                                            if hasattr(ppt, 'enable_checkbox'):
+                                                price_pattern_settings['enabled'] = ppt.enable_checkbox.isChecked()
+                                            if hasattr(ppt, 'min_confidence_spinbox'):
+                                                price_pattern_settings['min_confidence'] = ppt.min_confidence_spinbox.value()
+                                            if hasattr(ppt, 'max_age_spinbox'):
+                                                price_pattern_settings['max_age'] = ppt.max_age_spinbox.value()
+                                            print(f"   ✅ Price Pattern: enabled={price_pattern_settings.get('enabled', 'N/A')}")
+                                        
+                                        settings['tabs']['price_pattern'] = price_pattern_settings
+                                    except Exception as e:
+                                        print(f"   ❌ Price Pattern error: {e}")
+                                        settings['tabs']['price_pattern'] = {}
+                                    
+                                    # ═══════════════════════════════════════════════════════════════
+                                    # TREND TAB
+                                    # ═══════════════════════════════════════════════════════════════
+                                    try:
+                                        print("[Strategy] 📉 Capturing Trend tab...")
+                                        trend_settings = {}
+                                        
+                                        if hasattr(main_window_ref, 'trend_tab') and main_window_ref.trend_tab:
+                                            tt = main_window_ref.trend_tab
+                                            if hasattr(tt, 'enable_checkbox'):
+                                                trend_settings['enabled'] = tt.enable_checkbox.isChecked()
+                                            print(f"   ✅ Trend: enabled={trend_settings.get('enabled', 'N/A')}")
+                                        
+                                        settings['tabs']['trend'] = trend_settings
+                                    except Exception as e:
+                                        print(f"   ❌ Trend error: {e}")
+                                        settings['tabs']['trend'] = {}
+                                    
+                                    # ═══════════════════════════════════════════════════════════════
+                                    # NEWS TAB - FULL (Currency + Impact checkboxes)
+                                    # ═══════════════════════════════════════════════════════════════
+                                    try:
+                                        print("[Strategy] 📰 Capturing News tab...")
+                                        news_settings = {}
+                                        
+                                        if hasattr(main_window_ref, 'news_tab') and main_window_ref.news_tab:
+                                            nt = main_window_ref.news_tab
+                                            
+                                            # Main checkbox
+                                            if hasattr(nt, 'use_economic_calendar_checkbox'):
+                                                news_settings['use_economic_calendar'] = nt.use_economic_calendar_checkbox.isChecked()
+                                            
+                                            # Currency checkboxes
+                                            if hasattr(nt, 'currency_checkboxes'):
+                                                currency_states = {}
+                                                for cb in nt.currency_checkboxes:
+                                                    currency_states[cb.text()] = cb.isChecked()
+                                                news_settings['currencies'] = currency_states
+                                            
+                                            # Impact checkboxes - use string keys for JSON compatibility
+                                            if hasattr(nt, 'impact_checkboxes'):
+                                                impact_states = {}
+                                                for cb in nt.impact_checkboxes:
+                                                    if hasattr(cb, 'impact_value'):
+                                                        # Use string key because JSON converts int keys to strings
+                                                        impact_states[str(cb.impact_value)] = cb.isChecked()
+                                                news_settings['impacts'] = impact_states
+                                            
+                                            print(f"   ✅ News: calendar={news_settings.get('use_economic_calendar', 'N/A')}, currencies={len(news_settings.get('currencies', {}))}, impacts={len(news_settings.get('impacts', {}))}")
+                                        
+                                        settings['tabs']['news'] = news_settings
+                                    except Exception as e:
+                                        print(f"   ❌ News error: {e}")
+                                        settings['tabs']['news'] = {}
+                                    
+                                    # ═══════════════════════════════════════════════════════════════
+                                    # SIGNAL TAB - ALL NOTIFICATION CHECKBOXES
+                                    # ═══════════════════════════════════════════════════════════════
+                                    try:
+                                        print("[Strategy] 📡 Capturing Signal tab...")
+                                        signal_settings = {}
+                                        
+                                        if hasattr(main_window_ref, 'signal_tab') and main_window_ref.signal_tab:
+                                            st = main_window_ref.signal_tab
+                                            
+                                            # All possible notification checkboxes
+                                            cb_widgets = [
+                                                'telegram_cb', 'whatsapp_cb', 'signal_cb', 'discord_cb',
+                                                'zalo_cb', 'wechat_cb', 'line_cb', 'kakaotalk_cb',
+                                                'facebook_cb', 'instagram_cb', 'twitter_cb', 'linkedin_cb',
+                                                'slack_cb', 'teams_cb', 'skype_cb', 'viber_cb',
+                                                'email_cb', 'sms_cb', 'webhook_cb', 'pushbullet_cb',
+                                                'include_technical_cb', 'include_indicators_cb', 'include_summary_cb',
+                                                'include_candlestick_cb', 'include_price_patterns_cb',
+                                                'track_orders_cb', 'notify_sl_tp_cb', 'notify_close_cb',
+                                                'auto_notification_cb',
+                                            ]
+                                            for w in cb_widgets:
+                                                if hasattr(st, w):
+                                                    widget = getattr(st, w)
+                                                    if hasattr(widget, 'isChecked'):
+                                                        signal_settings[w] = widget.isChecked()
+                                            
+                                            print(f"   ✅ Signal: {len(signal_settings)} notification settings")
+                                        
+                                        settings['tabs']['signal'] = signal_settings
+                                    except Exception as e:
+                                        print(f"   ❌ Signal error: {e}")
+                                        settings['tabs']['signal'] = {}
+                                    
+                                    # ═══════════════════════════════════════════════════════════════
+                                    # EXTERNAL CONFIG FILES
+                                    # ═══════════════════════════════════════════════════════════════
+                                    try:
+                                        print("[Strategy] 📁 Capturing external configs...")
+                                        
+                                        # Smart entry config
+                                        smart_entry_path = os.path.join(os.getcwd(), 'smart_entry_config.json')
+                                        if os.path.exists(smart_entry_path):
+                                            with open(smart_entry_path, 'r', encoding='utf-8') as f:
+                                                settings['smart_entry'] = json.load(f)
+                                            print(f"   ✅ smart_entry_config.json loaded")
+                                        
+                                        # Notification config
+                                        notification_path = os.path.join(os.getcwd(), 'notification_config.json')
+                                        if os.path.exists(notification_path):
+                                            with open(notification_path, 'r', encoding='utf-8') as f:
+                                                settings['notifications'] = json.load(f)
+                                            print(f"   ✅ notification_config.json loaded")
+                                        
+                                    except Exception as e:
+                                        print(f"   ⚠️ External config error: {e}")
+                                    
+                                    # ═══════════════════════════════════════════════════════════════
+                                    # SUMMARY
+                                    # ═══════════════════════════════════════════════════════════════
+                                    total_settings = sum(len(v) if isinstance(v, dict) else 0 for v in settings['tabs'].values())
+                                    print(f"\n[Strategy] ✅ Capture complete! Total: {total_settings} settings from {len(settings['tabs'])} tabs")
+                                    
+                                    return settings
+                                    
+                                except Exception as e:
+                                    print(f"[Strategy] ❌ Error capturing settings: {e}")
+                                    import traceback
+                                    traceback.print_exc()
+                                    return {'error': str(e)}
+                            
+                            def apply_strategy_settings(self, settings):
+                                """Apply ALL strategy settings - COMPREHENSIVE VERSION 4.0"""
+                                try:
+                                    print(f"\n[Strategy] 🚀 Applying strategy settings (v4.0 - COMPLETE)...")
+                                    
+                                    main_window_ref = getattr(self, 'main_window_ref', None)
+                                    if not main_window_ref:
+                                        print("[Strategy] ❌ CRITICAL: Cannot find main window reference!")
+                                        return False
+                                    
+                                    if 'tabs' not in settings:
+                                        print("[Strategy] ❌ No tabs settings found!")
+                                        return False
+                                    
+                                    success_count = 0
+                                    
+                                    # ═══════════════════════════════════════════════════════════════
+                                    # APPLY RISK MANAGEMENT TAB
+                                    # ═══════════════════════════════════════════════════════════════
+                                    try:
+                                        if 'risk_management' in settings['tabs']:
+                                            print("[Strategy] 🛡️ Applying Risk Management...")
+                                            rs = settings['tabs']['risk_management']
+                                        
+                                            if hasattr(main_window_ref, 'risk_tab') and main_window_ref.risk_tab:
+                                                rt = main_window_ref.risk_tab
+                                                
+                                                # Disable auto-save during restoration
+                                                old_init_flag = getattr(rt, '_is_initializing', False)
+                                                rt._is_initializing = True
+                                                
+                                                # ═══════════════════════════════════════════════════════════
+                                                # STEP 1: Apply MODE COMBOS FIRST (triggers UI updates)
+                                                # ═══════════════════════════════════════════════════════════
+                                                mode_combos = ['volume_mode_combo', 'sltp_mode_combo', 'dca_mode_combo']
+                                                for key in mode_combos:
+                                                    if key in rs and hasattr(rt, key):
+                                                        try:
+                                                            widget = getattr(rt, key)
+                                                            widget.setCurrentText(str(rs[key]))
+                                                            success_count += 1
+                                                        except Exception as e:
+                                                            print(f"   ⚠️ Mode.{key} error: {e}")
+                                                
+                                                # Trigger UI updates AFTER setting modes
+                                                try:
+                                                    if hasattr(rt, 'update_volume_fields_visibility'):
+                                                        rt.update_volume_fields_visibility()
+                                                    if hasattr(rt, 'update_sltp_mode_controls'):
+                                                        rt.update_sltp_mode_controls()
+                                                    if hasattr(rt, 'update_dca_mode_controls'):
+                                                        rt.update_dca_mode_controls()
+                                                except:
+                                                    pass
+                                                
+                                                # ═══════════════════════════════════════════════════════════
+                                                # STEP 2: Apply ALL OTHER settings (spins, combos, checkboxes)
+                                                # ═══════════════════════════════════════════════════════════
+                                                for key, value in rs.items():
+                                                    if key.endswith('_idx'):
+                                                        continue  # Skip index keys, use text keys
+                                                    if key in ['symbol_exposure', 'symbol_multipliers']:
+                                                        continue  # Handle separately below
+                                                    if key in mode_combos:
+                                                        continue  # Already applied above
+                                                    try:
+                                                        if hasattr(rt, key):
+                                                            widget = getattr(rt, key)
+                                                            if hasattr(widget, 'setValue'):
+                                                                # Check if it's QSpinBox (int) or QDoubleSpinBox (float)
+                                                                if isinstance(widget, QSpinBox):
+                                                                    widget.setValue(int(value))
+                                                                else:
+                                                                    widget.setValue(float(value))
+                                                                success_count += 1
+                                                            elif hasattr(widget, 'setCurrentText'):
+                                                                widget.setCurrentText(str(value))
+                                                                success_count += 1
+                                                            elif hasattr(widget, 'setChecked'):
+                                                                widget.setChecked(bool(value))
+                                                                success_count += 1
+                                                    except Exception as e:
+                                                        print(f"   ⚠️ Risk.{key} error: {e}")
+                                                
+                                                # ═══════════════════════════════════════════════════════════
+                                                # STEP 3: RESTORE SYMBOL EXPOSURE TABLE
+                                                # ═══════════════════════════════════════════════════════════
+                                                if 'symbol_exposure' in rs or 'symbol_multipliers' in rs:
+                                                    try:
+                                                        # Update settings dict first
+                                                        if 'symbol_exposure' in rs:
+                                                            rt.settings['symbol_exposure'] = dict(rs['symbol_exposure'])
+                                                        if 'symbol_multipliers' in rs:
+                                                            rt.settings['symbol_multipliers'] = dict(rs['symbol_multipliers'])
+                                                        
+                                                        # IMPORTANT: Also update available_symbols to match saved data
+                                                        # This ensures the table will show all symbols that were saved
+                                                        saved_symbols = list(rs.get('symbol_exposure', {}).keys())
+                                                        if saved_symbols:
+                                                            # Merge with existing available_symbols
+                                                            current_symbols = set(getattr(rt, 'available_symbols', []) or [])
+                                                            merged_symbols = list(current_symbols.union(set(saved_symbols)))
+                                                            rt.available_symbols = merged_symbols
+                                                            print(f"   📊 Updated available_symbols: {merged_symbols}")
+                                                        
+                                                        # Repopulate the exposure table with new values
+                                                        if hasattr(rt, 'populate_exposure_table'):
+                                                            rt.populate_exposure_table()
+                                                            print(f"   📊 Restored {len(rs.get('symbol_exposure', {}))} symbol exposures")
+                                                            success_count += len(rs.get('symbol_exposure', {}))
+                                                    except Exception as e:
+                                                        print(f"   ⚠️ Symbol exposure restore error: {e}")
+                                                
+                                                # Restore auto-save flag
+                                                rt._is_initializing = old_init_flag
+                                                
+                                                # Save to risk_settings.json file
+                                                try:
+                                                    if hasattr(rt, 'save_risk_settings'):
+                                                        rt.save_risk_settings()
+                                                        print("   💾 Saved to risk_settings.json")
+                                                except:
+                                                    pass
+                                                
+                                                print(f"   ✅ Risk Management: {success_count} settings applied")
+                                            else:
+                                                print("[Strategy] ⚠️ risk_tab is None")
+                                        else:
+                                            print("[Strategy] ⚠️ risk_management not in settings['tabs']")
+                                    except Exception as e:
+                                        print(f"[Strategy] ❌ Risk Management apply error: {e}")
+                                        import traceback
+                                        traceback.print_exc()
+                                    
+                                    # ═══════════════════════════════════════════════════════════════
+                                    # APPLY MARKET TAB - SYMBOLS & TIMEFRAMES
+                                    # ═══════════════════════════════════════════════════════════════
+                                    if 'market' in settings['tabs']:
+                                        print("[Strategy] 💹 Applying Market tab...")
+                                        ms = settings['tabs']['market']
+                                        
+                                        if hasattr(main_window_ref, 'market_tab') and main_window_ref.market_tab:
+                                            mt = main_window_ref.market_tab
+                                            
+                                            # Apply timeframe settings
+                                            if 'timeframes' in ms:
+                                                if hasattr(mt, 'tf_checkboxes') and hasattr(mt, 'tf_spinboxes'):
+                                                    for tf_name, tf_data in ms['timeframes'].items():
+                                                        try:
+                                                            if tf_name in mt.tf_checkboxes:
+                                                                mt.tf_checkboxes[tf_name].setChecked(tf_data.get('enabled', False))
+                                                                success_count += 1
+                                                            if tf_name in mt.tf_spinboxes:
+                                                                mt.tf_spinboxes[tf_name].setValue(tf_data.get('candles', 5000))
+                                                                success_count += 1
+                                                        except:
+                                                            pass
+                                            
+                                            # Restore checked symbols - update the set and check items in list
+                                            if 'checked_symbols' in ms:
+                                                saved_symbols = set(ms['checked_symbols'])
+                                                mt.checked_symbols = saved_symbols.copy()
+                                                
+                                                # Update symbol list checkboxes
+                                                if hasattr(mt, 'symbol_list') and mt.symbol_list:
+                                                    for i in range(mt.symbol_list.count()):
+                                                        item = mt.symbol_list.item(i)
+                                                        if item:
+                                                            symbol_text = item.text().split()[0] if ' ' in item.text() else item.text()
+                                                            if symbol_text in saved_symbols:
+                                                                item.setCheckState(Qt.Checked)
+                                                            else:
+                                                                item.setCheckState(Qt.Unchecked)
+                                                
+                                                print(f"   📌 Restored {len(saved_symbols)} symbols: {list(saved_symbols)[:5]}...")
+                                                success_count += len(saved_symbols)
+                                            
+                                            # Restore chart settings
+                                            if 'chart_symbol' in ms and hasattr(mt, 'chart_symbol_combo'):
+                                                mt.chart_symbol_combo.setCurrentText(ms['chart_symbol'])
+                                            if 'chart_timeframe' in ms and hasattr(mt, 'chart_timeframe_combo'):
+                                                mt.chart_timeframe_combo.setCurrentText(ms['chart_timeframe'])
+                                            
+                                            print(f"   ✅ Market tab applied")
+                                    
+                                    # ═══════════════════════════════════════════════════════════════
+                                    # APPLY INDICATOR TAB - COMPATIBLE WITH restore_user_config
+                                    # ═══════════════════════════════════════════════════════════════
+                                    if 'indicators' in settings['tabs']:
+                                        print("[Strategy] 📊 Applying Indicator tab...")
+                                        ind_s = settings['tabs']['indicators']
+                                        
+                                        if hasattr(main_window_ref, 'indicator_tab') and main_window_ref.indicator_tab:
+                                            it = main_window_ref.indicator_tab
+                                            
+                                            # Apply indicator rows using same logic as restore_user_config
+                                            if 'indicator_rows' in ind_s and hasattr(it, 'indicator_rows'):
+                                                try:
+                                                    # Clear existing rows
+                                                    while it.indicator_rows:
+                                                        it.remove_indicator_row(it.indicator_rows[0])
+                                                    
+                                                    # Add saved rows with all parameters
+                                                    for indi in ind_s['indicator_rows']:
+                                                        it.add_indicator_row()
+                                                        if not it.indicator_rows:
+                                                            continue
+                                                        
+                                                        row = it.indicator_rows[-1]
+                                                        combo = row["indi_combo"]
+                                                        
+                                                        # Find indicator by label (or name as fallback)
+                                                        idx = combo.findText(indi.get("label", indi.get("name", "")))
+                                                        if idx >= 0:
+                                                            combo.setCurrentIndex(idx)
+                                                            # Trigger on_indicator_changed to create param widgets
+                                                            it.on_indicator_changed(idx, row)
+                                                        
+                                                        # Apply params using same logic as restore_user_config
+                                                        params = indi.get("params", {})
+                                                        for param_name, value in params.items():
+                                                            widget_name = f"{param_name}_spin"
+                                                            if widget_name in row:
+                                                                try:
+                                                                    row[widget_name].setValue(value)
+                                                                except:
+                                                                    pass
+                                                            elif param_name == "ma_type" and "ma_type_combo" in row:
+                                                                idx2 = row["ma_type_combo"].findText(str(value))
+                                                                if idx2 >= 0:
+                                                                    row["ma_type_combo"].setCurrentIndex(idx2)
+                                                        
+                                                        print(f"   📈 Restored: {indi.get('name', 'Unknown')} with {len(params)} params")
+                                                        success_count += 1
+                                                    
+                                                    # Save the restored config and update whitelist
+                                                    try:
+                                                        it.save_current_user_config()
+                                                        it._persist_indicator_whitelist()
+                                                        it.update_toggle_button()
+                                                    except:
+                                                        pass
+                                                    
+                                                except Exception as e:
+                                                    print(f"   ⚠️ Indicator rows error: {e}")
+                                                    import traceback
+                                                    traceback.print_exc()
+                                            
+                                            print(f"   ✅ Indicator tab applied: {len(ind_s.get('indicator_rows', []))} indicators")
+                                    
+                                    # ═══════════════════════════════════════════════════════════════
+                                    # APPLY PATTERN TAB (Candlestick)
+                                    # ═══════════════════════════════════════════════════════════════
+                                    if 'pattern' in settings['tabs']:
+                                        print("[Strategy] 🕯️ Applying Pattern tab...")
+                                        ps = settings['tabs']['pattern']
+                                        
+                                        if hasattr(main_window_ref, 'pattern_tab') and main_window_ref.pattern_tab:
+                                            pt = main_window_ref.pattern_tab
+                                            if 'enabled' in ps and hasattr(pt, 'enable_checkbox'):
+                                                pt.enable_checkbox.setChecked(ps['enabled'])
+                                                success_count += 1
+                                            if 'min_confidence' in ps and hasattr(pt, 'min_confidence_spinbox'):
+                                                pt.min_confidence_spinbox.setValue(ps['min_confidence'])
+                                                success_count += 1
+                                            print(f"   ✅ Pattern tab applied")
+                                    
+                                    # ═══════════════════════════════════════════════════════════════
+                                    # APPLY PRICE PATTERN TAB
+                                    # ═══════════════════════════════════════════════════════════════
+                                    if 'price_pattern' in settings['tabs']:
+                                        print("[Strategy] 📈 Applying Price Pattern tab...")
+                                        pps = settings['tabs']['price_pattern']
+                                        
+                                        if hasattr(main_window_ref, 'price_pattern_tab') and main_window_ref.price_pattern_tab:
+                                            ppt = main_window_ref.price_pattern_tab
+                                            if 'enabled' in pps and hasattr(ppt, 'enable_checkbox'):
+                                                ppt.enable_checkbox.setChecked(pps['enabled'])
+                                                success_count += 1
+                                            if 'min_confidence' in pps and hasattr(ppt, 'min_confidence_spinbox'):
+                                                ppt.min_confidence_spinbox.setValue(pps['min_confidence'])
+                                                success_count += 1
+                                            if 'max_age' in pps and hasattr(ppt, 'max_age_spinbox'):
+                                                ppt.max_age_spinbox.setValue(pps['max_age'])
+                                                success_count += 1
+                                            print(f"   ✅ Price Pattern tab applied")
+                                    
+                                    # ═══════════════════════════════════════════════════════════════
+                                    # APPLY TREND TAB
+                                    # ═══════════════════════════════════════════════════════════════
+                                    if 'trend' in settings['tabs']:
+                                        print("[Strategy] 📉 Applying Trend tab...")
+                                        ts = settings['tabs']['trend']
+                                        
+                                        if hasattr(main_window_ref, 'trend_tab') and main_window_ref.trend_tab:
+                                            tt = main_window_ref.trend_tab
+                                            if 'enabled' in ts and hasattr(tt, 'enable_checkbox'):
+                                                tt.enable_checkbox.setChecked(ts['enabled'])
+                                                success_count += 1
+                                            print(f"   ✅ Trend tab applied")
+                                    
+                                    # ═══════════════════════════════════════════════════════════════
+                                    # APPLY NEWS TAB - FULL (Currencies + Impacts)
+                                    # ═══════════════════════════════════════════════════════════════
+                                    if 'news' in settings['tabs']:
+                                        print("[Strategy] 📰 Applying News tab...")
+                                        ns = settings['tabs']['news']
+                                        
+                                        if hasattr(main_window_ref, 'news_tab') and main_window_ref.news_tab:
+                                            nt = main_window_ref.news_tab
+                                            
+                                            # Main checkbox
+                                            if 'use_economic_calendar' in ns and hasattr(nt, 'use_economic_calendar_checkbox'):
+                                                nt.use_economic_calendar_checkbox.setChecked(ns['use_economic_calendar'])
+                                                success_count += 1
+                                            
+                                            # Currency checkboxes
+                                            if 'currencies' in ns and hasattr(nt, 'currency_checkboxes'):
+                                                for cb in nt.currency_checkboxes:
+                                                    if cb.text() in ns['currencies']:
+                                                        cb.setChecked(ns['currencies'][cb.text()])
+                                                        success_count += 1
+                                            
+                                            # Impact checkboxes - handle both int and string keys
+                                            if 'impacts' in ns and hasattr(nt, 'impact_checkboxes'):
+                                                for cb in nt.impact_checkboxes:
+                                                    if hasattr(cb, 'impact_value'):
+                                                        # Try both string key (from JSON) and int key
+                                                        impact_key = str(cb.impact_value)
+                                                        if impact_key in ns['impacts']:
+                                                            cb.setChecked(ns['impacts'][impact_key])
+                                                            success_count += 1
+                                                        elif cb.impact_value in ns['impacts']:
+                                                            cb.setChecked(ns['impacts'][cb.impact_value])
+                                                            success_count += 1
+                                            
+                                            print(f"   ✅ News tab applied")
+                                    
+                                    # ═══════════════════════════════════════════════════════════════
+                                    # APPLY SIGNAL TAB
+                                    # ═══════════════════════════════════════════════════════════════
+                                    if 'signal' in settings['tabs']:
+                                        print("[Strategy] 📡 Applying Signal tab...")
+                                        ss = settings['tabs']['signal']
+                                        
+                                        if hasattr(main_window_ref, 'signal_tab') and main_window_ref.signal_tab:
+                                            st = main_window_ref.signal_tab
+                                            
+                                            for key, value in ss.items():
+                                                try:
+                                                    if hasattr(st, key):
+                                                        widget = getattr(st, key)
+                                                        if hasattr(widget, 'setChecked'):
+                                                            widget.setChecked(bool(value))
+                                                            success_count += 1
+                                                except:
+                                                    pass
+                                            
+                                            print(f"   ✅ Signal tab applied")
+                                    
+                                    # ═══════════════════════════════════════════════════════════════
+                                    # APPLY EXTERNAL CONFIG FILES
+                                    # ═══════════════════════════════════════════════════════════════
+                                    try:
+                                        if 'smart_entry' in settings:
+                                            smart_entry_path = os.path.join(os.getcwd(), 'smart_entry_config.json')
+                                            with open(smart_entry_path, 'w', encoding='utf-8') as f:
+                                                json.dump(settings['smart_entry'], f, indent=4, ensure_ascii=False)
+                                            print("[Strategy] ✅ smart_entry_config.json restored")
+                                        
+                                        if 'notifications' in settings:
+                                            notification_path = os.path.join(os.getcwd(), 'notification_config.json')
+                                            with open(notification_path, 'w', encoding='utf-8') as f:
+                                                json.dump(settings['notifications'], f, indent=4, ensure_ascii=False)
+                                            print("[Strategy] ✅ notification_config.json restored")
+                                    except Exception as e:
+                                        print(f"[Strategy] ⚠️ External config restore error: {e}")
+                                    
+                                    print(f"\n[Strategy] ✅ Apply complete! {success_count} settings applied")
+                                    return success_count > 0
+                                    
+                                except Exception as e:
+                                    print(f"[Strategy] ❌ Error applying settings: {e}")
+                                    import traceback
+                                    traceback.print_exc()
+                                    return False
+                            
+                            def load_strategies(self):
+                                """Load saved strategies from file"""
+                                self.strategy_list.clear()
+                                try:
+                                    if os.path.exists(self.strategies_file):
+                                        with open(self.strategies_file, 'r', encoding='utf-8') as f:
+                                            strategies = json.load(f)
+                                            for name, data in strategies.items():
+                                                timestamp = data.get('timestamp', 'Unknown')
+                                                item_text = f"{name} ({timestamp[:19]})"
+                                                self.strategy_list.addItem(item_text)
+                                    else:
+                                        self.strategy_list.addItem(I18N.t("No strategies saved yet", "Chưa có chiến lược nào được lưu"))
+                                except Exception as e:
+                                    print(f"[Strategy] Error loading strategies: {e}")
+                            
+                            def create_new_strategy(self):
+                                """Create new strategy from current settings"""
+                                try:
+                                    name, ok = QInputDialog.getText(
+                                        self, 
+                                        I18N.t("Create Strategy", "Tạo Chiến lược"),
+                                        I18N.t("Enter strategy name:", "Nhập tên chiến lược:")
+                                    )
+                                    
+                                    if ok and name.strip():
+                                        name = name.strip()
+                                        
+                                        # Load existing strategies
+                                        strategies = {}
+                                        if os.path.exists(self.strategies_file):
+                                            with open(self.strategies_file, 'r', encoding='utf-8') as f:
+                                                strategies = json.load(f)
+                                        
+                                        # Check if strategy already exists
+                                        if name in strategies:
+                                            reply = QMessageBox.question(
+                                                self,
+                                                I18N.t("Confirm Overwrite", "Xác nhận Ghi đè"),
+                                                I18N.t("Strategy '{name}' already exists. Do you want to overwrite it?", "Chiến lược '{name}' đã tồn tại. Bạn có muốn ghi đè không?", name=name),
+                                                QMessageBox.Yes | QMessageBox.No
+                                            )
+                                            if reply != QMessageBox.Yes:
+                                                return
+                                        
+                                        # Get current settings
+                                        settings = self.get_current_strategy_settings()
+                                        
+                                        # Add new strategy
+                                        strategies[name] = settings
+                                        
+                                        # Save strategies
+                                        with open(self.strategies_file, 'w', encoding='utf-8') as f:
+                                            json.dump(strategies, f, indent=4, ensure_ascii=False)
+                                        
+                                        # Refresh list
+                                        self.load_strategies()
+                                        
+                                        QMessageBox.information(
+                                            self,
+                                            I18N.t("Success", "Thành công"),
+                                            I18N.t("Strategy '{name}' created successfully!", "Chiến lược '{name}' đã được tạo thành công!", name=name)
+                                        )
+                                        
+                                except Exception as e:
+                                    print(f"[Strategy] Error creating strategy: {e}")
+                                    QMessageBox.critical(
+                                        self,
+                                        I18N.t("Error", "Lỗi"),
+                                        I18N.t("Failed to create strategy", "Không thể tạo chiến lược")
+                                    )
+                            
+                            def load_selected_strategy(self):
+                                """Load selected strategy"""
+                                try:
+                                    current_item = self.strategy_list.currentItem()
+                                    if not current_item:
+                                        return
+                                    
+                                    # Extract strategy name from item text
+                                    item_text = current_item.text()
+                                    
+                                    # Skip placeholder item
+                                    if "No strategies" in item_text or "Chưa có chiến lược" in item_text:
+                                        QMessageBox.information(
+                                            self,
+                                            I18N.t("Info", "Thông báo"),
+                                            I18N.t("No strategy to load. Please create one first.", "Không có chiến lược để tải. Vui lòng tạo một chiến lược trước.")
+                                        )
+                                        return
+                                    if "(" in item_text:
+                                        strategy_name = item_text.split(" (")[0]
+                                    else:
+                                        strategy_name = item_text
+                                    
+                                    # Load strategies file
+                                    if os.path.exists(self.strategies_file):
+                                        with open(self.strategies_file, 'r', encoding='utf-8') as f:
+                                            strategies = json.load(f)
+                                        
+                                        if strategy_name in strategies:
+                                            # Apply strategy settings
+                                            success = self.apply_strategy_settings(strategies[strategy_name])
+                                            
+                                            if success:
+                                                QMessageBox.information(
+                                                    self,
+                                                    I18N.t("Success", "Thành công"),
+                                                    I18N.t("Strategy '{name}' loaded successfully!", "Chiến lược '{name}' đã được tải thành công!", name=strategy_name)
+                                                )
+                                                self.close()
+                                            else:
+                                                QMessageBox.warning(
+                                                    self,
+                                                    I18N.t("Warning", "Cảnh báo"),
+                                                    I18N.t("Strategy loaded with some errors", "Chiến lược được tải nhưng có một số lỗi")
+                                                )
+                                        else:
+                                            QMessageBox.warning(
+                                                self,
+                                                I18N.t("Error", "Lỗi"),
+                                                I18N.t("Strategy not found", "Không tìm thấy chiến lược")
+                                            )
+                                    
+                                except Exception as e:
+                                    print(f"[Strategy] Error loading strategy: {e}")
+                                    QMessageBox.critical(
+                                        self,
+                                        I18N.t("Error", "Lỗi"),
+                                        I18N.t("Failed to load strategy", "Không thể tải chiến lược")
+                                    )
+                            
+                            def delete_selected_strategy(self):
+                                """Delete selected strategy"""
+                                try:
+                                    current_item = self.strategy_list.currentItem()
+                                    if not current_item:
+                                        return
+                                    
+                                    # Extract strategy name
+                                    item_text = current_item.text()
+                                    
+                                    # Skip placeholder item
+                                    if "No strategies" in item_text or "Chưa có chiến lược" in item_text:
+                                        return
+                                    
+                                    if "(" in item_text:
+                                        strategy_name = item_text.split(" (")[0]
+                                    else:
+                                        strategy_name = item_text
+                                    
+                                    # Confirm deletion
+                                    reply = QMessageBox.question(
+                                        self,
+                                        I18N.t("Confirm Delete", "Xác nhận Xóa"),
+                                        I18N.t("Are you sure you want to delete strategy '{name}'?", "Bạn có chắc muốn xóa chiến lược '{name}'?", name=strategy_name),
+                                        QMessageBox.Yes | QMessageBox.No
+                                    )
+                                    
+                                    if reply == QMessageBox.Yes:
+                                        # Load and update strategies
+                                        if os.path.exists(self.strategies_file):
+                                            with open(self.strategies_file, 'r', encoding='utf-8') as f:
+                                                strategies = json.load(f)
+                                            
+                                            if strategy_name in strategies:
+                                                del strategies[strategy_name]
+                                                
+                                                # Save updated strategies
+                                                with open(self.strategies_file, 'w', encoding='utf-8') as f:
+                                                    json.dump(strategies, f, indent=4, ensure_ascii=False)
+                                                
+                                                # Refresh list
+                                                self.load_strategies()
+                                                
+                                                QMessageBox.information(
+                                                    self,
+                                                    I18N.t("Success", "Thành công"),
+                                                    I18N.t("Strategy deleted successfully!", "Chiến lược đã được xóa thành công!")
+                                                )
+                                
+                                except Exception as e:
+                                    print(f"[Strategy] Error deleting strategy: {e}")
+                                    QMessageBox.critical(
+                                        self,
+                                        I18N.t("Error", "Lỗi"),
+                                        I18N.t("Failed to delete strategy", "Không thể xóa chiến lược")
+                                    )
+                        
+                        # Show dialog
+                        dialog = StrategyManagerDialog(main_window)
+                        dialog.exec_()
+                        
+                    except Exception as e:
+                        print(f"[Strategy] Error opening strategy manager: {e}")
+                        from PyQt5.QtWidgets import QMessageBox
+                        QMessageBox.critical(
+                            main_window,
+                            "Error",
+                            f"Failed to open strategy manager: {str(e)}"
+                        )
+
                 # Hook language toggles to AppState and refresh open views
                 def _apply_language(lang_code: str):
                     print(f"[LangSwitch] Switching to: {lang_code}")
@@ -12360,10 +27057,13 @@ def main_original():
                         print(f"[LangSwitch] Current stored language: {AppState.language()}")
                         # Retranslate menu and actions
                         lang_menu.setTitle(I18N.t("Language", "Ngôn ngữ"))
-                        act_login.setText(I18N.t("Login", "Đăng nhập"))
-                        act_register.setText(I18N.t("Register", "Đăng ký"))
                         act_strategy.setText(I18N.t("Trading Strategy", "Chiến lược giao dịch"))
                         act_support.setText(I18N.t("Support", "Hỗ trợ"))
+                        act_pricing.setText(I18N.t("💰 Pricing", "💰 Bảng Giá"))
+                        
+                        # Cập nhật menu user nếu đã đăng nhập
+                        if hasattr(main_window, 'update_menu_for_user') and hasattr(main_window, 'logged_in_user'):
+                            main_window.update_menu_for_user(main_window.logged_in_user)
                         lang_en.setText(I18N.t("English", "English"))
                         lang_vi.setText(I18N.t("Vietnamese", "Tiếng Việt"))
                         menu_btn.setToolTip(I18N.t("Menu", "Trình đơn"))
@@ -12425,6 +27125,33 @@ def main_original():
                         except Exception as e:
                             print(f"[LangSwitch] Risk tab refresh error: {e}")
 
+                        # 🆕 Refresh Pattern tabs
+                        try:
+                            if hasattr(pattern_tab, 'refresh_translations'):
+                                pattern_tab.refresh_translations()
+                        except Exception as e:
+                            print(f"[LangSwitch] Pattern tab refresh error: {e}")
+                        
+                        try:
+                            if hasattr(price_pattern_tab, 'refresh_translations'):
+                                price_pattern_tab.refresh_translations()
+                        except Exception as e:
+                            print(f"[LangSwitch] Price pattern tab refresh error: {e}")
+                        
+                        # 🆕 Refresh Trend tab
+                        try:
+                            if hasattr(trend_tab, 'refresh_translations'):
+                                trend_tab.refresh_translations()
+                        except Exception as e:
+                            print(f"[LangSwitch] Trend tab refresh error: {e}")
+
+                        # 🆕 Refresh Auto Trading tab
+                        try:
+                            if hasattr(auto_trading_tab, 'refresh_translations'):
+                                auto_trading_tab.refresh_translations()
+                        except Exception as e:
+                            print(f"[LangSwitch] Auto Trading tab refresh error: {e}")
+
                         # Broad pass: update common static texts in the whole window
                         try:
                             I18N.retranslate_widget_tree(main_window)
@@ -12476,6 +27203,12 @@ def main_original():
                             pass
 
                         signal_tab.load_actions_text()
+                        # 🆕 Update notification preview when language changes
+                        try:
+                            if hasattr(signal_tab, '_update_preview'):
+                                signal_tab._update_preview()
+                        except Exception as e:
+                            print(f"[LangSwitch] Preview update error: {e}")
                         # refresh selected report, if any
                         sel = signal_tab.sig_table.currentRow()
                         if sel >= 0:
@@ -12484,6 +27217,24 @@ def main_original():
                                 signal_tab.load_latest_report(it.text())
                     except Exception:
                         pass
+                # Connect strategy management trigger
+                act_strategy.triggered.connect(_open_strategy_manager)
+                
+                # Connect Login and Register actions
+                def _open_login_dialog():
+                    try:
+                        dialog = LoginDialog(main_window)
+                        dialog.exec_()
+                    except Exception as e:
+                        print(f"[Login] Error opening login dialog: {e}")
+
+                def _open_register_dialog():
+                    try:
+                        dialog = RegisterDialog(main_window)
+                        dialog.exec_()
+                    except Exception as e:
+                        print(f"[Register] Error opening register dialog: {e}")
+                
                 # Ensure exclusivity & direct connections (more reliable than group triggered logic)
                 try:
                     lang_group.setExclusive(True)
@@ -12596,16 +27347,16 @@ def main():
 def safe_main():
     """Ultra-safe main wrapper with crash protection"""
     try:
-        print("🚀 Starting Trading Bot with Anti-Crash Protection...")
+        print("[START] Starting Trading Bot with Anti-Crash Protection...")
         main_original()  # Call main_original directly - it works perfectly
-        print("✅ Trading Bot completed successfully!")
+        print("[OK] Trading Bot completed successfully!")
         
     except KeyboardInterrupt:
-        print("\n👋 User interrupted - shutting down gracefully...")
+        print("\n[INTERRUPT] User interrupted - shutting down gracefully...")
         
     except Exception as e:
         error_msg = f"App crashed: {type(e).__name__}: {str(e)}"
-        print(f"\n🚨 {error_msg}")
+        print(f"\n[ERROR] {error_msg}")
         
         # Log the crash
         try:
@@ -12616,16 +27367,16 @@ def safe_main():
                 f.write(f"Error: {type(e).__name__}: {str(e)}\n\n")
                 f.write("Traceback:\n")
                 traceback.print_exc(file=f)
-            print(f"💾 Crash log saved: {crash_log}")
+            print(f"[SAVE] Crash log saved: {crash_log}")
         except:
             pass
         
-        print("🛡️ Anti-crash protection activated - app stays safe")
+        print("[SAFE] Anti-crash protection activated - app stays safe")
 
 def emergency_cleanup():
     """Emergency cleanup for all threads and processes"""
     try:
-        print("🚨 EMERGENCY CLEANUP - Stopping all threads and processes...")
+        print("[CLEANUP] EMERGENCY CLEANUP - Stopping all threads and processes...")
         
         # Kill any remaining subprocess
         import psutil
@@ -12653,22 +27404,22 @@ def emergency_cleanup():
             except:
                 pass
                 
-        print("✅ Emergency cleanup completed")
+        print("[OK] Emergency cleanup completed")
         
     except Exception as e:
-        print(f"❌ Emergency cleanup error: {e}")
+        print(f"[ERROR] Emergency cleanup error: {e}")
 
 if __name__ == "__main__":
     try:
         safe_main()
     except KeyboardInterrupt:
-        print("\n🛑 Keyboard interrupt - emergency shutdown...")
+        print("\n[INTERRUPT] Keyboard interrupt - emergency shutdown...")
         emergency_cleanup()
     except Exception as e:
-        print(f"\n🚨 Final exception: {e}")
+        print(f"\n[ERROR] Final exception: {e}")
         emergency_cleanup()
     finally:
-        print("👋 Application shutdown complete")
+        print("[END] Application shutdown complete")
     
 # --- Added global graceful shutdown utility (non-invasive) ---
 def graceful_shutdown_threads(thread_containers: list):

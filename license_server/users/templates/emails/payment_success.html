@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Thanh Toán Thành Công - Trading Bot</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background-color: #f5f5f5;
+            margin: 0;
+            padding: 0;
+        }
+        .container {
+            max-width: 600px;
+            margin: 20px auto;
+            background: white;
+            border-radius: 10px;
+            overflow: hidden;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        .header {
+            background: linear-gradient(135deg, #28a745, #20c997);
+            padding: 30px;
+            text-align: center;
+            color: white;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 28px;
+            font-weight: 600;
+        }
+        .header p {
+            margin: 10px 0 0 0;
+            font-size: 16px;
+            color: #e8f5e9;
+        }
+        .content {
+            padding: 30px;
+        }
+        .greeting {
+            margin-bottom: 20px;
+        }
+        .greeting p {
+            margin: 0;
+            font-size: 16px;
+        }
+        .greeting strong {
+            color: #28a745;
+        }
+        .card {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+            border-left: 4px solid #28a745;
+        }
+        .card h3 {
+            color: #28a745;
+            margin-top: 0;
+            margin-bottom: 15px;
+            font-size: 18px;
+        }
+        .card.info {
+            border-left-color: #007bff;
+        }
+        .card.info h3 {
+            color: #007bff;
+        }
+        .card.warning {
+            background: #fff3cd;
+            border-left-color: #ffc107;
+        }
+        .card.warning h4 {
+            color: #856404;
+            margin-top: 0;
+        }
+        .card.warning ul {
+            color: #856404;
+            margin: 10px 0;
+            padding-left: 20px;
+        }
+        .card.support {
+            background: #e7f3ff;
+            border-left-color: #004085;
+            text-align: center;
+            border-left: none;
+        }
+        .card.support p {
+            color: #004085;
+            margin: 0;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        table tr {
+            border-bottom: 1px solid #eee;
+        }
+        table tr:last-child {
+            border-bottom: none;
+        }
+        table td {
+            padding: 10px 0;
+        }
+        table td:first-child {
+            color: #666;
+            font-weight: 500;
+        }
+        table td:last-child {
+            text-align: right;
+            font-weight: 600;
+        }
+        .expire-date {
+            color: #28a745;
+        }
+        .monospace {
+            font-family: 'Courier New', monospace;
+            word-break: break-all;
+        }
+        .footer {
+            text-align: center;
+            color: #666;
+            font-size: 14px;
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid #eee;
+        }
+        .footer p {
+            margin: 5px 0;
+        }
+        .highlight {
+            background: #fff3cd;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 15px 0;
+            text-align: center;
+            color: #856404;
+        }
+        .success-badge {
+            display: inline-block;
+            background: #28a745;
+            color: white;
+            padding: 5px 10px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <h1>🎉 Thanh Toán Thành Công!</h1>
+            <p>Cảm ơn bạn đã gia hạn gói cước</p>
+        </div>
+
+        <!-- Content -->
+        <div class="content">
+            <!-- Greeting -->
+            <div class="greeting">
+                <p>Xin chào <strong>{{ user.first_name|default:user.username }}</strong>,</p>
+                <p>Chúng tôi vui mừng thông báo rằng thanh toán của bạn đã được xử lý thành công! 🎊</p>
+            </div>
+
+            <!-- Order Details Card -->
+            <div class="card">
+                <h3>📋 Chi tiết đơn hàng</h3>
+                <table>
+                    <tr>
+                        <td>Mã đơn:</td>
+                        <td>{{ order_code }}</td>
+                    </tr>
+                    <tr>
+                        <td>Gói cước:</td>
+                        <td>{{ pricing_plan_name }}</td>
+                    </tr>
+                    <tr>
+                        <td>Thời hạn:</td>
+                        <td>{{ duration_text }}</td>
+                    </tr>
+                    <tr>
+                        <td>Số tiền:</td>
+                        <td>{{ amount_vnd|floatformat:0 }} ₫ / ${{ amount_usd }}</td>
+                    </tr>
+                    <tr>
+                        <td>Ngày thanh toán:</td>
+                        <td>{{ paid_at|date:"d/m/Y H:i" }}</td>
+                    </tr>
+                </table>
+            </div>
+
+            <!-- License Info Card -->
+            <div class="card info">
+                <h3>📱 Thông tin License</h3>
+                <table>
+                    <tr>
+                        <td>License Key:</td>
+                        <td class="monospace">{{ license_key }}</td>
+                    </tr>
+                    <tr>
+                        <td>Loại License:</td>
+                        <td>{{ license_type }}</td>
+                    </tr>
+                    <tr>
+                        <td>Hết hạn:</td>
+                        <td class="expire-date">{{ expire_date|date:"d/m/Y" }}</td>
+                    </tr>
+                </table>
+            </div>
+
+            <!-- Next Steps Warning Card -->
+            <div class="card warning">
+                <h4>⚡ Bước tiếp theo:</h4>
+                <ul>
+                    <li>License sẽ được kích hoạt tự động trong vòng 5 phút</li>
+                    <li>Khởi động lại ứng dụng Trading Bot để cập nhật</li>
+                    <li>Kiểm tra trong phần "License Info" để xác nhận</li>
+                </ul>
+            </div>
+
+            <!-- Support Card -->
+            <div class="card support">
+                <p>❓ Cần hỗ trợ? Liên hệ: <strong>admin@tradingbot.com</strong></p>
+            </div>
+
+            <!-- Footer Message -->
+            <div class="footer">
+                <p>Cảm ơn bạn đã tin tưởng Trading Bot! 🚀</p>
+                <p style="font-size: 12px; color: #999;">Nếu bạn không thực hiện thanh toán này, vui lòng liên hệ với chúng tôi ngay.</p>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

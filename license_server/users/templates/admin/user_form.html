@@ -1,0 +1,118 @@
+{% extends "admin/base_dashboard.html" %}
+
+{% block title %}{% if action == 'add' %}Thêm Người Dùng{% else %}Sửa Người Dùng{% endif %}{% endblock %}
+
+{% block page_title %}{% if action == 'add' %}Thêm Người Dùng Mới{% else %}Sửa Người Dùng: {{ edit_user.username }}{% endif %}{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-lg-8">
+        <div class="card-custom">
+            <div class="card-header-custom">
+                <h5>
+                    <i class="bi bi-{% if action == 'add' %}person-plus{% else %}pencil-square{% endif %} me-2"></i>
+                    {% if action == 'add' %}Thêm Người Dùng Mới{% else %}Chỉnh Sửa Thông Tin{% endif %}
+                </h5>
+                <a href="{% url 'dashboard_users' %}" class="btn btn-secondary btn-sm">
+                    <i class="bi bi-arrow-left"></i> Quay lại
+                </a>
+            </div>
+            <div class="card-body-custom">
+                <form method="post">
+                    {% csrf_token %}
+                    
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label fw-semibold">Tên đăng nhập <span class="text-danger">*</span></label>
+                            <input type="text" name="username" class="form-control" 
+                                   value="{% if edit_user %}{{ edit_user.username }}{% endif %}" 
+                                   required placeholder="Nhập tên đăng nhập">
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label fw-semibold">Email</label>
+                            <input type="email" name="email" class="form-control" 
+                                   value="{% if edit_user %}{{ edit_user.email }}{% endif %}"
+                                   placeholder="example@email.com">
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label fw-semibold">Họ</label>
+                            <input type="text" name="first_name" class="form-control" 
+                                   value="{% if edit_user %}{{ edit_user.first_name }}{% endif %}"
+                                   placeholder="Họ">
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label fw-semibold">Tên</label>
+                            <input type="text" name="last_name" class="form-control" 
+                                   value="{% if edit_user %}{{ edit_user.last_name }}{% endif %}"
+                                   placeholder="Tên">
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label fw-semibold">Số điện thoại</label>
+                            <input type="text" name="phone" class="form-control" 
+                                   value="{% if edit_user and edit_user.profile %}{{ edit_user.profile.phone }}{% endif %}"
+                                   placeholder="0912345678">
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label fw-semibold">
+                                {% if action == 'add' %}Mật khẩu <span class="text-danger">*</span>{% else %}Mật khẩu mới (để trống nếu không đổi){% endif %}
+                            </label>
+                            <input type="password" name="password" class="form-control" 
+                                   {% if action == 'add' %}required{% endif %}
+                                   placeholder="{% if action == 'add' %}Nhập mật khẩu{% else %}Để trống nếu không đổi{% endif %}">
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" name="is_staff" id="is_staff"
+                                       {% if edit_user and edit_user.is_staff %}checked{% endif %}>
+                                <label class="form-check-label fw-semibold" for="is_staff">Quyền Staff (truy cập Dashboard)</label>
+                            </div>
+                        </div>
+                        {% if action == 'edit' %}
+                        <div class="col-md-6 mb-3">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" name="is_active" id="is_active"
+                                       {% if edit_user.is_active %}checked{% endif %}>
+                                <label class="form-check-label fw-semibold" for="is_active">Tài khoản hoạt động</label>
+                            </div>
+                        </div>
+                        {% endif %}
+                    </div>
+                    
+                    {% if edit_user %}
+                    <div class="alert alert-info mt-3">
+                        <i class="bi bi-info-circle me-2"></i>
+                        <strong>Thông tin thêm:</strong>
+                        <ul class="mb-0 mt-2">
+                            <li>Ngày tạo: {{ edit_user.date_joined|date:"d/m/Y H:i" }}</li>
+                            <li>Đăng nhập lần cuối: {{ edit_user.last_login|date:"d/m/Y H:i"|default:"Chưa đăng nhập" }}</li>
+                            <li>License: {{ edit_user.licenses.count }} cái</li>
+                        </ul>
+                    </div>
+                    {% endif %}
+                    
+                    <hr class="my-4">
+                    
+                    <div class="d-flex justify-content-between">
+                        <a href="{% url 'dashboard_users' %}" class="btn btn-outline-secondary">
+                            <i class="bi bi-x-lg me-1"></i> Hủy
+                        </a>
+                        <button type="submit" class="btn btn-primary-custom">
+                            <i class="bi bi-check-lg me-1"></i>
+                            {% if action == 'add' %}Tạo Người Dùng{% else %}Lưu Thay Đổi{% endif %}
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

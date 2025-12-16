@@ -1,0 +1,84 @@
+{
+  "telegram": {
+    "enabled": true,
+    "bot_token": "7036112288:AAFFdQRBjNlI5IRTYDTE7mF_fR6ZM_mEb2E",
+    "chat_id": "-1001226834820"
+  },
+  "whatsapp": {
+    "enabled": false,
+    "api_key": "",
+    "phone_number": ""
+  },
+  "discord": {
+    "enabled": false,
+    "webhook_url": ""
+  },
+  "zalo": {
+    "enabled": false,
+    "webhook_url": "",
+    "access_token": ""
+  },
+  "facebook_messenger": {
+    "enabled": false,
+    "page_access_token": "",
+    "page_id": "",
+    "recipient_id": "",
+    "note": "Facebook Messenger API - Get from Meta for Developers"
+  },
+  "email": {
+    "enabled": false,
+    "smtp_server": "",
+    "port": "",
+    "email": "",
+    "password": "",
+    "to_email": ""
+  },
+  "webhook": {
+    "enabled": false,
+    "url": "",
+    "method": "POST",
+    "headers": ""
+  },
+  "settings": {
+    "send_signals": false,
+    "send_reports": false,
+    "send_execution_results": true,
+    "daily_summary": true,
+    "format_vietnamese": true,
+    "max_message_length": 4000,
+    "track_order_updates": false,
+    "notify_sl_tp_changes": true,
+    "notify_order_close": true,
+    "update_interval_seconds": 30,
+    "custom_message": "Liên Hệ:",
+    "notification_format": "full",
+    "include_technical": true,
+    "include_indicators": false,
+    "include_summary": true,
+    "include_candlestick": true,
+    "include_price_patterns": false,
+    "send_custom_message": true,
+    "include_technical_analysis": true,
+    "history_include_closed": true,
+    "history_include_stats": true,
+    "history_include_chart": true,
+    "history_period": 0,
+    "history_schedule_type": 0,
+    "history_schedule_time": "00:01",
+    "history_hourly_interval": 1,
+    "track_orders_pip_threshold": 50,
+    "sltp_pip_threshold": 50,
+    "daily_summary_enabled": true,
+    "daily_summary_time": "00:01"
+  },
+  "branding": {
+    "enable_custom_footer": true,
+    "system_name_en": "VU HIEN CFDs AI System",
+    "system_name_vi": "Hệ thống AI VU HIEN CFDs",
+    "phone": "+84 39 65 60 888",
+    "email": "vuhien2444cfds@gmail.com",
+    "website": "",
+    "social": "",
+    "footer_template": "🤖 {system_name}\n📱 {phone}\n📧 {email}\n🌐 {website}\n� {social}"
+  }
+}

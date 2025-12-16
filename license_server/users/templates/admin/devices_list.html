@@ -1,0 +1,154 @@
+{% extends 'admin/base_dashboard.html' %}
+
+{% block title %}Devices - License Server{% endblock %}
+{% block page_title %}<span data-i18n="devices_management">Devices Management</span>{% endblock %}
+
+{% block content %}
+<!-- Filters -->
+<div class="card-custom mb-4">
+    <div class="card-body-custom">
+        <form method="get" class="row g-3 align-items-end">
+            <div class="col-md-4">
+                <label class="form-label small text-muted" data-i18n="search">Search</label>
+                <input type="text" name="search" class="form-control search-box" 
+                       placeholder="Device name, hardware ID, username..." value="{{ search }}">
+            </div>
+            <div class="col-md-6">
+                <label class="form-label small text-muted" data-i18n="filter">Filter</label>
+                <div class="btn-group">
+                    <a href="?search={{ search }}" class="filter-btn {% if filter_type == 'all' %}active{% endif %}" data-i18n="all">All</a>
+                    <a href="?search={{ search }}&filter=online" class="filter-btn {% if filter_type == 'online' %}active{% endif %}">
+                        <i class="bi bi-circle-fill text-success me-1" style="font-size: 0.5rem;"></i><span data-i18n="online">Online</span>
+                    </a>
+                    <a href="?search={{ search }}&filter=active" class="filter-btn {% if filter_type == 'active' %}active{% endif %}" data-i18n="active">Active</a>
+                    <a href="?search={{ search }}&filter=inactive" class="filter-btn {% if filter_type == 'inactive' %}active{% endif %}" data-i18n="inactive">Inactive</a>
+                </div>
+            </div>
+            <div class="col-md-2">
+                <button type="submit" class="btn btn-primary-custom w-100">
+                    <i class="bi bi-search me-1"></i> <span data-i18n="search">Search</span>
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Results -->
+<div class="card-custom">
+    <div class="card-header-custom">
+        <h5><i class="bi bi-pc-display me-2"></i><span data-i18n="devices">Devices</span> ({{ total_count }})</h5>
+    </div>
+    <div class="card-body-custom p-0">
+        <table class="table table-custom">
+            <thead>
+                <tr>
+                    <th data-i18n="device">Device</th>
+                    <th data-i18n="hardware_id">Hardware ID</th>
+                    <th data-i18n="user_license">User / License</th>
+                    <th data-i18n="status">Status</th>
+                    <th data-i18n="ip_address">IP Address</th>
+                    <th data-i18n="first_seen">First Seen</th>
+                    <th data-i18n="last_seen">Last Seen</th>
+                    <th data-i18n="actions">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for device in devices %}
+                <tr>
+                    <td>
+                        <div class="d-flex align-items-center gap-2">
+                            <div class="stat-icon info" style="width: 36px; height: 36px; font-size: 1rem;">
+                                {% if 'Windows' in device.os_info %}
+                                <i class="bi bi-windows"></i>
+                                {% elif 'Mac' in device.os_info %}
+                                <i class="bi bi-apple"></i>
+                                {% elif 'Linux' in device.os_info %}
+                                <i class="bi bi-ubuntu"></i>
+                                {% else %}
+                                <i class="bi bi-pc-display"></i>
+                                {% endif %}
+                            </div>
+                            <div>
+                                <strong>{{ device.device_name|default:"Unknown Device" }}</strong>
+                                <div class="small text-muted">{{ device.os_info }}</div>
+                            </div>
+                        </div>
+                    </td>
+                    <td>
+                        <code title="{{ device.hardware_id }}">{{ device.hardware_id|truncatechars:20 }}</code>
+                    </td>
+                    <td>
+                        <strong>{{ device.license.user.username }}</strong>
+                        <div class="small text-muted">
+                            <code>{{ device.license.license_key|truncatechars:12 }}</code>
+                        </div>
+                    </td>
+                    <td>
+                        {% if device.is_online %}
+                        <span class="badge badge-online">
+                            <i class="bi bi-circle-fill me-1" style="font-size: 0.5rem;"></i><span data-i18n="online">Online</span>
+                        </span>
+                        {% elif device.is_active %}
+                        <span class="badge badge-offline">
+                            <i class="bi bi-circle me-1" style="font-size: 0.5rem;"></i><span data-i18n="offline">Offline</span>
+                        </span>
+                        {% else %}
+                        <span class="badge bg-danger">
+                            <i class="bi bi-x-circle me-1"></i><span data-i18n="inactive">Inactive</span>
+                        </span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <code>{{ device.ip_address|default:"-" }}</code>
+                    </td>
+                    <td>
+                        {{ device.first_seen|date:"d/m/Y" }}
+                        <div class="small text-muted">{{ device.first_seen|time:"H:i" }}</div>
+                    </td>
+                    <td>
+                        {% if device.last_seen %}
+                        {{ device.last_seen|timesince }} <span data-i18n="ago">ago</span>
+                        {% else %}
+                        -
+                        {% endif %}
+                    </td>
+                    <td>
+                        <div class="dropdown">
+                            <button class="btn btn-sm btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" data-i18n="actions">
+                                Actions
+                            </button>
+                            <ul class="dropdown-menu dropdown-menu-end">
+                                <li><a class="dropdown-item" href="/admin/users/deviceactivation/{{ device.id }}/change/">
+                                    <i class="bi bi-pencil me-2"></i> <span data-i18n="edit">Edit</span>
+                                </a></li>
+                                <li><hr class="dropdown-divider"></li>
+                                {% if device.is_active %}
+                                <li><a class="dropdown-item text-warning" href="/dashboard/devices/{{ device.id }}/deactivate/">
+                                    <i class="bi bi-pause-circle me-2"></i> <span data-i18n="deactivate">Deactivate</span>
+                                </a></li>
+                                {% else %}
+                                <li><a class="dropdown-item text-success" href="/dashboard/devices/{{ device.id }}/activate/">
+                                    <i class="bi bi-check-circle me-2"></i> <span data-i18n="activate">Activate</span>
+                                </a></li>
+                                {% endif %}
+                                <li><hr class="dropdown-divider"></li>
+                                <li><a class="dropdown-item text-danger" href="/dashboard/devices/{{ device.id }}/delete/">
+                                    <i class="bi bi-trash me-2"></i> <span data-i18n="remove">Remove</span>
+                                </a></li>
+                            </ul>
+                        </div>
+                    </td>
+                </tr>
+                {% empty %}
+                <tr>
+                    <td colspan="8" class="text-center py-5 text-muted">
+                        <i class="bi bi-pc-display display-4 d-block mb-3"></i>
+                        <span data-i18n="no_devices_found">No devices found</span>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

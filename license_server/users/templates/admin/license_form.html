@@ -1,0 +1,228 @@
+{% extends "admin/base_dashboard.html" %}
+
+{% block title %}{% if action == 'add' %}Cấp License{% else %}Sửa License{% endif %}{% endblock %}
+
+{% block page_title %}{% if action == 'add' %}Cấp License Cho User{% else %}Chỉnh Sửa License{% endif %}{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-lg-8">
+        <div class="card-custom">
+            <div class="card-header-custom">
+                <h5>
+                    <i class="bi bi-{% if action == 'add' %}key{% else %}pencil-square{% endif %} me-2"></i>
+                    {% if action == 'add' %}Cấp License Cho User{% else %}Chỉnh Sửa License{% endif %}
+                </h5>
+                <a href="{% url 'dashboard_licenses' %}" class="btn btn-secondary btn-sm">
+                    <i class="bi bi-arrow-left"></i> Quay lại
+                </a>
+            </div>
+            <div class="card-body-custom">
+                <form method="post">
+                    {% csrf_token %}
+                    
+                    {% if action == 'add' %}
+                    <!-- Chọn User -->
+                    <div class="mb-3">
+                        <label class="form-label fw-semibold">Chọn Người Dùng <span class="text-danger">*</span></label>
+                        <select name="user_id" class="form-select" required>
+                            <option value="">-- Chọn người dùng --</option>
+                            {% for user in all_users %}
+                            <option value="{{ user.id }}" 
+                                    {% if preselect_user_id and user.id|stringformat:"s" == preselect_user_id %}selected{% endif %}
+                                    {% if user.licenses.count == 0 %}style="color: #dc3545;"{% endif %}>
+                                {{ user.username }} 
+                                ({{ user.email|default:"Không có email" }})
+                                {% if user.licenses.count == 0 %} - ⚠️ Chưa có License{% endif %}
+                            </option>
+                            {% endfor %}
+                        </select>
+                        <small class="text-muted">User có màu đỏ là chưa được cấp License</small>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label fw-semibold">Loại License</label>
+                            <select name="license_type" class="form-select" id="licenseType" onchange="updateDuration()">
+                                <option value="trial" data-days="7">🎁 Trial (Dùng thử)</option>
+                                <option value="monthly" data-days="30">📅 Monthly (Hàng tháng)</option>
+                                <option value="quarterly" data-days="90">📆 Quarterly (Hàng quý)</option>
+                                <option value="yearly" data-days="365">📆 Yearly (Hàng năm)</option>
+                                <option value="lifetime" data-days="3650">♾️ Lifetime (Vĩnh viễn)</option>
+                            </select>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label fw-semibold">Số thiết bị tối đa</label>
+                            <input type="number" name="max_devices" class="form-control" value="1" min="1" max="10">
+                        </div>
+                    </div>
+                    
+                    <!-- Số ngày tùy chọn -->
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label fw-semibold">Thời hạn (số ngày) <span class="text-danger">*</span></label>
+                            <input type="number" name="duration_days" id="durationDays" class="form-control" 
+                                   value="7" min="1" max="36500" required>
+                            <small class="text-muted">Nhập số ngày tùy ý (1 - 36500)</small>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label fw-semibold">Hoặc chọn nhanh</label>
+                            <div class="btn-group w-100" role="group">
+                                <button type="button" class="btn btn-outline-primary btn-sm" onclick="setDays(7)">7 ngày</button>
+                                <button type="button" class="btn btn-outline-primary btn-sm" onclick="setDays(14)">14 ngày</button>
+                                <button type="button" class="btn btn-outline-primary btn-sm" onclick="setDays(30)">30 ngày</button>
+                                <button type="button" class="btn btn-outline-primary btn-sm" onclick="setDays(90)">90 ngày</button>
+                                <button type="button" class="btn btn-outline-primary btn-sm" onclick="setDays(365)">1 năm</button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    {% else %}
+                    <!-- Edit mode -->
+                    <div class="alert alert-secondary">
+                        <i class="bi bi-person me-2"></i>
+                        <strong>Người dùng:</strong> {{ edit_license.user.username }} ({{ edit_license.user.email|default:"Không có email" }})
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label class="form-label fw-semibold">License Key</label>
+                        <div class="input-group">
+                            <input type="text" class="form-control font-monospace" value="{{ edit_license.license_key }}" readonly>
+                            <button class="btn btn-outline-secondary" type="button" onclick="navigator.clipboard.writeText('{{ edit_license.license_key }}'); alert('Đã copy!')">
+                                <i class="bi bi-clipboard"></i>
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label fw-semibold">Loại License</label>
+                            <select name="license_type" class="form-select">
+                                <option value="trial" {% if edit_license.license_type == 'trial' %}selected{% endif %}>🎁 Trial (Dùng thử)</option>
+                                <option value="monthly" {% if edit_license.license_type == 'monthly' %}selected{% endif %}>📅 Monthly (Hàng tháng)</option>
+                                <option value="quarterly" {% if edit_license.license_type == 'quarterly' %}selected{% endif %}>📆 Quarterly (Hàng quý)</option>
+                                <option value="yearly" {% if edit_license.license_type == 'yearly' %}selected{% endif %}>📆 Yearly (Hàng năm)</option>
+                                <option value="lifetime" {% if edit_license.license_type == 'lifetime' %}selected{% endif %}>♾️ Lifetime (Vĩnh viễn)</option>
+                            </select>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label fw-semibold">Số thiết bị tối đa</label>
+                            <input type="number" name="max_devices" class="form-control" 
+                                   value="{{ edit_license.max_devices }}" min="1" max="10">
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label fw-semibold">Trạng thái</label>
+                            <select name="status" class="form-select">
+                                <option value="active" {% if edit_license.status == 'active' %}selected{% endif %}>✅ Active (Hoạt động)</option>
+                                <option value="expired" {% if edit_license.status == 'expired' %}selected{% endif %}>⏰ Expired (Hết hạn)</option>
+                                <option value="suspended" {% if edit_license.status == 'suspended' %}selected{% endif %}>⛔ Suspended (Tạm ngưng)</option>
+                                <option value="revoked" {% if edit_license.status == 'revoked' %}selected{% endif %}>🚫 Revoked (Thu hồi)</option>
+                            </select>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label fw-semibold">Ngày hết hạn</label>
+                            <input type="date" name="expire_date" class="form-control" 
+                                   value="{{ edit_license.expire_date|date:'Y-m-d' }}">
+                        </div>
+                    </div>
+                    
+                    <!-- Gia hạn tùy chọn -->
+                    <div class="card bg-light mb-3">
+                        <div class="card-body">
+                            <h6 class="card-title"><i class="bi bi-calendar-plus me-2"></i>Gia hạn thêm</h6>
+                            <div class="row align-items-end">
+                                <div class="col-md-4">
+                                    <label class="form-label small">Số ngày gia hạn</label>
+                                    <input type="number" name="extend_days" class="form-control" 
+                                           placeholder="VD: 30" min="1" max="3650">
+                                </div>
+                                <div class="col-md-8">
+                                    <label class="form-label small">Hoặc chọn nhanh</label>
+                                    <div class="btn-group" role="group">
+                                        <button type="submit" name="extend_quick" value="7" class="btn btn-outline-success btn-sm">+7 ngày</button>
+                                        <button type="submit" name="extend_quick" value="14" class="btn btn-outline-success btn-sm">+14 ngày</button>
+                                        <button type="submit" name="extend_quick" value="30" class="btn btn-outline-success btn-sm">+30 ngày</button>
+                                        <button type="submit" name="extend_quick" value="90" class="btn btn-outline-success btn-sm">+90 ngày</button>
+                                        <button type="submit" name="extend_quick" value="365" class="btn btn-outline-success btn-sm">+1 năm</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Trừ thời hạn -->
+                    <div class="card bg-light mb-3 border-danger">
+                        <div class="card-body">
+                            <h6 class="card-title text-danger"><i class="bi bi-calendar-minus me-2"></i>Trừ thời hạn</h6>
+                            <div class="row align-items-end">
+                                <div class="col-md-4">
+                                    <label class="form-label small">Số ngày trừ</label>
+                                    <input type="number" name="reduce_days" class="form-control" 
+                                           placeholder="VD: 7" min="1" max="3650">
+                                </div>
+                                <div class="col-md-8">
+                                    <label class="form-label small">Hoặc chọn nhanh</label>
+                                    <div class="btn-group" role="group">
+                                        <button type="submit" name="reduce_quick" value="7" class="btn btn-outline-danger btn-sm">-7 ngày</button>
+                                        <button type="submit" name="reduce_quick" value="14" class="btn btn-outline-danger btn-sm">-14 ngày</button>
+                                        <button type="submit" name="reduce_quick" value="30" class="btn btn-outline-danger btn-sm">-30 ngày</button>
+                                        <button type="submit" name="reduce_quick" value="90" class="btn btn-outline-danger btn-sm">-90 ngày</button>
+                                    </div>
+                                </div>
+                            </div>
+                            <small class="text-muted mt-2 d-block">⚠️ Lưu ý: Nếu trừ nhiều hơn số ngày còn lại, license sẽ hết hạn ngay lập tức.</small>
+                        </div>
+                    </div>
+                    
+                    <div class="alert alert-info">
+                        <i class="bi bi-info-circle me-2"></i>
+                        <strong>Thông tin:</strong>
+                        <ul class="mb-0 mt-2">
+                            <li>Ngày tạo: {{ edit_license.created_at|date:"d/m/Y H:i" }}</li>
+                            <li>Thiết bị đã kích hoạt: {{ edit_license.activations.count }}/{{ edit_license.max_devices }}</li>
+                            <li>Còn lại: 
+                                {% if edit_license.days_remaining > 0 %}
+                                    <span class="text-success fw-bold">{{ edit_license.days_remaining }} ngày</span>
+                                {% elif edit_license.days_remaining == 0 %}
+                                    <span class="text-warning fw-bold">Hết hạn hôm nay</span>
+                                {% else %}
+                                    <span class="text-danger fw-bold">Đã hết hạn</span>
+                                {% endif %}
+                            </li>
+                        </ul>
+                    </div>
+                    {% endif %}
+                    
+                    <hr class="my-4">
+                    
+                    <div class="d-flex justify-content-between">
+                        <a href="{% url 'dashboard_licenses' %}" class="btn btn-outline-secondary">
+                            <i class="bi bi-x-lg me-1"></i> Hủy
+                        </a>
+                        <button type="submit" class="btn btn-primary-custom">
+                            <i class="bi bi-check-lg me-1"></i>
+                            {% if action == 'add' %}Cấp License{% else %}Lưu Thay Đổi{% endif %}
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function setDays(days) {
+    document.getElementById('durationDays').value = days;
+}
+
+function updateDuration() {
+    const select = document.getElementById('licenseType');
+    const option = select.options[select.selectedIndex];
+    const days = option.getAttribute('data-days');
+    document.getElementById('durationDays').value = days;
+}
+</script>
+{% endblock %}

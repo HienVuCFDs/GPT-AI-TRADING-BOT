@@ -1,0 +1,34 @@
+{
+  "ai_server": {
+    "url": "http://localhost:8001",
+    "use_llm": true,
+    "model": "Mistral-7B-Instruct-v0.1",
+    "description": "true = LLM trading decisions, false = rule-based"
+  },
+  "llm_settings": {
+    "temperature": 0.1,
+    "max_tokens": 200,
+    "timeout_seconds": 180
+  },
+  "trading": {
+    "min_confidence": 60,
+    "default_volume": 0.01,
+    "max_symbols_per_batch": 5,
+    "enable_dca": true,
+    "max_dca_levels": 3
+  },
+  "learning": {
+    "enabled": false,
+    "db_path": "trade_memory.db",
+    "include_past_trades_in_prompt": true,
+    "max_past_trades": 10
+  },
+  "notes": {
+    "llm_mode": "Real LLM reasoning - Mistral-7B analyzes data and decides",
+    "rule_mode": "Fixed IF-ELSE rules scoring RSI, MACD, EMA, etc.",
+    "learning_future": "Phase 2: Store trades, include in prompts for in-context learning"
+  },
+  "fine_tuned_model": "C:\\Users\\ADMIN\\OneDrive\\Desktop\\my_trading_bot\\ai_server\\fine_tuned_models\\trading_ai_20251205_141623",
+  "use_fine_tuned": true,
+  "fine_tuned_at": "2025-12-05T15:10:39.812785"
+}

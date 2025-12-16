@@ -1,0 +1,181 @@
+{% extends 'admin/base_dashboard.html' %}
+
+{% block title %}Licenses - License Server{% endblock %}
+{% block page_title %}<span data-i18n="licenses_management">Licenses Management</span>{% endblock %}
+
+{% block content %}
+<!-- Filters -->
+<div class="card-custom mb-4">
+    <div class="card-body-custom">
+        <form method="get" class="row g-3 align-items-end">
+            <div class="col-md-3">
+                <label class="form-label small text-muted" data-i18n="search">Search</label>
+                <input type="text" name="search" class="form-control search-box" 
+                       placeholder="License key, username..." value="{{ search }}">
+            </div>
+            <div class="col-md-3">
+                <label class="form-label small text-muted" data-i18n="status">Status</label>
+                <select name="status" class="form-select">
+                    <option value="all" {% if status == 'all' %}selected{% endif %} data-i18n="all_status">All Status</option>
+                    <option value="active" {% if status == 'active' %}selected{% endif %} data-i18n="active">Active</option>
+                    <option value="expired" {% if status == 'expired' %}selected{% endif %} data-i18n="expired">Expired</option>
+                    <option value="suspended" {% if status == 'suspended' %}selected{% endif %} data-i18n="suspended">Suspended</option>
+                    <option value="revoked" {% if status == 'revoked' %}selected{% endif %} data-i18n="revoked">Revoked</option>
+                </select>
+            </div>
+            <div class="col-md-3">
+                <label class="form-label small text-muted" data-i18n="type">Type</label>
+                <select name="type" class="form-select">
+                    <option value="all" {% if license_type == 'all' %}selected{% endif %} data-i18n="all_types">All Types</option>
+                    <option value="trial" {% if license_type == 'trial' %}selected{% endif %} data-i18n="trial">Trial</option>
+                    <option value="monthly" {% if license_type == 'monthly' %}selected{% endif %} data-i18n="monthly">Monthly</option>
+                    <option value="quarterly" {% if license_type == 'quarterly' %}selected{% endif %} data-i18n="quarterly">Quarterly</option>
+                    <option value="yearly" {% if license_type == 'yearly' %}selected{% endif %} data-i18n="yearly">Yearly</option>
+                    <option value="lifetime" {% if license_type == 'lifetime' %}selected{% endif %} data-i18n="lifetime">Lifetime</option>
+                </select>
+            </div>
+            <div class="col-md-3">
+                <button type="submit" class="btn btn-primary-custom w-100">
+                    <i class="bi bi-filter me-1"></i> <span data-i18n="filter">Filter</span>
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Results -->
+<div class="card-custom">
+    <div class="card-header-custom">
+        <h5><i class="bi bi-key me-2"></i><span data-i18n="licenses">Licenses</span> ({{ total_count }})</h5>
+        <a href="{% url 'add_license' %}" class="btn btn-sm btn-primary-custom">
+            <i class="bi bi-plus-lg me-1"></i> <span data-i18n="add_license">Add License</span>
+        </a>
+    </div>
+    <div class="card-body-custom p-0">
+        <table class="table table-custom">
+            <thead>
+                <tr>
+                    <th data-i18n="license_key">License Key</th>
+                    <th data-i18n="user">User</th>
+                    <th data-i18n="type">Type</th>
+                    <th data-i18n="status">Status</th>
+                    <th data-i18n="expire_date">Expire Date</th>
+                    <th data-i18n="devices">Devices</th>
+                    <th data-i18n="created">Created</th>
+                    <th data-i18n="actions">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for license in licenses %}
+                <tr>
+                    <td>
+                        <code class="user-select-all" title="{{ license.license_key }}">
+                            {{ license.license_key|truncatechars:20 }}
+                        </code>
+                        <button class="btn btn-sm btn-link p-0 ms-1" onclick="navigator.clipboard.writeText('{{ license.license_key }}')">
+                            <i class="bi bi-clipboard"></i>
+                        </button>
+                    </td>
+                    <td>
+                        <strong>{{ license.user.username }}</strong>
+                        <div class="small text-muted">{{ license.user.email }}</div>
+                    </td>
+                    <td>
+                        {% if license.license_type == 'trial' %}
+                        <span class="badge badge-trial">TRIAL</span>
+                        {% elif license.license_type == 'monthly' %}
+                        <span class="badge bg-success">MONTHLY</span>
+                        {% elif license.license_type == 'quarterly' %}
+                        <span class="badge bg-warning text-dark">QUARTERLY</span>
+                        {% elif license.license_type == 'yearly' %}
+                        <span class="badge bg-primary">YEARLY</span>
+                        {% elif license.license_type == 'lifetime' %}
+                        <span class="badge bg-danger">LIFETIME</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if license.status == 'active' %}
+                        <span class="badge badge-active">
+                            <i class="bi bi-check-circle me-1"></i><span data-i18n="active">Active</span>
+                        </span>
+                        {% elif license.status == 'expired' %}
+                        <span class="badge badge-expired">
+                            <i class="bi bi-clock me-1"></i><span data-i18n="expired">Expired</span>
+                        </span>
+                        {% elif license.status == 'suspended' %}
+                        <span class="badge badge-suspended">
+                            <i class="bi bi-pause-circle me-1"></i><span data-i18n="suspended">Suspended</span>
+                        </span>
+                        {% else %}
+                        <span class="badge bg-dark">{{ license.status }}</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {{ license.expire_date|date:"d/m/Y" }}
+                        <div class="small">
+                            {% if license.days_remaining > 7 %}
+                            <span class="text-success">{{ license.days_remaining }} <span data-i18n="days">days</span></span>
+                            {% elif license.days_remaining > 0 %}
+                            <span class="text-warning">{{ license.days_remaining }} <span data-i18n="days">days</span></span>
+                            {% else %}
+                            <span class="text-danger" data-i18n="expired">Expired</span>
+                            {% endif %}
+                        </div>
+                    </td>
+                    <td>
+                        <div class="d-flex align-items-center gap-2">
+                            <div class="progress" style="width: 60px; height: 6px;">
+                                {% widthratio license.active_device_count license.max_devices 100 as percent %}
+                                <div class="progress-bar bg-primary" style="width: {{ percent }}%"></div>
+                            </div>
+                            <span class="small">{{ license.active_device_count }}/{{ license.max_devices }}</span>
+                        </div>
+                    </td>
+                    <td>
+                        {{ license.created_at|date:"d/m/Y" }}
+                        <div class="small text-muted">{{ license.created_at|time:"H:i" }}</div>
+                    </td>
+                    <td>
+                        <div class="dropdown">
+                            <button class="btn btn-sm btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" data-i18n="actions">
+                                Actions
+                            </button>
+                            <ul class="dropdown-menu dropdown-menu-end">
+                                <li><a class="dropdown-item" href="{% url 'edit_license' license.id %}">
+                                    <i class="bi bi-pencil me-2"></i> <span data-i18n="edit">Edit</span>
+                                </a></li>
+                                <li><hr class="dropdown-divider"></li>
+                                {% if license.status != 'active' %}
+                                <li><a class="dropdown-item text-success" href="{% url 'license_action' license.id 'activate' %}">
+                                    <i class="bi bi-check-circle me-2"></i> <span data-i18n="activate">Activate</span>
+                                </a></li>
+                                {% endif %}
+                                {% if license.status == 'active' %}
+                                <li><a class="dropdown-item text-warning" href="{% url 'license_action' license.id 'suspend' %}">
+                                    <i class="bi bi-pause-circle me-2"></i> <span data-i18n="suspend">Suspend</span>
+                                </a></li>
+                                {% endif %}
+                                <li><a class="dropdown-item" href="{% url 'license_action' license.id 'extend' %}">
+                                    <i class="bi bi-calendar-plus me-2"></i> <span data-i18n="extend_30_days">Extend 30 Days</span>
+                                </a></li>
+                                <li><hr class="dropdown-divider"></li>
+                                <li><a class="dropdown-item text-danger" href="{% url 'delete_license' license.id %}">
+                                    <i class="bi bi-trash me-2"></i> <span data-i18n="delete">Delete</span>
+                                </a></li>
+                            </ul>
+                        </div>
+                    </td>
+                </tr>
+                {% empty %}
+                <tr>
+                    <td colspan="8" class="text-center py-5 text-muted">
+                        <i class="bi bi-key display-4 d-block mb-3"></i>
+                        <span data-i18n="no_licenses_found">No licenses found</span>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

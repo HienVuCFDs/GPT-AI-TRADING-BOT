@@ -1,0 +1,23 @@
+{
+    "enabled": true,
+    "smart_entry_strategies": {
+        "enabled": true,
+        "peak_valley_detection": {
+            "enabled": true,
+            "lookback_candles": 20,
+            "min_peak_strength": 3,
+            "peak_threshold": 0.8,
+            "valley_threshold": 0.2
+        },
+        "breakout_confirmation": {
+            "enabled": true,
+            "breakout_buffer_pips": 3,
+            "min_strength": 5.0
+        },
+        "pullback_entry": {
+            "enabled": true,
+            "pullback_zone_pips": 15,
+            "min_strength": 6.0
+        }
+    }
+}

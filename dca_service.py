@@ -75,7 +75,8 @@ class FibonacciDCAService:
     def is_fibonacci_mode(self) -> bool:
         """Check if DCA mode is Fibonacci"""
         dca_mode = self.risk_settings.get('dca_mode', '')
-        return 'fibo' in dca_mode.lower()
+        # Check for new key format and legacy formats
+        return dca_mode in ['fibo_levels', 'fibonacci', 'Fibonacci', 'Mức Fibonacci', 'Mức Fibo'] or 'fibo' in dca_mode.lower()
     
     def get_execution_mode(self) -> str:
         """Get Fibonacci execution mode"""
@@ -180,6 +181,36 @@ class FibonacciDCAService:
             logger.error(f"❌ Error getting positions: {e}")
             return []
     
+    def load_atr_for_symbol(self, symbol: str) -> Optional[float]:
+        """Load ATR value from indicator data for DCA distance calculation"""
+        try:
+            # Use H1 timeframe for ATR (standard for DCA)
+            timeframe = 'H1'
+            file_path = f"indicator_output/{symbol}_{timeframe}_indicators.json"
+            
+            if os.path.exists(file_path):
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                
+                # Get latest data
+                if isinstance(data, list) and len(data) > 0:
+                    latest_data = data[-1]
+                    
+                    # Try different ATR key formats
+                    atr_keys = ['ATR_14', 'ATR14', 'ATR', 'atr_14', 'atr14', 'atr']
+                    for key in atr_keys:
+                        if key in latest_data and latest_data[key] is not None:
+                            atr = float(latest_data[key])
+                            logger.info(f"📊 {symbol} ATR loaded: {atr:.5f} from {timeframe}")
+                            return atr
+            
+            logger.warning(f"⚠️ {symbol} ATR not found in indicator data")
+            return None
+            
+        except Exception as e:
+            logger.error(f"❌ Error loading ATR for {symbol}: {e}")
+            return None
+    
     def load_fibonacci_data(self, symbol: str) -> Optional[Dict]:
         """Load latest Fibonacci data from smallest available timeframe"""
         try:
@@ -218,25 +249,40 @@ class FibonacciDCAService:
             return None
     
     def get_realtime_fibonacci_prices(self, position: Dict) -> List[float]:
-        """Get real-time Fibonacci DCA price levels with smart fallback"""
+        """Get real-time Fibonacci DCA price levels with ATR-based minimum distance"""
         try:
             symbol = position['symbol']
             position_type = position['type']
             entry_price = position['price_open']
             
-            # Calculate minimum distance (20 pips)
-            min_distance_pips = 20
-            symbol_upper = symbol.upper()
-            if 'XAU' in symbol_upper or 'GOLD' in symbol_upper:
-                pip_value = 0.1
-            elif any(crypto in symbol_upper for crypto in ['BTC', 'ETH', 'SOL', 'ADA']):
-                pip_value = 1.0
-            elif 'JPY' in symbol_upper:
-                pip_value = 0.01
-            else:
-                pip_value = 0.0001
+            # 🎯 LOAD ATR FROM INDICATOR DATA
+            atr_value = self.load_atr_for_symbol(symbol)
             
-            min_distance = min_distance_pips * pip_value
+            # Get DCA mode and settings
+            dca_mode = self.risk_settings.get('dca_mode', 'fibo_levels')
+            dca_multiplier = self.risk_settings.get('dca_atr_multiplier', 1.5)
+            dca_distance_pips = self.risk_settings.get('dca_distance_pips', 20)
+            
+            # Calculate minimum distance - use ATR for Fibonacci mode too
+            # Fibonacci mode should also respect ATR-based minimum spacing
+            if atr_value:
+                # Use ATR * multiplier as minimum distance between DCA levels
+                min_distance = atr_value * dca_multiplier
+                logger.info(f"📐 {symbol} Using ATR-based min distance: {atr_value:.5f} * {dca_multiplier} = {min_distance:.5f}")
+            else:
+                # Fallback to configured pips or 20 pips default
+                symbol_upper = symbol.upper()
+                if 'XAU' in symbol_upper or 'GOLD' in symbol_upper:
+                    pip_value = 0.1
+                elif any(crypto in symbol_upper for crypto in ['BTC', 'ETH', 'SOL', 'ADA', 'BNB', 'LTC']):
+                    pip_value = 1.0
+                elif 'JPY' in symbol_upper:
+                    pip_value = 0.01
+                else:
+                    pip_value = 0.0001
+                
+                min_distance = dca_distance_pips * pip_value
+                logger.warning(f"⚠️ {symbol} ATR not available, using {dca_distance_pips} pips = {min_distance:.5f}")
             
             # Load latest Fibonacci data from indicator
             fibo_data = self.load_fibonacci_data(symbol)
@@ -279,27 +325,43 @@ class FibonacciDCAService:
                 price = level['price']
                 distance = level['distance_from_entry']
                 
-                # Check DCA direction (both BUY and SELL positions DCA down = below entry)
-                if price < entry_price and distance >= min_distance:
-                    valid_levels.append(level)
+                # Check DCA direction based on position type
+                # BUY position: DCA khi giá giảm -> mua thêm ở mức thấp hơn entry
+                # SELL position: DCA khi giá tăng -> bán thêm ở mức cao hơn entry
+                if position_type == 0:  # BUY position
+                    if price < entry_price and distance >= min_distance:
+                        valid_levels.append(level)
+                else:  # SELL position
+                    if price > entry_price and distance >= min_distance:
+                        valid_levels.append(level)
             
             # Sort by distance from entry (closest first)
             valid_levels.sort(key=lambda x: x['distance_from_entry'])
             
             if not valid_levels:
-                logger.warning(f"⚠️ {symbol} No valid Fibonacci levels found meeting 20-pip minimum distance")
+                logger.warning(f"⚠️ {symbol} No valid Fibonacci levels found meeting ATR-based minimum distance ({min_distance:.5f})")
                 return []
             
             # Get configured Fibonacci sequence
-            config_levels_str = self.risk_settings.get('dca_fibo_levels', '23.6,38.2,50,61.8,78.6').split(',')
-            config_levels = [float(level.strip()) for level in config_levels_str]
-            start_level = self.risk_settings.get('dca_fibo_start_level', 0)
+            fibo_levels_cfg = self.risk_settings.get('dca_fibo_levels', '23.6,38.2,50,61.8,78.6')
+            if isinstance(fibo_levels_cfg, str):
+                config_levels_str = fibo_levels_cfg.split(',')
+            else:
+                config_levels_str = [str(x) for x in fibo_levels_cfg]
+            config_levels = [float(level.strip()) for level in config_levels_str if level.strip()]
+            
+            # Get start level index (ensure it's an integer)
+            start_level_raw = self.risk_settings.get('dca_fibo_start_level', 0)
+            try:
+                start_level = int(start_level_raw)
+            except (ValueError, TypeError):
+                start_level = 0
             
             # Try to use configured sequence first
-            target_sequence = config_levels[start_level:]
+            target_sequence = config_levels[start_level:] if start_level < len(config_levels) else config_levels
             dca_prices = []
             
-            logger.info(f"📐 {symbol} Attempting DCA sequence: {target_sequence}")
+            logger.info(f"📐 {symbol} Attempting DCA sequence: {target_sequence} (start index: {start_level})")
             
             for i, target_percent in enumerate(target_sequence):
                 found_level = None
@@ -328,7 +390,7 @@ class FibonacciDCAService:
                     break
             
             if dca_prices:
-                logger.info(f"📐 {symbol} Final DCA levels: {[round(p, 5) for p in dca_prices]} (20+ pip distance)")
+                logger.info(f"📐 {symbol} Final DCA levels: {[round(p, 5) for p in dca_prices]} (ATR-based distance: {min_distance:.5f})")
                 return dca_prices
             else:
                 logger.warning(f"⚠️ {symbol} No suitable DCA levels found")
@@ -343,15 +405,20 @@ class FibonacciDCAService:
         return [level['target_price'] for level in calc_levels]
     
     def calculate_fibonacci_dca_levels(self, position: Dict) -> List[Dict]:
-        """Calculate Fibonacci DCA levels for position"""
+        """Calculate Fibonacci DCA levels for position using REAL swing high/low from indicator"""
         try:
             symbol = position['symbol']
             entry_price = position['price_open']
             current_price = position['price_current']
             position_type = position['type']  # 0=BUY, 1=SELL
             
-            # Get DCA settings
-            start_level = self.risk_settings.get('dca_fibo_start_level', 0)
+            # Get DCA settings - ensure start_level is an integer
+            start_level_raw = self.risk_settings.get('dca_fibo_start_level', 0)
+            try:
+                start_level = int(start_level_raw)
+            except (ValueError, TypeError):
+                start_level = 0
+                
             max_levels = self.risk_settings.get('max_dca_levels', 3)
             fibo_levels_cfg = self.risk_settings.get('dca_fibo_levels', '23.6,38.2,50,61.8,78.6')
             
@@ -377,27 +444,59 @@ class FibonacciDCAService:
             else:
                 adjusted_sequence = fib_sequence[:max_levels]
             
-            dca_levels = []
-            for i, target_percent in enumerate(adjusted_sequence):
-                # Calculate target price from entry price (not swing analysis)
-                retracement_factor = target_percent / 100.0
-                
-                # Calculate retracement amount based on symbol type
+            logger.info(f"📐 {symbol} Calculating DCA levels: sequence={adjusted_sequence}, start_idx={start_level}, max={max_levels}")
+            
+            # 🔧 FIX: Load swing high/low from indicator file (fib_0.0 = low, fib_100.0 = high)
+            fibo_data = self.load_fibonacci_data(symbol)
+            if fibo_data:
+                swing_low = fibo_data.get('fib_0.0', None)
+                swing_high = fibo_data.get('fib_100.0', None)
+                if swing_low and swing_high:
+                    logger.info(f"📐 {symbol} Using indicator swing: Low={swing_low:.5f}, High={swing_high:.5f}")
+                else:
+                    swing_low = swing_high = None
+            else:
+                swing_low = swing_high = None
+            
+            # Fallback: estimate swing range from entry price if indicator data not available
+            if not swing_low or not swing_high:
                 symbol_upper = symbol.upper()
                 if 'XAU' in symbol_upper or 'GOLD' in symbol_upper:
-                    retracement_amount = entry_price * (retracement_factor / 100.0) * 2.0
-                elif any(crypto in symbol_upper for crypto in ['BTC', 'ETH', 'SOL', 'ADA']):
-                    retracement_amount = entry_price * (retracement_factor / 100.0) * 0.5  # Sensitive for crypto
+                    swing_range_pct = 0.02  # 2% range for gold
+                elif any(crypto in symbol_upper for crypto in ['BTC', 'ETH', 'SOL', 'ADA', 'BNB', 'LTC']):
+                    swing_range_pct = 0.05  # 5% range for crypto
                 elif 'JPY' in symbol_upper:
-                    retracement_amount = entry_price * (retracement_factor / 100.0) * 0.5
+                    swing_range_pct = 0.015  # 1.5% for JPY pairs
                 else:
-                    retracement_amount = entry_price * (retracement_factor / 100.0)
+                    swing_range_pct = 0.01  # 1% for forex
                 
-                # Calculate target price
-                if position_type == 0:  # BUY position
-                    target_price = entry_price - retracement_amount
-                else:  # SELL position
-                    target_price = entry_price + retracement_amount
+                swing_high = entry_price * (1 + swing_range_pct)
+                swing_low = entry_price * (1 - swing_range_pct)
+                logger.warning(f"⚠️ {symbol} No indicator data, estimating swing: Low={swing_low:.5f}, High={swing_high:.5f}")
+            
+            swing_range = swing_high - swing_low
+            
+            dca_levels = []
+            for i, target_percent in enumerate(adjusted_sequence):
+                # 🔧 FIX: Calculate Fibonacci retracement correctly
+                # Fibonacci retracement: price = high - (high - low) * fib_level
+                # For DCA: we want levels between entry and opposite direction
+                fib_factor = target_percent / 100.0
+                
+                if position_type == 0:  # BUY position - DCA below entry
+                    # Mua thêm khi giá giảm về các mức Fibonacci thấp hơn
+                    target_price = swing_high - (swing_range * fib_factor)
+                    # Chỉ lấy các mức dưới entry price
+                    if target_price >= entry_price:
+                        # Skip levels at or above entry
+                        continue
+                else:  # SELL position - DCA above entry  
+                    # Bán thêm khi giá tăng về các mức Fibonacci cao hơn
+                    target_price = swing_low + (swing_range * fib_factor)
+                    # Chỉ lấy các mức trên entry price
+                    if target_price <= entry_price:
+                        # Skip levels at or below entry
+                        continue
                 
                 # Check if should trigger
                 should_trigger = False
@@ -407,14 +506,14 @@ class FibonacciDCAService:
                     should_trigger = current_price >= target_price
                 
                 dca_levels.append({
-                    'level': i + 1,
+                    'level': len(dca_levels) + 1,  # Sequential level number
                     'fibonacci_percent': target_percent,
                     'target_price': target_price,
                     'should_trigger': should_trigger,
-                    'volume': self.calculate_dca_volume(position, i + 1)
+                    'volume': self.calculate_dca_volume(position, len(dca_levels) + 1)
                 })
                 
-                logger.info(f"[FIBO_DCA] {symbol} {'BUY' if position_type == 0 else 'SELL'} Level {i + 1}: {target_percent}% retracement from entry {entry_price:.5f} -> target {target_price:.5f}")
+                logger.info(f"[FIBO_DCA] {symbol} {'BUY' if position_type == 0 else 'SELL'} Level {len(dca_levels)}: {target_percent}% -> target {target_price:.5f} (swing: {swing_low:.5f}-{swing_high:.5f})")
             
             return dca_levels
             
@@ -488,12 +587,14 @@ class FibonacciDCAService:
             return True  # Conservative: assume exists to prevent duplicates
     
     def execute_market_dca(self, position: Dict, dca_level: Dict) -> bool:
-        """Execute DCA using Market Order"""
+        """Execute DCA using Market Order when price touches Fibonacci level"""
         try:
             symbol = position['symbol']
             volume = dca_level['volume']
             level = dca_level['level']
             position_type = position['type']
+            entry_price = position['price_open']
+            target_price = dca_level['target_price']
             
             # Get current price
             tick = mt5.symbol_info_tick(symbol)
@@ -501,11 +602,21 @@ class FibonacciDCAService:
                 logger.error(f"❌ Cannot get tick for {symbol}")
                 return False
             
-            # Determine entry price and order type
-            if position_type == 0:  # BUY position -> DCA BUY
+            current_price = tick.ask if position_type == 0 else tick.bid
+            
+            # Validate DCA direction before executing
+            # BUY position: DCA khi giá giảm xuống dưới entry
+            # SELL position: DCA khi giá tăng lên trên entry
+            if position_type == 0:  # BUY position
+                if target_price >= entry_price:
+                    logger.warning(f"⚠️ {symbol} BUY DCA{level} target {target_price:.5f} not below entry {entry_price:.5f}")
+                    return False
                 price = tick.ask
                 order_type = mt5.ORDER_TYPE_BUY
-            else:  # SELL position -> DCA SELL
+            else:  # SELL position
+                if target_price <= entry_price:
+                    logger.warning(f"⚠️ {symbol} SELL DCA{level} target {target_price:.5f} not above entry {entry_price:.5f}")
+                    return False
                 price = tick.bid
                 order_type = mt5.ORDER_TYPE_SELL
             
@@ -622,7 +733,7 @@ class FibonacciDCAService:
             return False
     
     def execute_pending_dca(self, position: Dict, dca_level: Dict) -> bool:
-        """Execute DCA using Pending Limit Order with Real-time Fibonacci Levels"""
+        """Execute DCA using Pending Limit Order with calculated Fibonacci levels"""
         try:
             symbol = position['symbol']
             volume = dca_level['volume']
@@ -630,14 +741,14 @@ class FibonacciDCAService:
             position_type = position['type']
             entry_price = position['price_open']
             
-            # Get real-time Fibonacci target price
-            realtime_levels = self.get_realtime_fibonacci_prices(position)
-            if realtime_levels and level <= len(realtime_levels):
-                target_price = realtime_levels[level - 1]  # level is 1-indexed, array is 0-indexed
-                logger.info(f"📐 Using real-time Fibonacci price for {symbol} DCA{level}: {target_price:.5f}")
-            else:
-                logger.warning(f"⚠️ No Fibonacci level {level} available for {symbol}")
+            # 🔧 FIX: Use target_price directly from calculated dca_level dict
+            # Don't override with get_realtime_fibonacci_prices() which can cause duplicates
+            target_price = dca_level.get('target_price')
+            if not target_price:
+                logger.warning(f"⚠️ No target price for {symbol} DCA{level}")
                 return False
+            
+            logger.info(f"📐 Using calculated Fibonacci price for {symbol} DCA{level}: {target_price:.5f}")
             
             # Get current price for validation
             tick = mt5.symbol_info_tick(symbol)
@@ -656,6 +767,8 @@ class FibonacciDCAService:
                 return False
             
             # Validate pending order logic for DCA direction
+            # BUY position: DCA khi giá giảm -> đặt BUY LIMIT dưới giá hiện tại
+            # SELL position: DCA khi giá tăng -> đặt SELL LIMIT trên giá hiện tại
             if position_type == 0:  # BUY position - DCA should be BELOW entry and current price
                 if target_price >= entry_price:
                     logger.warning(f"⚠️ {symbol} BUY DCA{level} price {target_price:.5f} not below entry {entry_price:.5f}")
@@ -663,18 +776,14 @@ class FibonacciDCAService:
                 if target_price >= current_price:
                     logger.debug(f"⚠️ {symbol} BUY DCA{level} pending price {target_price:.5f} not below current {current_price:.5f}")
                     return False
-            else:  # SELL position - DCA should be BELOW entry (buy at lower price)  
-                if target_price >= entry_price:
-                    logger.warning(f"⚠️ {symbol} SELL DCA{level} price {target_price:.5f} not below entry {entry_price:.5f}")
-                    return False
-                if target_price >= current_price:
-                    logger.debug(f"⚠️ {symbol} SELL DCA{level} pending price {target_price:.5f} not below current {current_price:.5f}")
-                    return False
-            
-            # Determine order type
-            if position_type == 0:  # BUY position -> DCA BUY LIMIT
                 order_type = mt5.ORDER_TYPE_BUY_LIMIT
-            else:  # SELL position -> DCA SELL LIMIT
+            else:  # SELL position - DCA should be ABOVE entry (sell at higher price)
+                if target_price <= entry_price:
+                    logger.warning(f"⚠️ {symbol} SELL DCA{level} price {target_price:.5f} not above entry {entry_price:.5f}")
+                    return False
+                if target_price <= current_price:
+                    logger.debug(f"⚠️ {symbol} SELL DCA{level} pending price {target_price:.5f} not above current {current_price:.5f}")
+                    return False
                 order_type = mt5.ORDER_TYPE_SELL_LIMIT
             
             # Calculate SL/TP
@@ -732,7 +841,7 @@ class FibonacciDCAService:
             if 'XAU' in symbol_upper or 'GOLD' in symbol_upper:
                 pip_value = 0.1
             elif any(crypto in symbol_upper for crypto in ['BTC', 'ETH', 'SOL', 'ADA']):
-                pip_value = 1.0
+                pip_value = 0.1  # Fixed: Was 1.0, causing S/L too close to entry
             elif 'JPY' in symbol_upper:
                 pip_value = 0.01
             else:

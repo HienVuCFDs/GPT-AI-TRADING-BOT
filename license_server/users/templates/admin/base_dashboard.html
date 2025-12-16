@@ -1,0 +1,795 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}License Server Admin{% endblock %}</title>
+    
+    <!-- Language translations -->
+    <script>
+        const TRANSLATIONS = {
+            'en': {
+                // Sidebar
+                'license_server': 'License Server',
+                'dashboard': 'Dashboard',
+                'management': 'Management',
+                'users': 'Users',
+                'licenses': 'Licenses',
+                'devices': 'Devices',
+                'activation_codes': 'Activation Codes',
+                'monitoring': 'Monitoring',
+                'activity_logs': 'Activity Logs',
+                'system': 'System',
+                'django_admin': 'Django Admin',
+                'logout': 'Logout',
+                
+                // Dashboard
+                'total_users': 'Total Users',
+                'active_licenses': 'Active Licenses',
+                'active_devices': 'Active Devices',
+                'expired_licenses': 'Expired Licenses',
+                'this_week': 'this week',
+                'trial': 'trial',
+                'paid': 'paid',
+                'online': 'Online',
+                'offline': 'Offline',
+                'need_renewal': 'Need renewal',
+                'user_registrations': 'User Registrations (Last 7 Days)',
+                'license_types': 'License Types',
+                'expiring_soon': 'Expiring Soon',
+                'recent_users': 'Recent Users',
+                'recent_activity': 'Recent Activity',
+                'view_all': 'View All',
+                'user': 'User',
+                'license': 'License',
+                'expires': 'Expires',
+                'days_left': 'Days Left',
+                'days': 'days',
+                'email': 'Email',
+                'joined': 'Joined',
+                'ago': 'ago',
+                'time': 'Time',
+                'event': 'Event',
+                'device': 'Device',
+                'ip_address': 'IP Address',
+                'no_licenses_expiring': 'No licenses expiring soon',
+                'no_users_yet': 'No users yet',
+                'no_activity_yet': 'No activity yet',
+                
+                // Users page
+                'users_management': 'Users Management',
+                'search': 'Search',
+                'search_placeholder': 'Username, email...',
+                'filter': 'Filter',
+                'all': 'All',
+                'active': 'Active',
+                'expired': 'Expired',
+                'add_user': 'Add User',
+                'status': 'Status',
+                'actions': 'Actions',
+                'edit_user': 'Edit User',
+                'edit_license': 'Edit License',
+                'delete': 'Delete',
+                'no_license': 'No license',
+                'days_left_label': 'days left',
+                'no_users_found': 'No users found',
+                'staff': 'Staff',
+                
+                // Licenses page
+                'licenses_management': 'Licenses Management',
+                'license_key': 'License Key',
+                'type': 'Type',
+                'expire_date': 'Expire Date',
+                'created': 'Created',
+                'add_license': 'Add License',
+                'all_status': 'All Status',
+                'suspended': 'Suspended',
+                'revoked': 'Revoked',
+                'all_types': 'All Types',
+                'monthly': 'Monthly',
+                'quarterly': 'Quarterly',
+                'yearly': 'Yearly',
+                'lifetime': 'Lifetime',
+                'edit': 'Edit',
+                'activate': 'Activate',
+                'suspend': 'Suspend',
+                'extend_30_days': 'Extend 30 Days',
+                'no_licenses_found': 'No licenses found',
+                
+                // Devices page
+                'devices_management': 'Devices Management',
+                'device_placeholder': 'Device name, hardware ID, username...',
+                'hardware_id': 'Hardware ID',
+                'user_license': 'User / License',
+                'first_seen': 'First Seen',
+                'last_seen': 'Last Seen',
+                'inactive': 'Inactive',
+                'deactivate': 'Deactivate',
+                'remove': 'Remove',
+                'no_devices_found': 'No devices found',
+                'unknown_device': 'Unknown Device',
+                
+                // Activity logs
+                'activity_logs_title': 'Activity Logs',
+                'event_type': 'Event Type',
+                'all_events': 'All Events',
+                'register': 'Register',
+                'login': 'Login',
+                'validate': 'Validate',
+                'heartbeat': 'Heartbeat',
+                'date_range': 'Date Range',
+                'all_time': 'All Time',
+                'today': 'Today',
+                'last_7_days': 'Last 7 Days',
+                'last_30_days': 'Last 30 Days',
+                'timestamp': 'Timestamp',
+                'details': 'Details',
+                'showing_latest': 'Showing latest 200 entries',
+                'showing_latest_200': 'Showing latest 200 entries',
+                'event_details': 'Event Details',
+                'no_logs_found': 'No activity logs found',
+                'no_activity_logs_found': 'No activity logs found',
+                'view': 'View',
+                'view_details': 'View Details',
+                'remove_device': 'Remove Device',
+                'platform': 'Platform',
+                'all_platforms': 'All Platforms',
+                'last_activity': 'Last Activity',
+                'profile': 'Profile'
+            },
+            'vi': {
+                // Sidebar
+                'license_server': 'Máy Chủ License',
+                'dashboard': 'Bảng Điều Khiển',
+                'management': 'Quản Lý',
+                'users': 'Người Dùng',
+                'licenses': 'Licenses',
+                'devices': 'Thiết Bị',
+                'activation_codes': 'Mã Kích Hoạt',
+                'monitoring': 'Giám Sát',
+                'activity_logs': 'Nhật Ký Hoạt Động',
+                'system': 'Hệ Thống',
+                'django_admin': 'Django Admin',
+                'logout': 'Đăng Xuất',
+                
+                // Dashboard
+                'total_users': 'Tổng Người Dùng',
+                'active_licenses': 'License Đang Hoạt Động',
+                'active_devices': 'Thiết Bị Hoạt Động',
+                'expired_licenses': 'License Hết Hạn',
+                'this_week': 'tuần này',
+                'trial': 'dùng thử',
+                'paid': 'trả phí',
+                'online': 'Trực Tuyến',
+                'offline': 'Ngoại Tuyến',
+                'need_renewal': 'Cần gia hạn',
+                'user_registrations': 'Đăng Ký Người Dùng (7 Ngày Qua)',
+                'license_types': 'Loại License',
+                'expiring_soon': 'Sắp Hết Hạn',
+                'recent_users': 'Người Dùng Mới',
+                'recent_activity': 'Hoạt Động Gần Đây',
+                'view_all': 'Xem Tất Cả',
+                'user': 'Người Dùng',
+                'license': 'License',
+                'expires': 'Hết Hạn',
+                'days_left': 'Còn Lại',
+                'days': 'ngày',
+                'email': 'Email',
+                'joined': 'Tham Gia',
+                'ago': 'trước',
+                'time': 'Thời Gian',
+                'event': 'Sự Kiện',
+                'device': 'Thiết Bị',
+                'ip_address': 'Địa Chỉ IP',
+                'no_licenses_expiring': 'Không có license sắp hết hạn',
+                'no_users_yet': 'Chưa có người dùng',
+                'no_activity_yet': 'Chưa có hoạt động',
+                
+                // Users page
+                'users_management': 'Quản Lý Người Dùng',
+                'search': 'Tìm Kiếm',
+                'search_placeholder': 'Tên đăng nhập, email...',
+                'filter': 'Lọc',
+                'all': 'Tất Cả',
+                'active': 'Hoạt Động',
+                'expired': 'Hết Hạn',
+                'add_user': 'Thêm Người Dùng',
+                'status': 'Trạng Thái',
+                'actions': 'Thao Tác',
+                'edit_user': 'Sửa Người Dùng',
+                'edit_license': 'Sửa License',
+                'delete': 'Xóa',
+                'no_license': 'Không có license',
+                'days_left_label': 'ngày còn lại',
+                'no_users_found': 'Không tìm thấy người dùng',
+                'staff': 'Nhân Viên',
+                
+                // Licenses page
+                'licenses_management': 'Quản Lý License',
+                'license_key': 'Mã License',
+                'type': 'Loại',
+                'expire_date': 'Ngày Hết Hạn',
+                'created': 'Ngày Tạo',
+                'add_license': 'Thêm License',
+                'all_status': 'Tất Cả Trạng Thái',
+                'suspended': 'Tạm Ngưng',
+                'revoked': 'Thu Hồi',
+                'all_types': 'Tất Cả Loại',
+                'monthly': 'Hàng Tháng',
+                'quarterly': 'Hàng Quý',
+                'yearly': 'Hàng Năm',
+                'lifetime': 'Vĩnh Viễn',
+                'edit': 'Sửa',
+                'activate': 'Kích Hoạt',
+                'suspend': 'Tạm Ngưng',
+                'extend_30_days': 'Gia Hạn 30 Ngày',
+                'no_licenses_found': 'Không tìm thấy license',
+                
+                // Devices page
+                'devices_management': 'Quản Lý Thiết Bị',
+                'device_placeholder': 'Tên thiết bị, hardware ID, tên đăng nhập...',
+                'hardware_id': 'Hardware ID',
+                'user_license': 'Người Dùng / License',
+                'first_seen': 'Lần Đầu',
+                'last_seen': 'Lần Cuối',
+                'inactive': 'Không Hoạt Động',
+                'deactivate': 'Vô Hiệu Hóa',
+                'remove': 'Xóa',
+                'no_devices_found': 'Không tìm thấy thiết bị',
+                'unknown_device': 'Thiết Bị Không Xác Định',
+                
+                // Activity logs
+                'activity_logs_title': 'Nhật Ký Hoạt Động',
+                'event_type': 'Loại Sự Kiện',
+                'all_events': 'Tất Cả Sự Kiện',
+                'register': 'Đăng Ký',
+                'login': 'Đăng Nhập',
+                'validate': 'Xác Thực',
+                'heartbeat': 'Heartbeat',
+                'date_range': 'Khoảng Thời Gian',
+                'all_time': 'Tất Cả',
+                'today': 'Hôm Nay',
+                'last_7_days': '7 Ngày Qua',
+                'last_30_days': '30 Ngày Qua',
+                'timestamp': 'Thời Gian',
+                'details': 'Chi Tiết',
+                'showing_latest': 'Hiển thị 200 mục gần nhất',
+                'showing_latest_200': 'Hiển thị 200 mục gần nhất',
+                'event_details': 'Chi Tiết Sự Kiện',
+                'no_logs_found': 'Không tìm thấy nhật ký',
+                'no_activity_logs_found': 'Không tìm thấy nhật ký hoạt động',
+                'view': 'Xem',
+                'view_details': 'Xem Chi Tiết',
+                'remove_device': 'Xóa Thiết Bị',
+                'platform': 'Nền Tảng',
+                'all_platforms': 'Tất Cả Nền Tảng',
+                'last_activity': 'Hoạt Động Cuối',
+                'profile': 'Hồ Sơ'
+            }
+        };
+        
+        function getCurrentLang() {
+            return localStorage.getItem('dashboard_lang') || 'vi';
+        }
+        
+        function setLang(lang) {
+            localStorage.setItem('dashboard_lang', lang);
+            applyTranslations();
+            updateLangButtons();
+        }
+        
+        function t(key) {
+            const lang = getCurrentLang();
+            return TRANSLATIONS[lang][key] || TRANSLATIONS['en'][key] || key;
+        }
+        
+        function applyTranslations() {
+            document.querySelectorAll('[data-i18n]').forEach(el => {
+                const key = el.getAttribute('data-i18n');
+                el.textContent = t(key);
+            });
+            document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
+                const key = el.getAttribute('data-i18n-placeholder');
+                el.placeholder = t(key);
+            });
+            document.querySelectorAll('[data-i18n-title]').forEach(el => {
+                const key = el.getAttribute('data-i18n-title');
+                el.title = t(key);
+            });
+        }
+        
+        function updateLangButtons() {
+            const lang = getCurrentLang();
+            document.querySelectorAll('.lang-btn').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.lang === lang);
+            });
+        }
+        
+        document.addEventListener('DOMContentLoaded', function() {
+            applyTranslations();
+            updateLangButtons();
+        });
+    </script>
+    
+    <!-- Bootstrap 5 -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Bootstrap Icons -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    
+    <style>
+        :root {
+            --primary-color: #4f46e5;
+            --primary-dark: #4338ca;
+            --success-color: #22c55e;
+            --warning-color: #f59e0b;
+            --danger-color: #ef4444;
+            --info-color: #3b82f6;
+            --dark-color: #1e293b;
+            --gray-100: #f1f5f9;
+            --gray-200: #e2e8f0;
+            --gray-500: #64748b;
+            --gray-700: #334155;
+        }
+        
+        * {
+            font-family: 'Inter', sans-serif;
+        }
+        
+        body {
+            background-color: #f8fafc;
+        }
+        
+        /* Sidebar */
+        .sidebar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 260px;
+            height: 100vh;
+            background: linear-gradient(180deg, var(--dark-color) 0%, #0f172a 100%);
+            padding: 1.5rem 1rem;
+            z-index: 1000;
+            overflow-y: auto;
+        }
+        
+        .sidebar-brand {
+            color: white;
+            font-size: 1.25rem;
+            font-weight: 700;
+            padding: 0.5rem 1rem;
+            margin-bottom: 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+        
+        .sidebar-brand i {
+            font-size: 1.5rem;
+            color: var(--primary-color);
+        }
+        
+        .sidebar-nav {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+        
+        .sidebar-nav li {
+            margin-bottom: 0.25rem;
+        }
+        
+        .sidebar-nav a {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.75rem 1rem;
+            color: #94a3b8;
+            text-decoration: none;
+            border-radius: 0.5rem;
+            transition: all 0.2s;
+        }
+        
+        .sidebar-nav a:hover, .sidebar-nav a.active {
+            background: rgba(79, 70, 229, 0.2);
+            color: white;
+        }
+        
+        .sidebar-nav a.active {
+            background: var(--primary-color);
+        }
+        
+        .sidebar-nav i {
+            font-size: 1.1rem;
+            width: 24px;
+            text-align: center;
+        }
+        
+        .sidebar-section {
+            font-size: 0.75rem;
+            color: #64748b;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            padding: 1.5rem 1rem 0.5rem;
+        }
+        
+        /* Main Content */
+        .main-content {
+            margin-left: 260px;
+            min-height: 100vh;
+        }
+        
+        /* Top Navbar */
+        .top-navbar {
+            background: white;
+            padding: 1rem 2rem;
+            border-bottom: 1px solid var(--gray-200);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            position: sticky;
+            top: 0;
+            z-index: 999;
+        }
+        
+        .page-title {
+            font-size: 1.25rem;
+            font-weight: 600;
+            color: var(--dark-color);
+            margin: 0;
+        }
+        
+        .user-dropdown {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+        
+        .user-avatar {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            background: var(--primary-color);
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 600;
+        }
+        
+        /* Content Area */
+        .content-area {
+            padding: 2rem;
+        }
+        
+        /* Stats Cards */
+        .stat-card {
+            background: white;
+            border-radius: 1rem;
+            padding: 1.5rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        
+        .stat-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+        
+        .stat-icon {
+            width: 48px;
+            height: 48px;
+            border-radius: 0.75rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.25rem;
+        }
+        
+        .stat-icon.primary { background: rgba(79, 70, 229, 0.1); color: var(--primary-color); }
+        .stat-icon.success { background: rgba(34, 197, 94, 0.1); color: var(--success-color); }
+        .stat-icon.warning { background: rgba(245, 158, 11, 0.1); color: var(--warning-color); }
+        .stat-icon.danger { background: rgba(239, 68, 68, 0.1); color: var(--danger-color); }
+        .stat-icon.info { background: rgba(59, 130, 246, 0.1); color: var(--info-color); }
+        
+        .stat-value {
+            font-size: 1.75rem;
+            font-weight: 700;
+            color: var(--dark-color);
+            line-height: 1.2;
+        }
+        
+        .stat-label {
+            font-size: 0.875rem;
+            color: var(--gray-500);
+        }
+        
+        .stat-change {
+            font-size: 0.75rem;
+            padding: 0.25rem 0.5rem;
+            border-radius: 9999px;
+        }
+        
+        .stat-change.positive { background: rgba(34, 197, 94, 0.1); color: var(--success-color); }
+        .stat-change.negative { background: rgba(239, 68, 68, 0.1); color: var(--danger-color); }
+        
+        /* Cards */
+        .card-custom {
+            background: white;
+            border-radius: 1rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+            overflow: visible;
+        }
+        
+        .card-header-custom {
+            padding: 1.25rem 1.5rem;
+            border-bottom: 1px solid var(--gray-200);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .card-header-custom h5 {
+            margin: 0;
+            font-weight: 600;
+            color: var(--dark-color);
+        }
+        
+        .card-body-custom {
+            padding: 1.5rem;
+            overflow: visible;
+        }
+        
+        /* Tables */
+        .table-custom {
+            margin: 0;
+            overflow: visible;
+        }
+        
+        .table-custom thead th {
+            background: var(--gray-100);
+            font-weight: 600;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--gray-700);
+            padding: 0.875rem 1rem;
+            border: none;
+        }
+        
+        .table-custom tbody td {
+            padding: 1rem;
+            vertical-align: middle;
+            border-bottom: 1px solid var(--gray-200);
+        }
+        
+        .table-custom tbody tr:hover {
+            background: var(--gray-100);
+        }
+        
+        /* Badges */
+        .badge-status {
+            padding: 0.375rem 0.75rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 500;
+        }
+        
+        .badge-active { background: rgba(34, 197, 94, 0.1); color: var(--success-color); }
+        .badge-expired { background: rgba(245, 158, 11, 0.1); color: var(--warning-color); }
+        .badge-suspended { background: rgba(239, 68, 68, 0.1); color: var(--danger-color); }
+        .badge-trial { background: rgba(59, 130, 246, 0.1); color: var(--info-color); }
+        .badge-online { background: rgba(34, 197, 94, 0.1); color: var(--success-color); }
+        .badge-offline { background: var(--gray-200); color: var(--gray-500); }
+        
+        /* Buttons */
+        .btn-primary-custom {
+            background: var(--primary-color);
+            border: none;
+            color: white;
+            padding: 0.5rem 1rem;
+            border-radius: 0.5rem;
+            font-weight: 500;
+            transition: background 0.2s;
+        }
+        
+        .btn-primary-custom:hover {
+            background: var(--primary-dark);
+            color: white;
+        }
+        
+        /* Charts */
+        .chart-container {
+            position: relative;
+            height: 250px;
+        }
+        
+        /* Search & Filters */
+        .search-box {
+            background: var(--gray-100);
+            border: 1px solid transparent;
+            border-radius: 0.5rem;
+            padding: 0.5rem 1rem;
+            transition: all 0.2s;
+        }
+        
+        .search-box:focus {
+            background: white;
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+            outline: none;
+        }
+        
+        .filter-btn {
+            padding: 0.5rem 1rem;
+            border-radius: 0.5rem;
+            border: 1px solid var(--gray-200);
+            background: white;
+            color: var(--gray-700);
+            font-size: 0.875rem;
+            transition: all 0.2s;
+        }
+        
+        .filter-btn:hover, .filter-btn.active {
+            background: var(--primary-color);
+            border-color: var(--primary-color);
+            color: white;
+        }
+        
+        /* Language Switcher */
+        .lang-switcher {
+            display: flex;
+            gap: 0.25rem;
+            margin-right: 1rem;
+        }
+        
+        .lang-btn {
+            padding: 0.35rem 0.6rem;
+            border: 1px solid var(--gray-200);
+            background: white;
+            border-radius: 0.375rem;
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: var(--gray-500);
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .lang-btn:hover {
+            border-color: var(--primary-color);
+            color: var(--primary-color);
+        }
+        
+        .lang-btn.active {
+            background: var(--primary-color);
+            border-color: var(--primary-color);
+            color: white;
+        }
+        
+        /* Dropdown fix */
+        .dropdown-menu {
+            z-index: 1050 !important;
+        }
+        
+        .table-custom tbody tr {
+            position: relative;
+        }
+        
+        /* Responsive */
+        @media (max-width: 992px) {
+            .sidebar {
+                transform: translateX(-100%);
+            }
+            .main-content {
+                margin-left: 0;
+            }
+        }
+    </style>
+    
+    {% block extra_css %}{% endblock %}
+</head>
+<body>
+    <!-- Sidebar -->
+    <nav class="sidebar">
+        <div class="sidebar-brand">
+            <i class="bi bi-shield-lock-fill"></i>
+            <span data-i18n="license_server">License Server</span>
+        </div>
+        
+        <ul class="sidebar-nav">
+            <li>
+                <a href="{% url 'dashboard' %}" class="{% if page == 'dashboard' %}active{% endif %}">
+                    <i class="bi bi-speedometer2"></i>
+                    <span data-i18n="dashboard">Dashboard</span>
+                </a>
+            </li>
+            
+            <div class="sidebar-section" data-i18n="management">Management</div>
+            
+            <li>
+                <a href="{% url 'dashboard_users' %}" class="{% if page == 'users' %}active{% endif %}">
+                    <i class="bi bi-people"></i>
+                    <span data-i18n="users">Users</span>
+                </a>
+            </li>
+            <li>
+                <a href="{% url 'dashboard_licenses' %}" class="{% if page == 'licenses' %}active{% endif %}">
+                    <i class="bi bi-key"></i>
+                    <span data-i18n="licenses">Licenses</span>
+                </a>
+            </li>
+            <li>
+                <a href="{% url 'activation_codes' %}" class="{% if page == 'codes' %}active{% endif %}">
+                    <i class="bi bi-upc-scan"></i>
+                    <span data-i18n="activation_codes">Mã Kích Hoạt</span>
+                </a>
+            </li>
+            <li>
+                <a href="{% url 'dashboard_devices' %}" class="{% if page == 'devices' %}active{% endif %}">
+                    <i class="bi bi-pc-display"></i>
+                    <span data-i18n="devices">Devices</span>
+                </a>
+            </li>
+            
+            <div class="sidebar-section" data-i18n="monitoring">Monitoring</div>
+            
+            <li>
+                <a href="{% url 'dashboard_activity' %}" class="{% if page == 'logs' %}active{% endif %}">
+                    <i class="bi bi-activity"></i>
+                    <span data-i18n="activity_logs">Activity Logs</span>
+                </a>
+            </li>
+            
+            <div class="sidebar-section" data-i18n="system">System</div>
+            
+            <li>
+                <a href="{% url 'logout_view' %}">
+                    <i class="bi bi-box-arrow-left"></i>
+                    <span data-i18n="logout">Logout</span>
+                </a>
+            </li>
+        </ul>
+    </nav>
+    
+    <!-- Main Content -->
+    <div class="main-content">
+        <!-- Top Navbar -->
+        <nav class="top-navbar">
+            <h1 class="page-title">{% block page_title %}Dashboard{% endblock %}</h1>
+            
+            <div class="d-flex align-items-center">
+                <!-- Language Switcher -->
+                <div class="lang-switcher">
+                    <button class="lang-btn" data-lang="vi" onclick="setLang('vi')" title="Tiếng Việt">🇻🇳 VI</button>
+                    <button class="lang-btn" data-lang="en" onclick="setLang('en')" title="English">🇺🇸 EN</button>
+                </div>
+                
+                <div class="user-dropdown dropdown">
+                    <button class="btn dropdown-toggle" type="button" data-bs-toggle="dropdown">
+                        <div class="user-avatar">{{ request.user.username.0|upper }}</div>
+                        <span>{{ request.user.username }}</span>
+                    </button>
+                    <ul class="dropdown-menu dropdown-menu-end">
+                        <li><a class="dropdown-item" href="{% url 'edit_user' request.user.id %}" data-i18n="profile">Profile</a></li>
+                        <li><hr class="dropdown-divider"></li>
+                        <li><a class="dropdown-item" href="{% url 'logout_view' %}" data-i18n="logout">Logout</a></li>
+                    </ul>
+                </div>
+            </div>
+        </nav>
+        
+        <!-- Content Area -->
+        <div class="content-area">
+            {% block content %}{% endblock %}
+        </div>
+    </div>
+    
+    <!-- Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    {% block extra_js %}{% endblock %}
+</body>
+</html>

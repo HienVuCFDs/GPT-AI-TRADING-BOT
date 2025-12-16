@@ -1,0 +1,17 @@
+{
+  "enabled": true,
+  "ml_weight": 0.4,
+  "model_path": "ai_models/trained/trading_model_46f_20251206_153453",
+  "description": {
+    "enabled": "Enable/disable ML predictions (true/false)",
+    "ml_weight": "Weight of ML signal (0-1). Rule weight = 1 - ml_weight",
+    "model_path": "Path to trained model. null = load latest"
+  },
+  "notes": {
+    "ml_weight_0.0": "100% rule-based, 0% ML",
+    "ml_weight_0.4": "60% rule-based, 40% ML (recommended)",
+    "ml_weight_0.5": "50% rule-based, 50% ML (balanced)",
+    "ml_weight_1.0": "0% rule-based, 100% ML"
+  },
+  "n_features": 46
+}

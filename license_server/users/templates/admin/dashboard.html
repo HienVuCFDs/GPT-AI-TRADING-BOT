@@ -1,0 +1,319 @@
+{% extends 'admin/base_dashboard.html' %}
+
+{% block title %}Dashboard - License Server{% endblock %}
+{% block page_title %}<span data-i18n="dashboard">Dashboard</span>{% endblock %}
+
+{% block content %}
+<!-- Stats Cards Row 1 -->
+<div class="row g-4 mb-4">
+    <div class="col-md-6 col-xl-3">
+        <div class="stat-card">
+            <div class="d-flex justify-content-between align-items-start">
+                <div>
+                    <div class="stat-value">{{ total_users }}</div>
+                    <div class="stat-label" data-i18n="total_users">Total Users</div>
+                </div>
+                <div class="stat-icon primary">
+                    <i class="bi bi-people-fill"></i>
+                </div>
+            </div>
+            <div class="mt-3">
+                <span class="stat-change positive">+{{ new_users_week }}</span>
+                <span class="text-muted small ms-1" data-i18n="this_week">this week</span>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-6 col-xl-3">
+        <div class="stat-card">
+            <div class="d-flex justify-content-between align-items-start">
+                <div>
+                    <div class="stat-value">{{ active_licenses }}</div>
+                    <div class="stat-label" data-i18n="active_licenses">Active Licenses</div>
+                </div>
+                <div class="stat-icon success">
+                    <i class="bi bi-key-fill"></i>
+                </div>
+            </div>
+            <div class="mt-3">
+                <span class="text-muted small">{{ trial_licenses }} <span data-i18n="trial">trial</span> / {{ paid_licenses }} <span data-i18n="paid">paid</span></span>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-6 col-xl-3">
+        <div class="stat-card">
+            <div class="d-flex justify-content-between align-items-start">
+                <div>
+                    <div class="stat-value">{{ total_devices }}</div>
+                    <div class="stat-label" data-i18n="active_devices">Active Devices</div>
+                </div>
+                <div class="stat-icon info">
+                    <i class="bi bi-pc-display"></i>
+                </div>
+            </div>
+            <div class="mt-3">
+                <span class="badge badge-online">{{ online_devices }} <span data-i18n="online">online</span></span>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-6 col-xl-3">
+        <div class="stat-card">
+            <div class="d-flex justify-content-between align-items-start">
+                <div>
+                    <div class="stat-value">{{ expired_licenses }}</div>
+                    <div class="stat-label" data-i18n="expired_licenses">Expired Licenses</div>
+                </div>
+                <div class="stat-icon warning">
+                    <i class="bi bi-clock-history"></i>
+                </div>
+            </div>
+            <div class="mt-3">
+                <span class="text-muted small" data-i18n="need_renewal">Need renewal</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Charts Row -->
+<div class="row g-4 mb-4">
+    <div class="col-xl-8">
+        <div class="card-custom">
+            <div class="card-header-custom">
+                <h5><i class="bi bi-graph-up me-2"></i><span data-i18n="user_registrations">User Registrations (Last 7 Days)</span></h5>
+            </div>
+            <div class="card-body-custom">
+                <div class="chart-container">
+                    <canvas id="registrationChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-xl-4">
+        <div class="card-custom">
+            <div class="card-header-custom">
+                <h5><i class="bi bi-pie-chart me-2"></i><span data-i18n="license_types">License Types</span></h5>
+            </div>
+            <div class="card-body-custom">
+                <div class="chart-container">
+                    <canvas id="licenseTypeChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Tables Row -->
+<div class="row g-4">
+    <!-- Expiring Soon -->
+    <div class="col-xl-6">
+        <div class="card-custom">
+            <div class="card-header-custom">
+                <h5><i class="bi bi-exclamation-triangle me-2 text-warning"></i><span data-i18n="expiring_soon">Expiring Soon</span></h5>
+                <a href="{% url 'dashboard_licenses' %}?status=active" class="btn btn-sm btn-primary-custom" data-i18n="view_all">View All</a>
+            </div>
+            <div class="card-body-custom p-0">
+                <table class="table table-custom">
+                    <thead>
+                        <tr>
+                            <th data-i18n="user">User</th>
+                            <th data-i18n="license">License</th>
+                            <th data-i18n="expires">Expires</th>
+                            <th data-i18n="days_left">Days Left</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for license in expiring_soon %}
+                        <tr>
+                            <td>
+                                <strong>{{ license.user.username }}</strong>
+                                <div class="small text-muted">{{ license.user.email }}</div>
+                            </td>
+                            <td><code>{{ license.license_key|truncatechars:16 }}</code></td>
+                            <td>{{ license.expire_date|date:"d/m/Y" }}</td>
+                            <td>
+                                {% if license.days_remaining <= 3 %}
+                                <span class="badge bg-danger">{{ license.days_remaining }} <span data-i18n="days">days</span></span>
+                                {% else %}
+                                <span class="badge bg-warning text-dark">{{ license.days_remaining }} <span data-i18n="days">days</span></span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% empty %}
+                        <tr>
+                            <td colspan="4" class="text-center text-muted py-4" data-i18n="no_licenses_expiring">No licenses expiring soon</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Recent Users -->
+    <div class="col-xl-6">
+        <div class="card-custom">
+            <div class="card-header-custom">
+                <h5><i class="bi bi-person-plus me-2 text-primary"></i><span data-i18n="recent_users">Recent Users</span></h5>
+                <a href="{% url 'dashboard_users' %}" class="btn btn-sm btn-primary-custom" data-i18n="view_all">View All</a>
+            </div>
+            <div class="card-body-custom p-0">
+                <table class="table table-custom">
+                    <thead>
+                        <tr>
+                            <th data-i18n="user">User</th>
+                            <th data-i18n="email">Email</th>
+                            <th data-i18n="joined">Joined</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for user in recent_users %}
+                        <tr>
+                            <td>
+                                <div class="d-flex align-items-center gap-2">
+                                    <div class="user-avatar" style="width:32px;height:32px;font-size:0.75rem;">{{ user.username.0|upper }}</div>
+                                    <strong>{{ user.username }}</strong>
+                                </div>
+                            </td>
+                            <td>{{ user.email }}</td>
+                            <td>{{ user.date_joined|timesince }} <span data-i18n="ago">ago</span></td>
+                        </tr>
+                        {% empty %}
+                        <tr>
+                            <td colspan="3" class="text-center text-muted py-4" data-i18n="no_users_yet">No users yet</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Recent Activity -->
+<div class="row g-4 mt-0">
+    <div class="col-12">
+        <div class="card-custom">
+            <div class="card-header-custom">
+                <h5><i class="bi bi-activity me-2"></i><span data-i18n="recent_activity">Recent Activity</span></h5>
+                <a href="{% url 'dashboard_activity' %}" class="btn btn-sm btn-primary-custom" data-i18n="view_all">View All</a>
+            </div>
+            <div class="card-body-custom p-0">
+                <table class="table table-custom">
+                    <thead>
+                        <tr>
+                            <th data-i18n="time">Time</th>
+                            <th data-i18n="event">Event</th>
+                            <th data-i18n="user">User</th>
+                            <th data-i18n="device">Device</th>
+                            <th data-i18n="ip_address">IP Address</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for log in recent_logs %}
+                        <tr>
+                            <td>{{ log.timestamp|timesince }} <span data-i18n="ago">ago</span></td>
+                            <td>
+                                {% if log.event_type == 'login' %}
+                                <span class="badge bg-primary">Login</span>
+                                {% elif log.event_type == 'activate' %}
+                                <span class="badge bg-success">Activate</span>
+                                {% elif log.event_type == 'heartbeat' %}
+                                <span class="badge bg-info">Heartbeat</span>
+                                {% elif log.event_type == 'register' %}
+                                <span class="badge bg-warning text-dark">Register</span>
+                                {% else %}
+                                <span class="badge bg-secondary">{{ log.event_type }}</span>
+                                {% endif %}
+                            </td>
+                            <td>{{ log.license.user.username }}</td>
+                            <td>{{ log.device.device_name|default:"-" }}</td>
+                            <td><code>{{ log.ip_address|default:"-" }}</code></td>
+                        </tr>
+                        {% empty %}
+                        <tr>
+                            <td colspan="5" class="text-center text-muted py-4" data-i18n="no_activity_yet">No activity yet</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// Registration Chart
+const registrationCtx = document.getElementById('registrationChart').getContext('2d');
+const registrationData = {{ registration_data|safe }};
+
+new Chart(registrationCtx, {
+    type: 'line',
+    data: {
+        labels: registrationData.map(d => d.date),
+        datasets: [{
+            label: 'New Users',
+            data: registrationData.map(d => d.count),
+            borderColor: '#4f46e5',
+            backgroundColor: 'rgba(79, 70, 229, 0.1)',
+            tension: 0.4,
+            fill: true,
+            pointBackgroundColor: '#4f46e5',
+            pointBorderColor: '#fff',
+            pointBorderWidth: 2,
+            pointRadius: 5,
+        }]
+    },
+    options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+            legend: { display: false }
+        },
+        scales: {
+            y: {
+                beginAtZero: true,
+                ticks: { stepSize: 1 }
+            }
+        }
+    }
+});
+
+// License Type Chart
+const licenseTypeCtx = document.getElementById('licenseTypeChart').getContext('2d');
+const licenseTypes = {{ license_types|safe }};
+
+new Chart(licenseTypeCtx, {
+    type: 'doughnut',
+    data: {
+        labels: licenseTypes.map(t => t.license_type.toUpperCase()),
+        datasets: [{
+            data: licenseTypes.map(t => t.count),
+            backgroundColor: [
+                '#3b82f6',  // trial - blue
+                '#22c55e',  // monthly - green
+                '#f59e0b',  // quarterly - yellow
+                '#8b5cf6',  // yearly - purple
+                '#ef4444',  // lifetime - red
+            ],
+            borderWidth: 0,
+        }]
+    },
+    options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+            legend: {
+                position: 'bottom',
+                labels: { padding: 15 }
+            }
+        },
+        cutout: '60%'
+    }
+});
+</script>
+{% endblock %}

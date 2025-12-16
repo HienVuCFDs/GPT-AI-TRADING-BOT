@@ -1,0 +1,176 @@
+{% extends 'admin/base_dashboard.html' %}
+
+{% block title %}Activity Logs - License Server{% endblock %}
+{% block page_title %}<span data-i18n="activity_logs">Activity Logs</span>{% endblock %}
+
+{% block content %}
+<!-- Filters -->
+<div class="card-custom mb-4">
+    <div class="card-body-custom">
+        <form method="get" class="row g-3 align-items-end">
+            <div class="col-md-3">
+                <label class="form-label small text-muted" data-i18n="event_type">Event Type</label>
+                <select name="event" class="form-select">
+                    <option value="all" {% if event_type == 'all' %}selected{% endif %} data-i18n="all_events">All Events</option>
+                    <option value="register" {% if event_type == 'register' %}selected{% endif %} data-i18n="register">Register</option>
+                    <option value="login" {% if event_type == 'login' %}selected{% endif %} data-i18n="login">Login</option>
+                    <option value="activate" {% if event_type == 'activate' %}selected{% endif %} data-i18n="activate">Activate</option>
+                    <option value="validate" {% if event_type == 'validate' %}selected{% endif %} data-i18n="validate">Validate</option>
+                    <option value="heartbeat" {% if event_type == 'heartbeat' %}selected{% endif %} data-i18n="heartbeat">Heartbeat</option>
+                    <option value="deactivate" {% if event_type == 'deactivate' %}selected{% endif %} data-i18n="deactivate">Deactivate</option>
+                </select>
+            </div>
+            <div class="col-md-3">
+                <label class="form-label small text-muted" data-i18n="date_range">Date Range</label>
+                <select name="date" class="form-select">
+                    <option value="all" {% if date_filter == 'all' %}selected{% endif %} data-i18n="all_time">All Time</option>
+                    <option value="today" {% if date_filter == 'today' %}selected{% endif %} data-i18n="today">Today</option>
+                    <option value="week" {% if date_filter == 'week' %}selected{% endif %} data-i18n="last_7_days">Last 7 Days</option>
+                    <option value="month" {% if date_filter == 'month' %}selected{% endif %} data-i18n="last_30_days">Last 30 Days</option>
+                </select>
+            </div>
+            <div class="col-md-4"></div>
+            <div class="col-md-2">
+                <button type="submit" class="btn btn-primary-custom w-100">
+                    <i class="bi bi-filter me-1"></i> <span data-i18n="filter">Filter</span>
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Results -->
+<div class="card-custom">
+    <div class="card-header-custom">
+        <h5><i class="bi bi-activity me-2"></i><span data-i18n="activity_logs">Activity Logs</span> ({{ total_count }})</h5>
+        <span class="text-muted" data-i18n="showing_latest_200">Showing latest 200 entries</span>
+    </div>
+    <div class="card-body-custom p-0">
+        <table class="table table-custom">
+            <thead>
+                <tr>
+                    <th data-i18n="timestamp">Timestamp</th>
+                    <th data-i18n="event">Event</th>
+                    <th data-i18n="user">User</th>
+                    <th data-i18n="device">Device</th>
+                    <th data-i18n="ip_address">IP Address</th>
+                    <th data-i18n="details">Details</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for log in logs %}
+                <tr>
+                    <td>
+                        <div>{{ log.timestamp|date:"d/m/Y H:i:s" }}</div>
+                        <div class="small text-muted">{{ log.timestamp|timesince }} <span data-i18n="ago">ago</span></div>
+                    </td>
+                    <td>
+                        {% if log.event_type == 'register' %}
+                        <span class="badge bg-success">
+                            <i class="bi bi-person-plus me-1"></i><span data-i18n="register">Register</span>
+                        </span>
+                        {% elif log.event_type == 'login' %}
+                        <span class="badge bg-primary">
+                            <i class="bi bi-box-arrow-in-right me-1"></i><span data-i18n="login">Login</span>
+                        </span>
+                        {% elif log.event_type == 'activate' %}
+                        <span class="badge bg-info">
+                            <i class="bi bi-key me-1"></i><span data-i18n="activate">Activate</span>
+                        </span>
+                        {% elif log.event_type == 'validate' %}
+                        <span class="badge bg-secondary">
+                            <i class="bi bi-check-circle me-1"></i><span data-i18n="validate">Validate</span>
+                        </span>
+                        {% elif log.event_type == 'heartbeat' %}
+                        <span class="badge" style="background: #e0e7ff; color: #4f46e5;">
+                            <i class="bi bi-heart-pulse me-1"></i><span data-i18n="heartbeat">Heartbeat</span>
+                        </span>
+                        {% elif log.event_type == 'deactivate' %}
+                        <span class="badge bg-warning text-dark">
+                            <i class="bi bi-x-circle me-1"></i><span data-i18n="deactivate">Deactivate</span>
+                        </span>
+                        {% elif log.event_type == 'logout' %}
+                        <span class="badge bg-dark">
+                            <i class="bi bi-box-arrow-right me-1"></i><span data-i18n="logout">Logout</span>
+                        </span>
+                        {% else %}
+                        <span class="badge bg-secondary">{{ log.event_type }}</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <strong>{{ log.license.user.username }}</strong>
+                        <div class="small text-muted">
+                            <code>{{ log.license.license_key|truncatechars:12 }}</code>
+                        </div>
+                    </td>
+                    <td>
+                        {% if log.device %}
+                        <div>{{ log.device.device_name|default:"Unknown" }}</div>
+                        <div class="small text-muted">{{ log.device.os_info|truncatechars:20 }}</div>
+                        {% else %}
+                        <span class="text-muted">-</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if log.ip_address %}
+                        <code>{{ log.ip_address }}</code>
+                        {% else %}
+                        <span class="text-muted">-</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if log.event_data %}
+                        <button class="btn btn-sm btn-outline-secondary" 
+                                data-bs-toggle="modal" 
+                                data-bs-target="#detailModal"
+                                data-details='{{ log.event_data|escapejs }}'>
+                            <i class="bi bi-code"></i> <span data-i18n="view">View</span>
+                        </button>
+                        {% else %}
+                        <span class="text-muted">-</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% empty %}
+                <tr>
+                    <td colspan="6" class="text-center py-5 text-muted">
+                        <i class="bi bi-activity display-4 d-block mb-3"></i>
+                        <span data-i18n="no_activity_logs_found">No activity logs found</span>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Detail Modal -->
+<div class="modal fade" id="detailModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" data-i18n="event_details">Event Details</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <pre id="detailContent" style="background: #f1f5f9; padding: 1rem; border-radius: 0.5rem; max-height: 400px; overflow: auto;"></pre>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.getElementById('detailModal').addEventListener('show.bs.modal', function (event) {
+    const button = event.relatedTarget;
+    const details = button.getAttribute('data-details');
+    try {
+        const parsed = JSON.parse(details);
+        document.getElementById('detailContent').textContent = JSON.stringify(parsed, null, 2);
+    } catch (e) {
+        document.getElementById('detailContent').textContent = details;
+    }
+});
+</script>
+{% endblock %}
