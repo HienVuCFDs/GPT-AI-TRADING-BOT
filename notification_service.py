@@ -9,23 +9,59 @@ import os
 import time
 import asyncio
 import requests
+import sys
 
 # Import language system from app
 try:
-    from app import AppState, I18N
+    from app import AppState, I18N as AppI18N
     LANGUAGE_SUPPORT = True
 except ImportError:
     LANGUAGE_SUPPORT = False
-    # Fallback class if app not available
-    class AppState:
-        @classmethod
-        def language(cls):
-            return 'vi'
+    AppI18N = None
+    AppState = None
+
+# Local I18N class that reads from config
+class I18N:
+    _current_language = 'vi'  # Default
     
-    class I18N:
-        @staticmethod
-        def t(en: str, vi: str = None, **kwargs) -> str:
-            return vi if vi else en
+    @classmethod
+    def set_language(cls, lang: str):
+        """Set current language"""
+        cls._current_language = lang
+    
+    @classmethod
+    def get_language(cls):
+        """
+        Get current language.
+        Priority: AppState._lang > I18N._current_language
+        """
+        # Priority 1: Try AppState._lang from app module
+        try:
+            if 'app' in sys.modules:
+                app_module = sys.modules['app']
+                if hasattr(app_module, 'AppState') and hasattr(app_module.AppState, '_lang'):
+                    lang = app_module.AppState._lang
+                    if lang in ('vi', 'en'):
+                        return lang
+        except Exception:
+            pass
+        
+        # Fallback to local setting
+        return cls._current_language
+    
+    @staticmethod
+    def t(en: str, vi: str = None, **kwargs) -> str:
+        """Translate text based on current language"""
+        txt = None
+        if I18N.get_language() == 'vi' and vi:
+            txt = vi
+        else:
+            txt = en
+        try:
+            return txt.format(**kwargs)
+        except Exception:
+            return txt
+
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 import logging
@@ -83,6 +119,10 @@ class NotificationService:
         except Exception as e:
             self.logger.error(f"Error loading config: {e}")
             self.config = {}
+        
+        # Load language from config
+        language = self.config.get('settings', {}).get('language', 'vi')
+        I18N.set_language(language)
     
     def _save_config(self):
         """Save configuration to file"""
@@ -537,33 +577,6 @@ class NotificationService:
             self.logger.error(f"Error sending trade notification: {e}")
             return False
     
-    def send_order_update_notification(self, orders: List[Dict[str, Any]]) -> bool:
-        """Send separate notification for each SYMBOL with detailed order tracking"""
-        try:
-            if not orders:
-                return False
-            
-            # Group orders by symbol
-            symbol_groups = {}
-            for order in orders:
-                symbol = order.get('symbol', 'Unknown')
-                if symbol not in symbol_groups:
-                    symbol_groups[symbol] = []
-                symbol_groups[symbol].append(order)
-            
-            success = False
-            
-            # Send separate notification for each symbol
-            for symbol, symbol_orders in symbol_groups.items():
-                symbol_success = self._send_symbol_notification(symbol, symbol_orders, "order_updates")
-                success |= symbol_success
-            
-            return success
-            
-        except Exception as e:
-            self.logger.error(f"Error sending order update notification: {e}")
-            return False
-    
     def _send_symbol_notification(self, symbol: str, orders: List[Dict[str, Any]], message_type: str) -> bool:
         """Send notification for a single symbol with all its orders"""
         try:
@@ -724,33 +737,6 @@ class NotificationService:
             self.logger.error(f"Error sending Entry group notification: {e}")
             return False
     
-    def send_sl_tp_notification(self, orders: List[Dict[str, Any]]) -> bool:
-        """Send notification for SL/TP changes by symbol"""
-        try:
-            if not orders:
-                return False
-            
-            # Group by symbol for SL/TP notifications
-            symbol_groups = {}
-            for order in orders:
-                symbol = order.get('symbol', 'Unknown')
-                if symbol not in symbol_groups:
-                    symbol_groups[symbol] = []
-                symbol_groups[symbol].append(order)
-            
-            success = False
-            
-            # Send separate SL/TP notification for each symbol
-            for symbol, symbol_orders in symbol_groups.items():
-                symbol_success = self._send_symbol_sltp_notification(symbol, symbol_orders)
-                success |= symbol_success
-            
-            return success
-            
-        except Exception as e:
-            self.logger.error(f"Error sending SL/TP notification: {e}")
-            return False
-    
     def _send_symbol_sltp_notification(self, symbol: str, orders: List[Dict[str, Any]]) -> bool:
         """Send SL/TP notification for a single symbol"""
         try:
@@ -819,33 +805,6 @@ class NotificationService:
         message_parts.append(f"⏰ {time_label}: {time_str}")
         
         return "\n".join(message_parts)
-    
-    def send_order_close_notification(self, orders: List[Dict[str, Any]]) -> bool:
-        """Send notification for order closes by symbol"""
-        try:
-            if not orders:
-                return False
-            
-            # Group by symbol for close notifications
-            symbol_groups = {}
-            for order in orders:
-                symbol = order.get('symbol', 'Unknown')
-                if symbol not in symbol_groups:
-                    symbol_groups[symbol] = []
-                symbol_groups[symbol].append(order)
-            
-            success = False
-            
-            # Send separate close notification for each symbol
-            for symbol, symbol_orders in symbol_groups.items():
-                symbol_success = self._send_symbol_close_notification(symbol, symbol_orders)
-                success |= symbol_success
-            
-            return success
-            
-        except Exception as e:
-            self.logger.error(f"Error sending order close notification: {e}")
-            return False
     
     def _send_symbol_close_notification(self, symbol: str, orders: List[Dict[str, Any]]) -> bool:
         """Send order close notification for a single symbol"""

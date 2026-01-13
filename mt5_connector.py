@@ -15,12 +15,22 @@ Keep this file lean until stability is confirmed.
 """
 from __future__ import annotations
 
-import os, time, json, logging, hashlib, threading, glob
+import os, sys, time, json, logging, hashlib, threading, glob
 from dataclasses import dataclass
 from enum import Enum
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 import glob
+
+# 🔧 FIX: Get base directory - supports PyInstaller frozen EXE
+def _get_base_dir():
+    """Get app base directory - works in both normal Python and PyInstaller EXE"""
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(sys.executable)
+    else:
+        return os.path.dirname(os.path.abspath(__file__))
+
+BASE_DIR = _get_base_dir()
 
 try:  # MetaTrader5 is optional at import time (unit tests, offline mode)
     import MetaTrader5 as mt5  # type: ignore
@@ -31,6 +41,68 @@ except Exception:  # pragma: no cover
 logger = logging.getLogger(__name__)
 if not logger.handlers:
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+
+# ============================================================================
+# GLOBAL HELPER FUNCTIONS (used by other modules)
+# ============================================================================
+
+def ensure_mt5_initialized(force_reconnect: bool = False) -> bool:
+    """
+    Ensure MT5 is initialized and connected.
+    Used by comprehensive_aggregator, unified_auto_trading_system, etc.
+    
+    Args:
+        force_reconnect: If True, force a reconnection even if already connected
+        
+    Returns:
+        bool: True if MT5 is connected and ready, False otherwise
+    """
+    if not MT5_AVAILABLE:
+        logger.warning("MT5 library not available")
+        return False
+    
+    try:
+        # Check if already initialized and connected
+        if not force_reconnect:
+            terminal_info = mt5.terminal_info()
+            if terminal_info is not None and terminal_info.connected:
+                return True
+        
+        # Try to initialize
+        if not mt5.initialize():
+            logger.error(f"MT5 initialize failed: {mt5.last_error()}")
+            return False
+        
+        # Verify connection
+        terminal_info = mt5.terminal_info()
+        if terminal_info is None or not terminal_info.connected:
+            logger.error("MT5 initialized but not connected to broker")
+            return False
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"ensure_mt5_initialized error: {e}")
+        return False
+
+
+def get_mt5_connection() -> 'MT5Connection':
+    """
+    Get a shared MT5Connection instance.
+    Used by modules that need MT5 access.
+    """
+    global _shared_mt5_connection
+    if '_shared_mt5_connection' not in globals() or _shared_mt5_connection is None:
+        _shared_mt5_connection = MT5Connection()
+    return _shared_mt5_connection
+
+_shared_mt5_connection: Optional['MT5Connection'] = None
+
+
+# ============================================================================
+# CLASSES
+# ============================================================================
 
 
 class ConnectionState(Enum):
@@ -56,7 +128,8 @@ class MonitoringConfig:
     interval_seconds: int = 5  # Default: update every 5 seconds for faster monitoring
     save_timestamped: bool = False  # Save with timestamp in filename (False = overwrite single file)
     keep_latest_count: int = 5  # Keep fewer files to avoid spam
-    scan_directory: str = 'account_scans'
+    # Use BASE_DIR for EXE compatibility - will be set at runtime
+    scan_directory: str = None  # Will be set to os.path.join(BASE_DIR, 'account_scans')
     base_filename: str = 'mt5_essential_scan'
     auto_start_on_connect: bool = True  # Auto-start monitoring when connected
     clear_old_data: bool = True  # Clear old timestamped files to prevent spam
@@ -97,6 +170,9 @@ class MT5ConnectionManager:
         
         # Continuous monitoring attributes
         self.monitoring_config = MonitoringConfig()
+        # Set scan_directory to use BASE_DIR for EXE compatibility
+        if self.monitoring_config.scan_directory is None:
+            self.monitoring_config.scan_directory = os.path.join(BASE_DIR, 'account_scans')
         self._monitoring_thread: Optional[threading.Thread] = None
         self._monitoring_stop_event = threading.Event()
         self._monitoring_lock = threading.Lock()
@@ -332,8 +408,10 @@ class MT5ConnectionManager:
         if not self.is_connected():
             return None
         if filepath is None:
-            os.makedirs('account_scans', exist_ok=True)
-            filepath = 'account_scans/mt5_essential_scan.json'
+            # Use BASE_DIR for EXE compatibility
+            account_scans_dir = os.path.join(BASE_DIR, 'account_scans')
+            os.makedirs(account_scans_dir, exist_ok=True)
+            filepath = os.path.join(account_scans_dir, 'mt5_essential_scan.json')
         acct_summary = self.get_essential_account_info()
         # Enrich with raw positions/orders for downstream analysis (actions, conflict detection)
         active_positions = []
@@ -639,45 +717,9 @@ class MT5ConnectionManager:
             logger.error(f'Error checking position changes: {e}')
     
     def _detect_and_notify_changes(self, previous_positions, current_positions):
-        """Detect changes and send appropriate notifications"""
-        try:
-            # Import notification system
-            from unified_notification_system import get_unified_notification_system
-            notification_system = get_unified_notification_system()
-            
-            # Check settings
-            settings = notification_system.config.get('settings', {})
-            
-            # Check for new positions (order tracking)
-            if settings.get('track_order_updates', False):
-                for ticket, pos in current_positions.items():
-                    if ticket not in previous_positions:
-                        logger.info(f"📈 New position detected: {pos['symbol']}")
-                        notification_system.send_order_update_notification(pos)
-            
-            # Check for closed positions
-            if settings.get('notify_order_close', False):
-                for ticket, pos in previous_positions.items():
-                    if ticket not in current_positions:
-                        logger.info(f"🔒 Position closed: {pos['symbol']}")
-                        notification_system.send_order_close_notification(pos)
-            
-            # Check for SL/TP changes
-            if settings.get('notify_sl_tp_changes', False):
-                for ticket, current_pos in current_positions.items():
-                    if ticket in previous_positions:
-                        prev_pos = previous_positions[ticket]
-                        
-                        # Check if SL or TP changed
-                        sl_changed = prev_pos['sl'] != current_pos['sl']
-                        tp_changed = prev_pos['tp'] != current_pos['tp']
-                        
-                        if sl_changed or tp_changed:
-                            logger.info(f"🛡️ SL/TP changed for {current_pos['symbol']}")
-                            notification_system.send_sl_tp_change_notification(current_pos)
-                            
-        except Exception as e:
-            logger.error(f'Error detecting position changes: {e}')
+        """Detect changes - notification handled by SimpleOrderTracker"""
+        # All notification logic handled by simple_order_tracker.py
+        pass
 
     def _save_timestamped_scan(self) -> str | None:
         """Save account scan with timestamp in filename and optional data cleanup."""

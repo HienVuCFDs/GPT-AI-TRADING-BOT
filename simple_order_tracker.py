@@ -18,11 +18,17 @@ Created: 2025-12-01
 import threading
 import time
 import logging
-from datetime import datetime
+import os
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 from pathlib import Path
 from collections import defaultdict
 import json
+
+# Import notification module
+from notification import send_notification
+from notification.formatters import format_sltp_changed, format_order_closed, format_order_status
+from notification.helpers import get_app_language, calculate_pips, normalize_order_type
 
 # Setup logger
 logger = logging.getLogger(__name__)
@@ -44,6 +50,9 @@ class SimpleOrderTracker:
         
         # Lưu trữ trạng thái các lệnh
         self._tracked_orders: Dict[int, Dict] = {}
+        
+        # Cache digits cho mỗi symbol (lấy từ MT5)
+        self._symbol_digits: Dict[str, int] = {}
         
         # Pending changes để nhóm lại trước khi gửi
         self._pending_sl_tp_changes: Dict[str, List[Dict]] = defaultdict(list)
@@ -77,8 +86,13 @@ class SimpleOrderTracker:
     def _load_config(self) -> Dict:
         """Load notification config"""
         try:
-            config_path = Path(__file__).parent / "notification_config.json"
-            if config_path.exists():
+            import sys
+            if getattr(sys, 'frozen', False):
+                base_dir = os.path.dirname(sys.executable)
+            else:
+                base_dir = os.path.dirname(os.path.abspath(__file__))
+            config_path = os.path.join(base_dir, "notification_config.json")
+            if os.path.exists(config_path):
                 with open(config_path, 'r', encoding='utf-8') as f:
                     return json.load(f)
         except Exception as e:
@@ -88,10 +102,6 @@ class SimpleOrderTracker:
     def _reload_config(self):
         """Reload config từ file"""
         self._config = self._load_config()
-    
-    def _get_language(self) -> str:
-        """Get current language from config"""
-        return 'vi' if self._config.get('settings', {}).get('format_vietnamese', True) else 'en'
     
     def _is_sl_tp_tracking_enabled(self) -> bool:
         """Check if SL/TP tracking is enabled"""
@@ -165,43 +175,19 @@ class SimpleOrderTracker:
         # Fallback to config file
         return self._config.get('settings', {}).get('sltp_pip_threshold', 10)
     
-    def _is_dca_order(self, order_data: Dict) -> bool:
-        """Check if order is DCA based on comment or magic"""
-        comment = str(order_data.get('comment', '')).upper()
-        
-        dca_indicators = [
-            'DCA' in comment,
-            'AVG' in comment,
-            'AVERAGING' in comment,
-            'MARTINGALE' in comment,
-            'GRID' in comment,
-        ]
-        
-        return any(dca_indicators)
-    
-    def _get_order_type_tag(self, order_data: Dict) -> str:
-        """Get Entry or DCA tag for order"""
-        if self._is_dca_order(order_data):
-            # Try to extract DCA level from comment
-            comment = order_data.get('comment', '')
-            import re
-            match = re.search(r'DCA(\d+)', comment, re.IGNORECASE)
-            if match:
-                return f"DCA{match.group(1)}"
-            return "DCA"
-        return "Entry"
-    
     def start(self) -> bool:
         """Start tracking thread"""
         with self._lock:
             if self._running:
                 logger.info("⚠️ Tracker already running")
+                print("⚠️ [OrderTracker] Already running")
                 return True
             
             try:
                 import MetaTrader5 as mt5
                 if not mt5.initialize():
                     logger.error("❌ Cannot initialize MT5")
+                    print("❌ [OrderTracker] Cannot initialize MT5")
                     return False
                 
                 # Get initial positions
@@ -231,6 +217,7 @@ class SimpleOrderTracker:
                 mt5.shutdown()
                 
                 logger.info(f"📊 Loaded {len(self._tracked_orders)} existing positions")
+                print(f"📊 [OrderTracker] Loaded {len(self._tracked_orders)} positions: {[o['symbol'] for o in self._tracked_orders.values()]}")
                 
                 # Start thread
                 self._running = True
@@ -238,10 +225,12 @@ class SimpleOrderTracker:
                 self._thread.start()
                 
                 logger.info("🚀 Order Tracker started")
+                print("🚀 [OrderTracker] Started successfully!")
                 return True
                 
             except Exception as e:
                 logger.error(f"❌ Error starting tracker: {e}")
+                print(f"❌ [OrderTracker] Error: {e}")
                 return False
     
     def stop(self):
@@ -261,9 +250,13 @@ class SimpleOrderTracker:
     def _tracking_loop(self):
         """Main tracking loop"""
         logger.info("🔄 Tracking loop started")
+        print("🔄 [OrderTracker] Tracking loop started")
         
+        loop_count = 0
         while self._running:
             try:
+                loop_count += 1
+                
                 # Reload config to get latest settings
                 self._reload_config()
                 
@@ -271,6 +264,11 @@ class SimpleOrderTracker:
                 sl_tp_enabled = self._is_sl_tp_tracking_enabled()
                 close_enabled = self._is_close_tracking_enabled()
                 status_enabled = self._is_order_status_tracking_enabled()
+                
+                # Log tracking status every 60 seconds (12 loops * 5 seconds)
+                if loop_count % 12 == 1:
+                    logger.info(f"📊 Tracker status: SL/TP={sl_tp_enabled}, Close={close_enabled}, Status={status_enabled}, Orders={len(self._tracked_orders)}")
+                    print(f"📊 [OrderTracker] Loop #{loop_count}: SL/TP={sl_tp_enabled}, Close={close_enabled}, Status={status_enabled}, Orders={len(self._tracked_orders)}")
                 
                 if not sl_tp_enabled and not close_enabled and not status_enabled:
                     time.sleep(self._check_interval)
@@ -369,30 +367,42 @@ class SimpleOrderTracker:
             changes = []
             
             # Check SL change with pip threshold
-            if abs(new_sl - old_sl) > 0.00001:
-                # Calculate pip difference
-                sl_pips = self._calculate_pips(symbol, old_sl, new_sl, 'BUY')
+            sl_diff = abs(new_sl - old_sl)
+            if sl_diff > 0.00001:
+                # Calculate pip difference using centralized function
+                sl_pips = calculate_pips(symbol, old_sl, new_sl, 'BUY')
                 sl_pips = abs(sl_pips)
+                
+                logger.info(f"🔍 [{symbol}] SL changed: {old_sl:.5f} → {new_sl:.5f} ({sl_pips:.1f} pips, threshold={pip_threshold})")
+                print(f"🔍 [OrderTracker] [{symbol}] SL: {old_sl:.5f} → {new_sl:.5f} ({sl_pips:.1f} pips)")
                 
                 # Only add change if exceeds threshold (or threshold is 0)
                 if pip_threshold == 0 or sl_pips >= pip_threshold:
                     changes.append(('SL', old_sl, new_sl))
-                    logger.debug(f"SL change detected: {sl_pips:.1f} pips >= threshold {pip_threshold}")
+                    logger.info(f"✅ [{symbol}] SL change QUEUED: {sl_pips:.1f} pips >= {pip_threshold}")
+                    print(f"✅ [OrderTracker] [{symbol}] SL QUEUED ({sl_pips:.1f} >= {pip_threshold})")
                 else:
-                    logger.debug(f"SL change ignored: {sl_pips:.1f} pips < threshold {pip_threshold}")
+                    logger.debug(f"⏭️ [{symbol}] SL change SKIPPED: {sl_pips:.1f} pips < {pip_threshold}")
+                    print(f"⏭️ [OrderTracker] [{symbol}] SL SKIPPED ({sl_pips:.1f} < {pip_threshold})")
                 
             # Check TP change with pip threshold
-            if abs(new_tp - old_tp) > 0.00001:
-                # Calculate pip difference
-                tp_pips = self._calculate_pips(symbol, old_tp, new_tp, 'BUY')
+            tp_diff = abs(new_tp - old_tp)
+            if tp_diff > 0.00001:
+                # Calculate pip difference using centralized function
+                tp_pips = calculate_pips(symbol, old_tp, new_tp, 'BUY')
                 tp_pips = abs(tp_pips)
+                
+                logger.info(f"🔍 [{symbol}] TP changed: {old_tp:.5f} → {new_tp:.5f} ({tp_pips:.1f} pips, threshold={pip_threshold})")
+                print(f"🔍 [OrderTracker] [{symbol}] TP: {old_tp:.5f} → {new_tp:.5f} ({tp_pips:.1f} pips)")
                 
                 # Only add change if exceeds threshold (or threshold is 0)
                 if pip_threshold == 0 or tp_pips >= pip_threshold:
                     changes.append(('TP', old_tp, new_tp))
-                    logger.debug(f"TP change detected: {tp_pips:.1f} pips >= threshold {pip_threshold}")
+                    logger.info(f"✅ [{symbol}] TP change QUEUED: {tp_pips:.1f} pips >= {pip_threshold}")
+                    print(f"✅ [OrderTracker] [{symbol}] TP QUEUED ({tp_pips:.1f} >= {pip_threshold})")
                 else:
-                    logger.debug(f"TP change ignored: {tp_pips:.1f} pips < threshold {pip_threshold}")
+                    logger.debug(f"⏭️ [{symbol}] TP change SKIPPED: {tp_pips:.1f} pips < {pip_threshold}")
+                    print(f"⏭️ [OrderTracker] [{symbol}] TP SKIPPED ({tp_pips:.1f} < {pip_threshold})")
             
             if changes:
                 # Update stored data
@@ -434,8 +444,17 @@ class SimpleOrderTracker:
             
             symbol = old_data.get('symbol', 'Unknown')
             
-            # Get close info from history
-            close_info = self._get_close_info(ticket, mt5)
+            # Get close info from MT5 history using standardized function
+            close_info = self._get_close_info(ticket, mt5, symbol)
+            
+            # Fallback: If no data from history, use last tracked data
+            if not close_info.get('close_price'):
+                last_price = old_data.get('price_current', old_data.get('price_open', 0))
+                last_profit = old_data.get('profit', 0)
+                close_info['close_price'] = last_price
+                close_info['profit'] = last_profit
+                close_info['pips'] = 0  # Will be calculated in _send_grouped_close_notification
+                logger.info(f"📌 Using last tracked data for #{ticket}: price={last_price}, profit={last_profit}")
             
             # Add to pending
             close_data = {
@@ -454,33 +473,55 @@ class SimpleOrderTracker:
             
             # Remove from tracking
             del self._tracked_orders[ticket]
-            logger.info(f"📤 Position #{ticket} closed and removed from tracking")
+            logger.info(f"📤 Position #{ticket} ({symbol}) closed - profit: {close_info.get('profit', 0):.2f}")
             
         except Exception as e:
             logger.error(f"❌ Error handling position close: {e}")
     
-    def _get_close_info(self, ticket: int, mt5) -> Dict:
-        """Get close information from MT5 history"""
+    def _get_close_info(self, ticket: int, mt5, symbol: str = None) -> Dict:
+        """Get close information from MT5 history using standardized function
+        
+        Args:
+            ticket: Position ticket number
+            mt5: MetaTrader5 module (not used - using trading_history_manager instead)
+            symbol: Expected symbol to filter results
+        
+        Returns:
+            Dict with close_price, profit, pips, swap, commission, close_time
+        """
         try:
-            from datetime import timedelta
+            from trading_history_manager import get_mt5_closed_positions
             
+            # Get recent closed positions (last 1 minute to find just-closed order)
             end_time = datetime.now()
-            start_time = end_time - timedelta(hours=1)
+            start_time = end_time - timedelta(minutes=5)
             
-            deals = mt5.history_deals_get(start_time, end_time, position=ticket)
-            if deals:
-                for deal in deals:
-                    deal_dict = deal._asdict()
-                    if deal_dict.get('entry') == 1:  # DEAL_ENTRY_OUT
-                        return {
-                            'close_price': deal_dict.get('price', 0),
-                            'profit': deal_dict.get('profit', 0),
-                            'swap': deal_dict.get('swap', 0),
-                            'commission': deal_dict.get('commission', 0),
-                            'close_time': datetime.fromtimestamp(deal_dict.get('time', 0)),
-                        }
+            closed_positions = get_mt5_closed_positions(
+                symbol=symbol,
+                from_date=start_time,
+                to_date=end_time,
+                auto_trading_safe=False,
+                quick_mode=True,
+                max_deals=50
+            )
             
+            # Find the matching ticket
+            for pos in closed_positions:
+                if pos.get('ticket') == ticket:
+                    logger.info(f"✅ Found closed position #{ticket}: profit={pos.get('profit'):.2f}, pips={pos.get('pips'):.1f}")
+                    return {
+                        'close_price': pos.get('close_price', 0),
+                        'profit': pos.get('profit', 0),
+                        'pips': pos.get('pips', 0),
+                        'swap': pos.get('swap', 0),
+                        'commission': pos.get('commission', 0),
+                        'close_time': pos.get('close_time', ''),
+                    }
+            
+            # Not found in recent history
+            logger.warning(f"⚠️ No matching closed position found for ticket #{ticket}, symbol={symbol}")
             return {}
+            
         except Exception as e:
             logger.error(f"Error getting close info: {e}")
             return {}
@@ -524,19 +565,24 @@ class SimpleOrderTracker:
         interval = self._get_status_update_interval()  # Min 60 seconds
         pip_threshold = self._get_track_orders_pip_threshold()
         
-        # 🛑 ANTI-SPAM CHECK 1: Enforce minimum interval (60 seconds)
-        if current_time - self._last_status_notification < interval:
+        # 🛑 ANTI-SPAM CHECK 1: Enforce minimum interval (30 seconds instead of 60)
+        time_since_last = current_time - self._last_status_notification
+        if time_since_last < 30:  # Reduced from interval to 30 seconds
             return
         
         # 🛑 ANTI-SPAM CHECK 2: If pip threshold is 0, disable status notifications entirely
         if pip_threshold == 0:
-            logger.debug(f"Status notifications disabled (pip_threshold=0). Set to 50+ to enable.")
+            logger.debug(f"Status notifications disabled (pip_threshold=0). Set to 10+ to enable.")
             self._last_status_notification = current_time
             return
         
         # Only process if we have positions to track
         if not self._tracked_orders:
             return
+        
+        # Log check status
+        logger.info(f"📊 Checking status for {len(self._tracked_orders)} orders (threshold={pip_threshold}pips, interval={time_since_last:.0f}s)")
+        print(f"📊 [OrderTracker] Status check: {len(self._tracked_orders)} orders, threshold={pip_threshold}pips")
         
         # Check if any order has changed enough pips to warrant notification
         orders_to_notify = []
@@ -547,23 +593,33 @@ class SimpleOrderTracker:
             price_open = order_data.get('price_open', 0)
             price_current = order_data.get('price_current', 0)
             
-            # Calculate current pips from entry price
-            current_pips = self._calculate_pips(symbol, price_open, price_current, order_type)
+            # Calculate current pips from entry price using centralized function
+            current_pips = calculate_pips(symbol, price_open, price_current, normalize_order_type(order_type))
             
-            # Get last notified pips (0 if never notified)
-            last_notified_pips = self._last_notified_pips.get(ticket, 0)
+            # Get last notified pips (None if never notified - first time)
+            last_notified_pips = self._last_notified_pips.get(ticket, None)
             
-            # Calculate pip change from last notification (or from 0 if first time)
-            pip_change = abs(current_pips - last_notified_pips)
-            
-            # Only notify if pip change >= threshold
-            if pip_change >= pip_threshold:
-                orders_to_notify.append(ticket)
-                # Update last notified pips for next check
-                self._last_notified_pips[ticket] = current_pips
-                logger.debug(f"Order #{ticket}: notify (pips {current_pips}, change {pip_change}>={pip_threshold})")
+            # FIRST TIME: Only notify if |current_pips| >= threshold
+            if last_notified_pips is None:
+                if abs(current_pips) >= pip_threshold:
+                    orders_to_notify.append(ticket)
+                    self._last_notified_pips[ticket] = current_pips
+                    logger.debug(f"Order #{ticket}: FIRST notify (pips {current_pips:.1f} >= {pip_threshold})")
+                else:
+                    # Still record pips but don't notify yet
+                    self._last_notified_pips[ticket] = current_pips
+                    logger.debug(f"Order #{ticket}: FIRST skip (pips {current_pips:.1f} < {pip_threshold})")
             else:
-                logger.debug(f"Order #{ticket}: skip (pips {current_pips}, change {pip_change}<{pip_threshold})")
+                # SUBSEQUENT: Only notify if pip change >= threshold from last notification
+                pip_change = abs(current_pips - last_notified_pips)
+                
+                if pip_change >= pip_threshold:
+                    orders_to_notify.append(ticket)
+                    # Update last notified pips for next check
+                    self._last_notified_pips[ticket] = current_pips
+                    logger.debug(f"Order #{ticket}: notify (pips {current_pips:.1f}, change {pip_change:.1f}>={pip_threshold})")
+                else:
+                    logger.debug(f"Order #{ticket}: skip (pips {current_pips:.1f}, change {pip_change:.1f}<{pip_threshold})")
         
         # 🛑 ANTI-SPAM CHECK 3: Only send if at least one order meets threshold
         if orders_to_notify:
@@ -580,367 +636,146 @@ class SimpleOrderTracker:
         """Send current P/L status - separate message per symbol (or single order)
         
         Args:
-            orders_to_notify: List of ticket numbers to include. If None, include all.
+            orders_to_notify: List of ticket numbers that triggered notification.
+                              Will include ALL orders of symbols that have at least 1 qualifying order.
         """
         try:
-            lang = self._get_language()
+            lang = get_app_language()
             
-            # 🔧 Filter orders: only include those that meet pip threshold
+            # 🔧 Get list of triggering tickets
             if orders_to_notify is None:
                 orders_to_notify = list(self._tracked_orders.keys())
             
-            # Group orders by symbol - ONLY include orders in orders_to_notify
-            orders_by_symbol: Dict[str, List[Dict]] = defaultdict(list)
+            # 🔧 Find symbols that have at least 1 qualifying order
+            symbols_to_notify = set()
             for ticket in orders_to_notify:
                 if ticket in self._tracked_orders:
                     order_data = self._tracked_orders[ticket]
                     symbol = order_data.get('symbol', 'Unknown')
-                    orders_by_symbol[symbol].append(order_data)
+                    symbols_to_notify.add(symbol)
             
-            if not orders_by_symbol:
-                logger.debug(f"No orders to notify (all filtered by pip threshold)")
+            if not symbols_to_notify:
+                logger.debug(f"No symbols to notify")
                 return
+            
+            # 🔧 Group ALL orders by symbol - include ALL orders of qualifying symbols
+            orders_by_symbol: Dict[str, List[Dict]] = defaultdict(list)
+            for ticket, order_data in self._tracked_orders.items():
+                symbol = order_data.get('symbol', 'Unknown')
+                if symbol in symbols_to_notify:
+                    orders_by_symbol[symbol].append(order_data)
             
             # Send separate message for each symbol
             for symbol, orders in orders_by_symbol.items():
                 self._send_symbol_status_notification(symbol, orders, lang)
             
-            total_orders = len(orders_to_notify)
-            total_profit = sum(self._tracked_orders[t].get('profit', 0) for t in orders_to_notify)
+            total_orders = sum(len(orders) for orders in orders_by_symbol.values())
+            total_profit = sum(o.get('profit', 0) for orders in orders_by_symbol.values() for o in orders)
             logger.info(f"📤 Status notification sent: {len(orders_by_symbol)} symbols, {total_orders} orders, P&L: ${total_profit:.2f}")
             
         except Exception as e:
             logger.error(f"❌ Error sending status notification: {e}")
     
     def _send_symbol_status_notification(self, symbol: str, orders: List[Dict], lang: str):
-        """Send status notification for a single symbol (can be 1 or multiple orders)"""
+        """Send status notification for a single symbol using centralized formatter"""
         try:
-            num_orders = len(orders)
-            symbol_profit = sum(o.get('profit', 0) for o in orders)
-            
-            # Determine overall emoji
-            if symbol_profit > 0:
-                result_emoji = "💰"
-                result_text = "LÃI" if lang == 'vi' else "PROFIT"
-            elif symbol_profit < 0:
-                result_emoji = "❌"
-                result_text = "LỖ" if lang == 'vi' else "LOSS"
-            else:
-                result_emoji = "⚖️"
-                result_text = "HÒA" if lang == 'vi' else "BREAKEVEN"
-            
-            profit_sign = '+' if symbol_profit >= 0 else ''
-            
-            # Build message header
-            if lang == 'vi':
-                message = f"📊 <b>TRẠNG THÁI LỆNH - {symbol}</b>"
-                if num_orders > 1:
-                    message += f" ({num_orders} lệnh)"
-                message += "\n"
-            else:
-                message = f"📊 <b>ORDER STATUS - {symbol}</b>"
-                if num_orders > 1:
-                    message += f" ({num_orders} orders)"
-                message += "\n"
-            
-            message += "─" * 28 + "\n"
-            
-            # Show each order
+            # Prepare orders data with calculated pips for formatter
+            orders_with_pips = []
             for order in orders:
-                order_tag = self._get_order_type_tag(order)
-                order_type = order.get('type', 'N/A')
-                volume = order.get('volume', 0)
-                ticket = order.get('ticket', 0)
-                profit = order.get('profit', 0)
+                order_type = normalize_order_type(order.get('type', 'N/A'))
                 price_open = order.get('price_open', 0)
                 price_current = order.get('price_current', 0)
-                sl = order.get('sl', 0)
-                tp = order.get('tp', 0)
                 
-                order_profit_sign = '+' if profit >= 0 else ''
+                # Calculate pips using centralized function
+                pips = calculate_pips(symbol, price_open, price_current, order_type)
                 
-                if profit > 0:
-                    order_emoji = "🟢"
-                elif profit < 0:
-                    order_emoji = "🔴"
-                else:
-                    order_emoji = "⚪"
-                
-                # Calculate pips
-                pips = self._calculate_pips(symbol, price_open, price_current, order_type)
-                pips_sign = '+' if pips >= 0 else ''
-                
-                message += f"\n🏷️ <b>{order_tag}</b> | {order_type} {volume:.2f} lot\n"
-                message += f"🎟️ #{ticket}\n"
-                message += f"💰 {price_open:.5f} → {price_current:.5f}\n"
-                message += f"{order_emoji} P&L: <b>{order_profit_sign}${profit:.2f}</b> ({pips_sign}{pips:.1f} pips)\n"
-                
-                # Show SL/TP if set
-                if sl > 0 or tp > 0:
-                    sl_str = f"SL: {sl:.5f}" if sl > 0 else "SL: --"
-                    tp_str = f"TP: {tp:.5f}" if tp > 0 else "TP: --"
-                    message += f"🎯 {sl_str} | {tp_str}\n"
+                orders_with_pips.append({
+                    **order,
+                    'type': order_type,
+                    'pips': pips,
+                })
             
-            # Summary for multiple orders
-            if num_orders > 1:
-                message += "\n" + "─" * 28 + "\n"
-                message += f"{result_emoji} <b>Tổng: {profit_sign}${symbol_profit:.2f}</b>\n" if lang == 'vi' else f"{result_emoji} <b>Total: {profit_sign}${symbol_profit:.2f}</b>\n"
-            
-            message += f"\n⏰ {datetime.now().strftime('%H:%M:%S %d/%m/%Y')}"
+            # Use centralized formatter from notification module
+            message = format_order_status(symbol, orders_with_pips)
             
             # Add footer
             footer = self._get_footer()
             if footer:
                 message += f"\n\n{footer}"
             
-            self._send_telegram(message)
+            self._send_telegram(message, symbol)
             
         except Exception as e:
             logger.error(f"❌ Error sending symbol status notification: {e}")
     
     def _send_grouped_sl_tp_notification(self, symbol: str, changes_list: List[Dict]):
-        """Send grouped SL/TP notification for symbol"""
+        """Send grouped SL/TP notification for symbol using centralized formatter"""
         try:
-            lang = self._get_language()
-            num_orders = len(changes_list)
-            
-            # Calculate totals
-            total_profit = sum(c.get('profit', 0) for c in changes_list)
-            
-            if lang == 'vi':
-                message = f"🛡️ <b>THAY ĐỔI SL/TP</b>\n\n"
-                message += f"📊 <b>{symbol}</b>"
-                if num_orders > 1:
-                    message += f" ({num_orders} lệnh)"
-                message += "\n"
-                message += "─" * 25 + "\n"
-                
-                for change in changes_list:
-                    order_tag = self._get_order_type_tag(change)
-                    order_type = change.get('type', 'N/A')
-                    volume = change.get('volume', 0)
-                    ticket = change.get('ticket', 0)
-                    profit = change.get('profit', 0)
-                    
-                    profit_sign = '+' if profit >= 0 else ''
-                    
-                    message += f"\n🏷️ <b>{order_tag}</b> | {order_type} {volume:.2f} lot\n"
-                    message += f"🎟️ #{ticket} | P&L: {profit_sign}${profit:.2f}\n"
-                    
-                    for change_type, old_val, new_val in change.get('changes', []):
-                        if change_type == 'SL':
-                            message += f"  🛡️ SL: {old_val:.5f} → <b>{new_val:.5f}</b>\n"
-                        elif change_type == 'TP':
-                            message += f"  🎯 TP: {old_val:.5f} → <b>{new_val:.5f}</b>\n"
-                
-                if num_orders > 1:
-                    message += "\n" + "─" * 25 + "\n"
-                    profit_sign = '+' if total_profit >= 0 else ''
-                    message += f"💵 Tổng P&L: <b>{profit_sign}${total_profit:.2f}</b>\n"
-                
-                message += f"\n⏰ {datetime.now().strftime('%H:%M:%S %d/%m/%Y')}"
-            else:
-                message = f"🛡️ <b>SL/TP CHANGED</b>\n\n"
-                message += f"📊 <b>{symbol}</b>"
-                if num_orders > 1:
-                    message += f" ({num_orders} orders)"
-                message += "\n"
-                message += "─" * 25 + "\n"
-                
-                for change in changes_list:
-                    order_tag = self._get_order_type_tag(change)
-                    order_type = change.get('type', 'N/A')
-                    volume = change.get('volume', 0)
-                    ticket = change.get('ticket', 0)
-                    profit = change.get('profit', 0)
-                    
-                    profit_sign = '+' if profit >= 0 else ''
-                    
-                    message += f"\n🏷️ <b>{order_tag}</b> | {order_type} {volume:.2f} lot\n"
-                    message += f"🎟️ #{ticket} | P&L: {profit_sign}${profit:.2f}\n"
-                    
-                    for change_type, old_val, new_val in change.get('changes', []):
-                        if change_type == 'SL':
-                            message += f"  🛡️ SL: {old_val:.5f} → <b>{new_val:.5f}</b>\n"
-                        elif change_type == 'TP':
-                            message += f"  🎯 TP: {old_val:.5f} → <b>{new_val:.5f}</b>\n"
-                
-                if num_orders > 1:
-                    message += "\n" + "─" * 25 + "\n"
-                    profit_sign = '+' if total_profit >= 0 else ''
-                    message += f"💵 Total P&L: <b>{profit_sign}${total_profit:.2f}</b>\n"
-                
-                message += f"\n⏰ {datetime.now().strftime('%H:%M:%S %d/%m/%Y')}"
+            # Use centralized formatter from notification module
+            message = format_sltp_changed(symbol, changes_list)
             
             # Add footer
             footer = self._get_footer()
             if footer:
                 message += f"\n\n{footer}"
             
-            self._send_telegram(message)
-            logger.info(f"📤 SL/TP notification sent: {symbol} ({num_orders} orders)")
+            self._send_telegram(message, symbol)
+            logger.info(f"📤 SL/TP notification sent: {symbol} ({len(changes_list)} orders)")
             
         except Exception as e:
             logger.error(f"❌ Error sending grouped SL/TP notification: {e}")
     
     def _send_grouped_close_notification(self, symbol: str, closes_list: List[Dict]):
-        """Send grouped close notification for symbol"""
+        """Send grouped close notification for symbol using centralized formatter"""
         try:
-            lang = self._get_language()
-            num_orders = len(closes_list)
-            
-            # Calculate totals
-            total_profit = 0
-            total_pips = 0
-            
+            # Prepare order_details with data from MT5 history
             order_details = []
             for close in closes_list:
                 close_info = close.get('close_info', {})
+                
+                # Get profit and pips directly from MT5 history (already calculated correctly)
                 profit = close_info.get('profit', 0)
+                pips = close_info.get('pips', 0)  # Use pips from trading_history_manager
                 price_open = close.get('price_open', 0)
                 close_price = close_info.get('close_price', 0)
-                order_type = close.get('type', 'N/A')
                 
-                pips = self._calculate_pips(symbol, price_open, close_price, order_type)
-                total_profit += profit
-                total_pips += pips
+                # Fallback: If pips not available from history, calculate manually
+                if pips == 0 and close_price != 0 and price_open != 0:
+                    order_type = normalize_order_type(close.get('type', 'N/A'))
+                    pips = calculate_pips(symbol, price_open, close_price, order_type)
+                
+                # Fallback: If close_price still 0, use price_open
+                if close_price == 0 or close_price is None:
+                    close_price = price_open
+                
+                # Use centralized normalize_order_type from helpers
+                order_type = normalize_order_type(close.get('type', 'N/A'))
                 
                 order_details.append({
                     **close,
                     'profit': profit,
                     'pips': pips,
                     'close_price': close_price,
+                    'type': order_type,
                 })
             
-            # Determine overall result
-            if total_profit > 0:
-                result_emoji = "💰"
-                result_text = "LÃI" if lang == 'vi' else "PROFIT"
-            elif total_profit < 0:
-                result_emoji = "❌"
-                result_text = "LỖ" if lang == 'vi' else "LOSS"
-            else:
-                result_emoji = "⚖️"
-                result_text = "HÒA" if lang == 'vi' else "BREAKEVEN"
-            
-            if lang == 'vi':
-                message = f"🏁 <b>ĐÓNG LỆNH</b>\n\n"
-                message += f"📊 <b>{symbol}</b>"
-                if num_orders > 1:
-                    message += f" ({num_orders} lệnh)"
-                message += "\n"
-                message += "─" * 25 + "\n"
-                
-                for detail in order_details:
-                    order_tag = self._get_order_type_tag(detail)
-                    order_type = detail.get('type', 'N/A')
-                    volume = detail.get('volume', 0)
-                    ticket = detail.get('ticket', 0)
-                    profit = detail.get('profit', 0)
-                    pips = detail.get('pips', 0)
-                    price_open = detail.get('price_open', 0)
-                    close_price = detail.get('close_price', 0)
-                    
-                    profit_sign = '+' if profit >= 0 else ''
-                    pips_sign = '+' if pips >= 0 else ''
-                    
-                    if profit > 0:
-                        order_emoji = "💰"
-                    elif profit < 0:
-                        order_emoji = "❌"
-                    else:
-                        order_emoji = "⚖️"
-                    
-                    message += f"\n🏷️ <b>{order_tag}</b> | {order_type} {volume:.2f} lot\n"
-                    message += f"🎟️ #{ticket}\n"
-                    message += f"💰 {price_open:.5f} → {close_price:.5f}\n"
-                    message += f"{order_emoji} {profit_sign}${profit:.2f} ({pips_sign}{pips:.1f} pips)\n"
-                
-                message += "\n" + "─" * 25 + "\n"
-                profit_sign = '+' if total_profit >= 0 else ''
-                pips_sign = '+' if total_pips >= 0 else ''
-                message += f"{result_emoji} <b>{result_text}</b>\n"
-                message += f"💵 Tổng: <b>{profit_sign}${total_profit:.2f}</b> ({pips_sign}{total_pips:.1f} pips)\n"
-                message += f"\n⏰ {datetime.now().strftime('%H:%M:%S %d/%m/%Y')}"
-            else:
-                message = f"🏁 <b>ORDER CLOSED</b>\n\n"
-                message += f"📊 <b>{symbol}</b>"
-                if num_orders > 1:
-                    message += f" ({num_orders} orders)"
-                message += "\n"
-                message += "─" * 25 + "\n"
-                
-                for detail in order_details:
-                    order_tag = self._get_order_type_tag(detail)
-                    order_type = detail.get('type', 'N/A')
-                    volume = detail.get('volume', 0)
-                    ticket = detail.get('ticket', 0)
-                    profit = detail.get('profit', 0)
-                    pips = detail.get('pips', 0)
-                    price_open = detail.get('price_open', 0)
-                    close_price = detail.get('close_price', 0)
-                    
-                    profit_sign = '+' if profit >= 0 else ''
-                    pips_sign = '+' if pips >= 0 else ''
-                    
-                    if profit > 0:
-                        order_emoji = "💰"
-                    elif profit < 0:
-                        order_emoji = "❌"
-                    else:
-                        order_emoji = "⚖️"
-                    
-                    message += f"\n🏷️ <b>{order_tag}</b> | {order_type} {volume:.2f} lot\n"
-                    message += f"🎟️ #{ticket}\n"
-                    message += f"💰 {price_open:.5f} → {close_price:.5f}\n"
-                    message += f"{order_emoji} {profit_sign}${profit:.2f} ({pips_sign}{pips:.1f} pips)\n"
-                
-                message += "\n" + "─" * 25 + "\n"
-                profit_sign = '+' if total_profit >= 0 else ''
-                pips_sign = '+' if total_pips >= 0 else ''
-                message += f"{result_emoji} <b>{result_text}</b>\n"
-                message += f"💵 Total: <b>{profit_sign}${total_profit:.2f}</b> ({pips_sign}{total_pips:.1f} pips)\n"
-                message += f"\n⏰ {datetime.now().strftime('%H:%M:%S %d/%m/%Y')}"
+            # Use centralized formatter from notification module
+            message = format_order_closed(symbol, order_details)
             
             # Add footer
             footer = self._get_footer()
             if footer:
                 message += f"\n\n{footer}"
             
-            self._send_telegram(message)
-            logger.info(f"📤 Close notification sent: {symbol} ({num_orders} orders) - {result_text}")
+            self._send_telegram(message, symbol)
+            
+            # Determine result text for logging
+            total_profit = sum(d.get('profit', 0) for d in order_details)
+            result_text = "PROFIT" if total_profit > 0 else ("LOSS" if total_profit < 0 else "BREAKEVEN")
+            logger.info(f"📤 Close notification sent: {symbol} ({len(closes_list)} orders) - {result_text}")
             
         except Exception as e:
             logger.error(f"❌ Error sending grouped close notification: {e}")
-    
-    def _calculate_pips(self, symbol: str, price_open: float, price_close: float, order_type: str) -> float:
-        """
-        Calculate pips profit/loss using UNIFIED pip_value standard from utils.py
-        
-        Pip value standards:
-        - Metals (XAUUSD, XAGUSD): 0.1
-        - JPY pairs: 0.01
-        - BTC/ETH: 1.0
-        - Mid-crypto (SOL, LTC, BNB, etc): 0.1
-        - Major FX: 0.0001
-        """
-        try:
-            from utils import get_pip_value  # Use unified standard
-            
-            symbol_upper = symbol.upper()
-            pip_value = get_pip_value(symbol)
-            
-            price_diff = price_close - price_open
-            
-            if order_type == 'SELL':
-                price_diff = -price_diff
-            
-            pips = price_diff / pip_value
-            return round(pips, 1)
-            
-        except Exception as e:
-            logger.debug(f"Error calculating pips for {symbol}: {e}")
-            return 0.0
     
     def _get_footer(self) -> str:
         """Get branded footer from config"""
@@ -949,7 +784,7 @@ class SimpleOrderTracker:
             if not branding.get('enable_custom_footer', True):
                 return ""
             
-            lang = self._get_language()
+            lang = get_app_language()
             if lang == 'vi':
                 system_name = branding.get('system_name_vi', 'Hệ thống AI Trading')
             else:
@@ -966,43 +801,23 @@ class SimpleOrderTracker:
         except Exception:
             return ""
     
-    def _send_telegram(self, message: str) -> bool:
-        """Send message via Telegram"""
+    def _send_telegram(self, message: str, symbol: str = None) -> bool:
+        """Send message via notification module
+        
+        Args:
+            message: Message content
+            symbol: Symbol for unique message_type (avoid spam protection blocking)
+        """
         try:
-            import requests
-            
-            telegram_config = self._config.get('telegram', {})
-            if not telegram_config.get('enabled', False):
-                logger.debug("Telegram not enabled")
-                return False
-            
-            bot_token = telegram_config.get('bot_token', '').strip()
-            chat_id = telegram_config.get('chat_id', '').strip()
-            
-            if not bot_token or not chat_id:
-                logger.warning("Telegram not configured (missing token or chat_id)")
-                return False
-            
-            url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-            
-            payload = {
-                'chat_id': chat_id,
-                'text': message,
-                'parse_mode': 'HTML',
-                'disable_web_page_preview': True
-            }
-            
-            response = requests.post(url, json=payload, timeout=10)
-            
-            if response.status_code == 200:
-                logger.debug("✅ Telegram message sent")
-                return True
+            # Use symbol-specific message_type to avoid spam protection blocking
+            # when sending multiple symbol notifications in same batch
+            if symbol:
+                message_type = f"order_tracker_{symbol}"
             else:
-                logger.error(f"❌ Telegram error: {response.status_code} - {response.text}")
-                return False
-                
+                message_type = "order_tracker"
+            return send_notification(message, message_type=message_type)
         except Exception as e:
-            logger.error(f"❌ Error sending Telegram: {e}")
+            logger.error(f"❌ Error sending notification: {e}")
             return False
     
     def get_stats(self) -> Dict:

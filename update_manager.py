@@ -1,14 +1,22 @@
 """
-Auto-Update Manager - Quản lý cập nhật phiên bản từ GitHub Releases
+Auto-Update Manager v3.0 - Update cho EXE Build (Onedir)
+Cập nhật folder _internal/ từ ZIP trên GitHub Releases
+
+Quy trình:
+1. Kiểm tra version mới trên GitHub
+2. Tải ZIP chứa _internal/ folder
+3. Backup _internal/ cũ
+4. Extract và thay thế _internal/ mới
+5. Restart app
 """
 import requests
 import json
 import os
 import sys
-import hashlib
 import shutil
 import zipfile
 import subprocess
+import re
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict, Any
@@ -25,77 +33,168 @@ except ImportError:
 
 
 class UpdateManager:
-    """GitHub Releases Auto-Update Manager"""
+    """GitHub Releases Auto-Update Manager - EXE Onedir Update
+    
+    Supports 2 types of updates:
+    1. FULL UPDATE: update_vX.X.X.zip - Full _internal/ folder (2-4GB)
+    2. PATCH UPDATE: patch_vX.X.X.zip - Only changed files (10-500KB)
+    
+    Patch files are preferred for small hotfixes.
+    """
     
     # ============ CONFIGURATION ============
-    # GitHub repository configuration
-    GITHUB_REPO = "HienVuCFDs/GPT-AI-TRADING-BOT"  # ✅ Configured
-    GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+    GITHUB_REPO = "HienVuCFDs/GPT-AI-TRADING-BOT"
+    GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
     
-    # Current version (update this when you release a new version)
-    CURRENT_VERSION = "4.3.2"
+    # Current version - Đọc từ file VERSION (dynamic) hoặc fallback hardcode
+    CURRENT_VERSION = "4.4.0"  # Fallback version
     
-    # Auto-update folder
+    # Folders
     UPDATES_DIR = Path("updates")
-    BACKUP_DIR = Path("app_backup")
+    BACKUP_DIR = Path("_internal_backup")
+    INTERNAL_DIR = "_internal"
+    
+    # Patch settings
+    PATCH_PREFIX = "patch_"  # patch_v4.3.4.zip
+    UPDATE_PREFIX = "update_"  # update_v4.3.4.zip
     
     def __init__(self):
         self.update_available = False
         self.latest_version = None
         self.latest_info = None
+        self.patch_info = None  # Thông tin patch (nếu có)
         self.errors = []
+        self.is_exe_mode = getattr(sys, 'frozen', False)
+        self.app_dir = self._get_app_directory()
+        self._pending_update_dir = None  # Folder chứa files cần copy sau restart
+        
+        # Đọc version từ file VERSION hoặc current_version.txt nếu có
+        self.CURRENT_VERSION = self._read_current_version()
+    
+    def _read_current_version(self) -> str:
+        """Đọc phiên bản hiện tại từ file VERSION hoặc current_version.txt"""
+        # Thử đọc từ _internal/VERSION (ưu tiên)
+        version_file = self.app_dir / self.INTERNAL_DIR / "VERSION"
+        print(f"[DEBUG] Checking VERSION file: {version_file}")
+        print(f"[DEBUG] File exists: {version_file.exists()}")
+        if version_file.exists():
+            try:
+                ver = version_file.read_text(encoding='utf-8').strip()
+                print(f"[DEBUG] VERSION file content: '{ver}'")
+                if ver:
+                    return ver
+            except Exception as e:
+                print(f"[DEBUG] Error reading VERSION file: {e}")
+                pass
+        
+        # Fallback: đọc từ current_version.txt ở root
+        version_file = self.app_dir / "current_version.txt"
+        print(f"[DEBUG] Checking current_version.txt: {version_file}")
+        print(f"[DEBUG] File exists: {version_file.exists()}")
+        if version_file.exists():
+            try:
+                ver = version_file.read_text(encoding='utf-8').strip()
+                print(f"[DEBUG] current_version.txt content: '{ver}'")
+                if ver:
+                    return ver
+            except Exception as e:
+                print(f"[DEBUG] Error reading current_version.txt: {e}")
+                pass
+        
+        # Fallback cuối: dùng hằng số class
+        fallback_ver = self.__class__.CURRENT_VERSION
+        print(f"[DEBUG] Using fallback version: {fallback_ver}")
+        return fallback_ver
+    
+    def _get_app_directory(self) -> Path:
+        """Lấy thư mục chứa app (parent của _internal/)"""
+        if self.is_exe_mode:
+            return Path(sys.executable).parent
+        else:
+            # Running as script - need to get parent of _internal/
+            # __file__ is in _internal/, so parent is the app dir
+            current = Path(__file__).parent
+            if current.name == '_internal':
+                return current.parent
+            return current
     
     def check_updates(self) -> bool:
-        """
-        Kiểm tra phiên bản mới trên GitHub
-        
-        Returns:
-            bool: True nếu có update mới, False nếu đã là latest
-        """
+        """Kiểm tra phiên bản mới trên GitHub"""
         try:
             print("🔄 Checking for updates from GitHub...")
+            print(f"📦 Mode: {'EXE' if self.is_exe_mode else 'Python Script'}")
+            print(f"📁 App dir: {self.app_dir}")
+            print(f"📌 Current version: v{self.CURRENT_VERSION}")
+            print(f"[DEBUG] sys.frozen: {getattr(sys, 'frozen', False)}")
+            print(f"[DEBUG] sys.executable: {sys.executable if hasattr(sys, 'executable') else 'N/A'}")
             
-            # Fetch latest release info từ GitHub API
             headers = {
                 'Accept': 'application/vnd.github.v3+json',
-                'User-Agent': 'Trading-Bot-Updater/1.0'
+                'User-Agent': 'GoldKiller-Updater/3.0'
             }
             
-            response = requests.get(
-                self.GITHUB_API_URL,
-                headers=headers,
-                timeout=10
-            )
+            response = requests.get(self.GITHUB_API_URL, headers=headers, timeout=15)
             
             if response.status_code != 200:
-                error = f"GitHub API returned {response.status_code}"
-                self.errors.append(error)
-                print(f"❌ {error}")
-                return False
+                self.errors.append(f"GitHub API returned {response.status_code}")
+                print(f"❌ GitHub API error: {response.status_code}")
+                # Fallback to local update packages
+                return self._check_local_updates()
             
-            data = response.json()
+            releases = response.json()
             
-            # Extract version from tag_name (e.g., v4.3.2)
+            if not releases:
+                print("❌ No releases found")
+                # Fallback to local update packages
+                return self._check_local_updates()
+            
+            # Lấy release mới nhất
+            data = releases[0]
             tag_name = data.get('tag_name', '').lstrip('v')
             release_name = data.get('name', '')
             body = data.get('body', '')
+            is_prerelease = data.get('prerelease', False)
             
-            # Find the ZIP asset
-            zip_asset = None
+            print(f"📌 Latest release: v{tag_name} {'(Pre-release)' if is_prerelease else ''}")
+            print(f"[DEBUG] Version comparison: '{tag_name}' vs '{self.CURRENT_VERSION}'")
+            print(f"[DEBUG] Compare result: {self._compare_versions(tag_name, self.CURRENT_VERSION)}")
+            
+            # Tìm file ZIP
+            # Tìm file ZIP - ưu tiên PATCH trước (nhỏ hơn)
+            patch_asset = None
+            full_asset = None
+            
             for asset in data.get('assets', []):
-                if asset['name'].endswith('.zip'):
-                    zip_asset = asset
-                    break
+                name_lower = asset['name'].lower()
+                if name_lower.endswith('.zip'):
+                    if name_lower.startswith('patch_'):
+                        patch_asset = asset
+                    elif name_lower.startswith('update_'):
+                        full_asset = asset
+                    elif not full_asset:  # Fallback for any .zip
+                        full_asset = asset
             
-            if not zip_asset:
-                error = "No ZIP file found in release assets"
-                self.errors.append(error)
-                print(f"❌ {error}")
-                return False
+            # Ưu tiên patch nếu có (nhỏ hơn nhiều)
+            target_asset = patch_asset or full_asset
+            is_patch = patch_asset is not None
             
-            # Compare versions
+            if not target_asset:
+                self.errors.append("No ZIP file in release")
+                print("❌ No ZIP file found in release")
+                # Fallback to local update packages
+                return self._check_local_updates()
+            
+            # Log loại update
+            if is_patch:
+                size_kb = target_asset['size'] / 1024
+                print(f"📦 Found PATCH update: {target_asset['name']} ({size_kb:.1f} KB)")
+            else:
+                size_mb = target_asset['size'] / (1024*1024)
+                print(f"📦 Found FULL update: {target_asset['name']} ({size_mb:.1f} MB)")
+            
+            # So sánh version
             if self._compare_versions(tag_name, self.CURRENT_VERSION) > 0:
-                print(f"✅ Update found: {tag_name}")
+                print(f"✅ Update available: v{tag_name}")
                 
                 self.update_available = True
                 self.latest_version = tag_name
@@ -103,483 +202,556 @@ class UpdateManager:
                     'version': tag_name,
                     'release_name': release_name,
                     'notes': body or 'No release notes',
-                    'download_url': zip_asset['browser_download_url'],
-                    'filename': zip_asset['name'],
-                    'size': zip_asset['size'],
-                    'size_mb': round(zip_asset['size'] / (1024*1024), 2),
-                    'published_at': data.get('published_at', '')
+                    'download_url': target_asset['browser_download_url'],
+                    'filename': target_asset['name'],
+                    'size': target_asset['size'],
+                    'size_mb': round(target_asset['size'] / (1024*1024), 2),
+                    'size_kb': round(target_asset['size'] / 1024, 1),
+                    'is_patch': is_patch,  # True nếu là patch update
                 }
+                
+                # Lưu thông tin full update nếu có cả 2
+                if is_patch and full_asset:
+                    self.patch_info = self.latest_info.copy()
+                    self.latest_info['full_update'] = {
+                        'download_url': full_asset['browser_download_url'],
+                        'filename': full_asset['name'],
+                        'size_mb': round(full_asset['size'] / (1024*1024), 2),
+                    }
                 
                 return True
             else:
                 print(f"✅ Already on latest version (v{self.CURRENT_VERSION})")
-                self.update_available = False
+                # Also check if there is a local package available (useful for offline/manual patches)
+                local_ok = self._check_local_updates()
+                if local_ok:
+                    print("📦 Local update package found")
+                    return True
                 return False
                 
         except requests.exceptions.Timeout:
-            error = "Request timeout - check your internet connection"
-            self.errors.append(error)
-            print(f"❌ {error}")
-            return False
-            
+            self.errors.append("Connection timeout")
+            print("❌ Connection timeout")
+            # Fallback to local update packages
+            return self._check_local_updates()
         except requests.exceptions.ConnectionError:
-            error = "Connection error - check your internet connection"
-            self.errors.append(error)
-            print(f"❌ {error}")
-            return False
-            
+            self.errors.append("Connection error")
+            print("❌ Connection error")
+            # Fallback to local update packages
+            return self._check_local_updates()
         except Exception as e:
-            error = f"Update check failed: {str(e)}"
-            self.errors.append(error)
-            print(f"❌ {error}")
+            self.errors.append(str(e))
+            print(f"❌ Error: {e}")
+            # Fallback to local update packages
+            return self._check_local_updates()
+
+    def _check_local_updates(self) -> bool:
+        """Kiểm tra gói cập nhật cục bộ trong thư mục updates/ (offline fallback)
+
+        Ưu tiên PATCH nếu có. Chỉ đề xuất cài đặt khi tìm thấy version > CURRENT_VERSION.
+        Cấu trúc file: patch_vX.Y.Z.zip hoặc update_vX.Y.Z.zip, chứa thư mục _internal/ ở root.
+        """
+        try:
+            self.UPDATES_DIR.mkdir(exist_ok=True)
+            candidates = []
+
+            for item in self.UPDATES_DIR.glob('*.zip'):
+                name = item.name
+                m = re.match(r'(?i)^(patch|update)_v(\d+\.\d+\.\d+)\.zip$', name)
+                if not m:
+                    continue
+                kind = m.group(1).lower()
+                ver = m.group(2)
+                # Only consider versions greater than current
+                if self._compare_versions(ver, self.CURRENT_VERSION) > 0:
+                    candidates.append((ver, kind, item))
+
+            if not candidates:
+                print("ℹ️ No suitable local update packages found in updates/")
+                return False
+
+            # Pick highest version; if multiple with same version, prefer patch
+            candidates.sort(key=lambda x: tuple(int(p) for p in x[0].split('.')))  # sort ascending by version
+            best_ver = candidates[-1][0]
+            best = max([c for c in candidates if c[0] == best_ver], key=lambda x: 1 if x[1] == 'patch' else 0)
+
+            ver, kind, path_obj = best
+            size = path_obj.stat().st_size
+
+            self.update_available = True
+            self.latest_version = ver
+            self.latest_info = {
+                'version': ver,
+                'release_name': f"Local {kind.upper()} {ver}",
+                'notes': 'Local package from updates/',
+                'download_url': str(path_obj.resolve()),
+                'filename': path_obj.name,
+                'size': size,
+                'size_mb': round(size / (1024*1024), 2),
+                'size_kb': round(size / 1024, 1),
+                'is_patch': (kind == 'patch'),
+                'is_local': True,
+            }
+
+            print(f"📦 Found LOCAL {kind.upper()} update: {path_obj.name} ({size/1024:.1f} KB)")
+            return True
+
+        except Exception as e:
+            print(f"❌ Local update check failed: {e}")
             return False
     
     def download_update(self, progress_callback=None) -> Optional[str]:
-        """
-        Tải file update từ GitHub
-        
-        Args:
-            progress_callback: Callback function để report progress (0-100)
-        
-        Returns:
-            str: Path đến file ZIP đã tải, hoặc None nếu thất bại
-        """
+        """Tải file update từ GitHub"""
         if not self.update_available or not self.latest_info:
-            print("❌ No update available to download")
             return None
         
         try:
+            # If this is a local package, skip download
+            if self.latest_info.get('is_local'):
+                local_path = Path(self.latest_info['download_url'])
+                if progress_callback:
+                    progress_callback(100)
+                print(f"📦 Using local package: {local_path}")
+                return str(local_path)
+
             print(f"📥 Downloading {self.latest_info['filename']}...")
             
-            # Create updates directory
             self.UPDATES_DIR.mkdir(exist_ok=True)
             
             url = self.latest_info['download_url']
-            filename = self.latest_info['filename']
+            file_path = self.UPDATES_DIR / self.latest_info['filename']
             
-            zip_path = self.UPDATES_DIR / filename
-            
-            # Download with progress
-            response = requests.get(url, stream=True, timeout=30)
+            response = requests.get(url, stream=True, timeout=300)
             total_size = int(response.headers.get('content-length', 0))
             
             downloaded = 0
-            chunk_size = 8192
-            
-            with open(zip_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=chunk_size):
+            with open(file_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
                     if chunk:
                         f.write(chunk)
                         downloaded += len(chunk)
-                        
                         if progress_callback and total_size:
-                            progress = (downloaded / total_size) * 100
-                            progress_callback(int(progress))
+                            progress_callback(int(downloaded / total_size * 100))
             
-            print(f"✅ Downloaded: {zip_path}")
-            return str(zip_path)
+            print(f"✅ Downloaded: {file_path}")
+            return str(file_path)
             
         except Exception as e:
-            error = f"Download failed: {str(e)}"
-            self.errors.append(error)
-            print(f"❌ {error}")
+            self.errors.append(f"Download failed: {e}")
+            print(f"❌ Download failed: {e}")
             return None
     
-    def install_update(self, zip_path: str) -> bool:
-        """
-        Cài đặt update (extract + backup + replace)
+    def install_update(self, zip_path: str, progress_callback=None) -> bool:
+        """Cài đặt update - hỗ trợ cả FULL và PATCH update
         
-        Args:
-            zip_path: Path đến file ZIP
-        
-        Returns:
-            bool: True nếu cài đặt thành công
+        FULL update: Thay thế toàn bộ _internal/
+        PATCH update: Chỉ copy đè các file thay đổi vào _internal/
         """
         try:
-            print("📦 Installing update...")
-            
             zip_path = Path(zip_path)
             if not zip_path.exists():
-                error = f"ZIP file not found: {zip_path}"
-                self.errors.append(error)
-                print(f"❌ {error}")
+                self.errors.append("ZIP file not found")
                 return False
             
-            # 1. Backup current app
-            print("💾 Creating backup...")
-            if self.BACKUP_DIR.exists():
-                shutil.rmtree(self.BACKUP_DIR)
+            # Xác định loại update từ tên file
+            is_patch = zip_path.name.lower().startswith('patch_')
+            update_type = "PATCH" if is_patch else "FULL"
             
-            # Backup important files/folders
-            files_to_backup = [
-                'app.py',
-                'config.json',
-                'notification_config.json',
-                'ai_trading_config.json',
-                'ai_server_config.json',
-                'risk_management/',
-                'logs/'
-            ]
+            print(f"📦 Installing {update_type} update from: {zip_path.name}")
             
-            self.BACKUP_DIR.mkdir(exist_ok=True)
+            internal_path = self.app_dir / self.INTERNAL_DIR
+            backup_path = self.app_dir / self.BACKUP_DIR
             
-            for item in files_to_backup:
-                src = Path(item)
-                if src.exists():
-                    dst = self.BACKUP_DIR / src.name
-                    if src.is_dir():
-                        shutil.copytree(src, dst, ignore=shutil.ignore_patterns('__pycache__'))
-                    else:
-                        shutil.copy2(src, dst)
-                    print(f"  ✅ Backed up: {item}")
+            # 1. Backup _internal/ cũ (chỉ full update hoặc lần đầu)
+            if self.is_exe_mode and internal_path.exists():
+                if is_patch:
+                    # Patch: chỉ backup các file sẽ bị thay thế
+                    print("💾 Creating partial backup...")
+                else:
+                    # Full: backup toàn bộ
+                    print("💾 Backing up _internal/...")
+                    if backup_path.exists():
+                        shutil.rmtree(backup_path)
+                    shutil.copytree(internal_path, backup_path)
+                    print(f"  ✅ Backup created: {backup_path}")
+                if progress_callback:
+                    progress_callback(20)
             
-            print(f"✅ Backup created: {self.BACKUP_DIR}")
+            # 2. Extract ZIP
+            print("📂 Extracting update...")
+            extract_dir = self.UPDATES_DIR / "extracted"
+            if extract_dir.exists():
+                shutil.rmtree(extract_dir)
             
-            # 2. Extract new files
-            print("📂 Extracting files...")
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall(Path.cwd())
+            with zipfile.ZipFile(zip_path, 'r') as zf:
+                zf.extractall(extract_dir)
             
-            print("✅ Files extracted")
+            if progress_callback:
+                progress_callback(50)
             
-            # 3. Clean up temp files
+            # 3. Tìm folder _internal trong ZIP
+            new_internal = None
+            for item in extract_dir.iterdir():
+                if item.name == self.INTERNAL_DIR and item.is_dir():
+                    new_internal = item
+                    break
+                # Nếu ZIP có folder con
+                if item.is_dir():
+                    sub_internal = item / self.INTERNAL_DIR
+                    if sub_internal.exists():
+                        new_internal = sub_internal
+                        break
+            
+            if not new_internal:
+                self.errors.append("_internal folder not found in ZIP")
+                print("❌ _internal folder not found in ZIP")
+                return False
+            
+            # 4. Áp dụng update
+            if self.is_exe_mode:
+                # 🔧 FIX v4.3.9: Dùng pending_update folder
+                # Vì khi app đang chạy, các file .pyc/.pyd bị lock không thể copy
+                # Batch script sẽ copy SAU khi app đóng
+                
+                pending_update = self.app_dir / "pending_update"
+                if pending_update.exists():
+                    shutil.rmtree(pending_update)
+                pending_update.mkdir(parents=True)
+                
+                print("📦 Preparing update files...")
+                
+                # Copy _internal vào pending
+                pending_internal = pending_update / self.INTERNAL_DIR
+                shutil.copytree(new_internal, pending_internal)
+                print(f"  ✅ Prepared {len(list(pending_internal.rglob('*')))} files")
+                
+                # Copy VERSION file nếu có
+                version_in_zip = extract_dir / "VERSION"
+                if version_in_zip.exists():
+                    shutil.copy2(version_in_zip, pending_update / "VERSION")
+                    print("  ✅ Prepared VERSION file")
+                
+                # Copy icon files nếu có
+                for ico_file in extract_dir.glob("*.ico"):
+                    shutil.copy2(ico_file, pending_update / ico_file.name)
+                    print(f"  ✅ Prepared {ico_file.name}")
+                
+                # Lưu thông tin để restart_app biết cần copy
+                self._pending_update_dir = pending_update
+            else:
+                # Python mode - copy các file .py
+                print("🔄 Copying updated files...")
+                for item in new_internal.iterdir():
+                    dst = self.app_dir / item.name
+                    if item.is_file():
+                        shutil.copy2(item, dst)
+                        print(f"  ✅ {item.name}")
+            
+            if progress_callback:
+                progress_callback(80)
+            
+            # 5. Cleanup
+            print("🧹 Cleaning up...")
             zip_path.unlink()
-            print("🧹 Temp files cleaned")
+            shutil.rmtree(extract_dir)
             
-            # 4. Update version file
-            version_file = Path('current_version.txt')
-            version_file.write_text(self.latest_version)
+            # 6. Update version file
+            version_file = self.app_dir / "current_version.txt"
+            version_file.write_text(self.latest_version, encoding='utf-8')
             
-            print(f"✅ Version updated: {self.latest_version}")
+            if progress_callback:
+                progress_callback(100)
+            
+            print(f"✅ Update installed: v{self.latest_version}")
             return True
             
         except Exception as e:
-            error = f"Installation failed: {str(e)}"
-            self.errors.append(error)
-            print(f"❌ {error}")
+            self.errors.append(f"Install failed: {e}")
+            print(f"❌ Install failed: {e}")
             
             # Restore backup
-            if self.BACKUP_DIR.exists():
-                print("↩️ Restoring backup...")
-                try:
-                    for item in self.BACKUP_DIR.iterdir():
-                        dst = Path.cwd() / item.name
-                        if dst.exists():
-                            if dst.is_dir():
-                                shutil.rmtree(dst)
-                            else:
-                                dst.unlink()
-                        
-                        if item.is_dir():
-                            shutil.copytree(item, dst)
-                        else:
-                            shutil.copy2(item, dst)
-                    
-                    print("✅ Backup restored")
-                except Exception as restore_error:
-                    print(f"❌ Restore failed: {restore_error}")
-            
+            self._restore_backup()
             return False
     
-    def restart_app(self):
-        """Restart application"""
-        try:
-            print("🔄 Restarting application...")
+    def _apply_patch(self, src_dir: Path, dst_dir: Path) -> int:
+        """Áp dụng patch - copy đè các file từ src vào dst (recursive)
+        
+        Giữ nguyên các file không có trong patch.
+        Chỉ thay thế/thêm các file có trong patch.
+        
+        Returns: số file đã patch
+        """
+        patched_count = 0
+        
+        for item in src_dir.iterdir():
+            dst_item = dst_dir / item.name
             
-            if sys.platform == 'win32':
-                # Windows
-                subprocess.Popen([sys.executable, 'app.py'])
+            if item.is_file():
+                # Copy file (đè nếu tồn tại)
+                dst_item.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(item, dst_item)
+                print(f"    📄 {item.name}")
+                patched_count += 1
+                
+            elif item.is_dir():
+                # Đệ quy vào subfolder
+                if not dst_item.exists():
+                    dst_item.mkdir(parents=True, exist_ok=True)
+                patched_count += self._apply_patch(item, dst_item)
+        
+        return patched_count
+    
+    def _restore_backup(self):
+        """Khôi phục từ backup nếu update thất bại"""
+        try:
+            backup_path = self.app_dir / self.BACKUP_DIR
+            internal_path = self.app_dir / self.INTERNAL_DIR
+            
+            if backup_path.exists():
+                print("↩️ Restoring backup...")
+                if internal_path.exists():
+                    shutil.rmtree(internal_path)
+                shutil.copytree(backup_path, internal_path)
+                print("✅ Backup restored")
+        except Exception as e:
+            print(f"❌ Restore failed: {e}")
+    
+    def restart_app(self, pending_update_dir: Path = None):
+        """Restart app sau khi update
+        
+        Args:
+            pending_update_dir: Folder chứa files cần copy sau khi app đóng
+        """
+        try:
+            print("🔄 Restarting...")
+            
+            if self.is_exe_mode:
+                exe_path = sys.executable
+                app_dir = str(self.app_dir)
+                
+                # Tạo script restart với khả năng copy pending updates
+                restart_bat = self.app_dir / "restart_update.bat"
+                
+                if pending_update_dir and pending_update_dir.exists():
+                    # Có pending update - script sẽ copy files trước khi restart
+                    pending_dir = str(pending_update_dir)
+                    restart_bat.write_text(f'''@echo off
+chcp 65001 >nul
+echo ===============================================
+echo   Gold Killer AI Trading Bot - Update
+echo ===============================================
+echo.
+echo Waiting for app to close...
+timeout /t 3 /nobreak >nul
+
+echo Applying update...
+xcopy /E /Y /I "{pending_dir}\\*" "{app_dir}\\" >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] Failed to copy some files
+) else (
+    echo [OK] Update applied successfully
+)
+
+echo Cleaning up...
+rmdir /S /Q "{pending_dir}" 2>nul
+
+echo Starting app...
+timeout /t 1 /nobreak >nul
+start "" "{exe_path}"
+
+del /f /q "%~f0" 2>nul
+exit
+''', encoding='utf-8')
+                else:
+                    # Không có pending - restart bình thường
+                    restart_bat.write_text(f'''@echo off
+chcp 65001 >nul
+echo Restarting Gold Killer AI Trading Bot...
+timeout /t 2 /nobreak >nul
+start "" "{exe_path}"
+del /f /q "%~f0" 2>nul
+exit
+''', encoding='utf-8')
+                
+                subprocess.Popen(['cmd', '/c', str(restart_bat)], 
+                    creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0)
             else:
-                # Linux/Mac
                 subprocess.Popen([sys.executable, 'app.py'])
             
             sys.exit(0)
             
         except Exception as e:
-            print(f"❌ Failed to restart: {e}")
+            print(f"❌ Restart failed: {e}")
     
     @staticmethod
     def _compare_versions(v1: str, v2: str) -> int:
-        """
-        Compare two version strings
-        
-        Args:
-            v1: Version string (e.g., "4.3.2")
-            v2: Version string (e.g., "4.3.1")
-        
-        Returns:
-            int: 1 if v1 > v2, -1 if v1 < v2, 0 if equal
-        """
-        def parse_version(v):
-            return tuple(map(int, v.split('.')))
-        
+        """So sánh version: 1 nếu v1 > v2, -1 nếu v1 < v2, 0 nếu bằng"""
+        def parse(v):
+            return tuple(int(x) for x in v.split('-')[0].split('.') if x.isdigit())
         try:
-            v1_parts = parse_version(v1)
-            v2_parts = parse_version(v2)
-            
-            if v1_parts > v2_parts:
-                return 1
-            elif v1_parts < v2_parts:
-                return -1
-            else:
-                return 0
+            p1, p2 = parse(v1), parse(v2)
+            return (p1 > p2) - (p1 < p2)
         except:
             return 0
 
 
-# ============ PyQt5 GUI Components ============
+# ============ PyQt5 GUI ============
 
 if GUI_AVAILABLE:
     
-    class UpdateDownloadWorker(QObject):
-        """Worker thread for downloading update"""
+    class UpdateWorker(QObject):
         progress = pyqtSignal(int)
         status = pyqtSignal(str)
-        finished = pyqtSignal(str)  # Returns zip_path
+        finished = pyqtSignal(bool, str)  # success, message
         
         def __init__(self, update_manager: UpdateManager):
             super().__init__()
-            self.update_manager = update_manager
+            self.manager = update_manager
         
         def run(self):
-            """Download update in background"""
             try:
-                self.status.emit("Starting download...")
-                
-                zip_path = self.update_manager.download_update(
-                    progress_callback=lambda p: self.progress.emit(p)
+                # Download
+                self.status.emit("Downloading update...")
+                zip_path = self.manager.download_update(
+                    progress_callback=lambda p: self.progress.emit(p // 2)
                 )
                 
-                self.finished.emit(zip_path or "")
+                if not zip_path:
+                    self.finished.emit(False, "Download failed")
+                    return
                 
-            except Exception as e:
-                print(f"❌ Download worker error: {e}")
-                self.finished.emit("")
-    
-    
-    class UpdateInstallWorker(QObject):
-        """Worker thread for installing update"""
-        progress = pyqtSignal(int)
-        status = pyqtSignal(str)
-        finished = pyqtSignal(bool)  # Success/failure
-        
-        def __init__(self, update_manager: UpdateManager, zip_path: str):
-            super().__init__()
-            self.update_manager = update_manager
-            self.zip_path = zip_path
-        
-        def run(self):
-            """Install update in background"""
-            try:
+                # Install
                 self.status.emit("Installing update...")
-                self.progress.emit(30)
-                
-                success = self.update_manager.install_update(self.zip_path)
+                success = self.manager.install_update(
+                    zip_path,
+                    progress_callback=lambda p: self.progress.emit(50 + p // 2)
+                )
                 
                 if success:
-                    self.progress.emit(100)
-                    self.status.emit("Installation complete!")
-                
-                self.finished.emit(success)
-                
+                    self.finished.emit(True, f"Updated to v{self.manager.latest_version}")
+                else:
+                    self.finished.emit(False, "Installation failed")
+                    
             except Exception as e:
-                print(f"❌ Install worker error: {e}")
-                self.finished.emit(False)
+                self.finished.emit(False, str(e))
     
     
     class UpdateProgressDialog(QDialog):
-        """Progress dialog for update download and install"""
+        """Dialog hiển thị progress update"""
         
         def __init__(self, update_manager: UpdateManager, version_info: Dict, parent=None):
             super().__init__(parent)
-            self.update_manager = update_manager
+            self.manager = update_manager
             self.version_info = version_info
-            self.download_thread = None
-            self.install_thread = None
+            self.thread = None
             
             self.init_ui()
-            self.start_download()
+            self.start_update()
         
         def init_ui(self):
-            """Initialize UI"""
-            self.setWindowTitle("Updating Trading Bot")
-            self.setGeometry(400, 400, 500, 250)
+            self.setWindowTitle("Updating Gold Killer AI Trading Bot")
+            self.setFixedSize(480, 250)
+            self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
             
             layout = QVBoxLayout()
             
             # Title
-            title = QLabel(f"🔄 Downloading v{self.version_info['version']}")
-            title.setStyleSheet("font-size: 14px; font-weight: bold;")
+            title = QLabel(f"🔄 Updating to v{self.version_info['version']}")
+            title.setStyleSheet("font-size: 14px; font-weight: bold; color: #FFD700;")
             layout.addWidget(title)
+            
+            # File info
+            info = QLabel(f"📦 {self.version_info.get('filename', 'update.zip')} ({self.version_info.get('size_mb', '?')} MB)")
+            info.setStyleSheet("color: #888;")
+            layout.addWidget(info)
             
             # Progress bar
             self.progress = QProgressBar()
             self.progress.setRange(0, 100)
             self.progress.setStyleSheet("""
-                QProgressBar {
-                    border: 1px solid #ccc;
-                    border-radius: 4px;
-                    height: 25px;
-                }
-                QProgressBar::chunk {
-                    background-color: #4CAF50;
-                }
+                QProgressBar { border: 2px solid #444; border-radius: 5px; height: 25px; background: #2a2a2a; color: white; text-align: center; }
+                QProgressBar::chunk { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #FFD700, stop:1 #FFA500); }
             """)
             layout.addWidget(self.progress)
             
-            # Status label
-            self.status_label = QLabel("Starting download...")
-            self.status_label.setStyleSheet("color: #666;")
+            # Status
+            self.status_label = QLabel("Starting...")
+            self.status_label.setStyleSheet("color: #aaa;")
             layout.addWidget(self.status_label)
             
-            # Details text
-            self.details_text = QTextEdit()
-            self.details_text.setReadOnly(True)
-            self.details_text.setMaximumHeight(80)
-            self.details_text.setStyleSheet("""
-                QTextEdit {
-                    background-color: #f5f5f5;
-                    border: 1px solid #ddd;
-                    border-radius: 4px;
-                    font-family: monospace;
-                    font-size: 11px;
-                }
-            """)
-            layout.addWidget(self.details_text)
+            # Log
+            self.log = QTextEdit()
+            self.log.setReadOnly(True)
+            self.log.setMaximumHeight(80)
+            self.log.setStyleSheet("background: #1a1a1a; border: 1px solid #333; color: #0f0; font-family: Consolas;")
+            layout.addWidget(self.log)
             
-            # Cancel button
-            self.cancel_btn = QPushButton("Cancel")
-            self.cancel_btn.clicked.connect(self.reject)
-            layout.addWidget(self.cancel_btn)
+            # Button
+            self.btn = QPushButton("Cancel")
+            self.btn.clicked.connect(self.reject)
+            self.btn.setStyleSheet("background: #444; color: white; padding: 8px 20px; border-radius: 4px;")
+            layout.addWidget(self.btn)
             
             self.setLayout(layout)
+            self.setStyleSheet("QDialog { background: #2a2a2a; } QLabel { color: white; }")
         
-        def start_download(self):
-            """Start download in thread"""
-            self.download_thread = QThread()
-            self.download_worker = UpdateDownloadWorker(self.update_manager)
-            self.download_worker.moveToThread(self.download_thread)
+        def add_log(self, msg):
+            self.log.append(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
+        
+        def start_update(self):
+            self.thread = QThread()
+            self.worker = UpdateWorker(self.manager)
+            self.worker.moveToThread(self.thread)
             
-            self.download_worker.progress.connect(self.on_download_progress)
-            self.download_worker.status.connect(self.on_download_status)
-            self.download_worker.finished.connect(self.on_download_finished)
+            self.worker.progress.connect(self.progress.setValue)
+            self.worker.status.connect(lambda s: (self.status_label.setText(s), self.add_log(s)))
+            self.worker.finished.connect(self.on_finished)
             
-            self.download_thread.started.connect(self.download_worker.run)
-            self.download_thread.start()
+            self.thread.started.connect(self.worker.run)
+            self.thread.start()
         
-        def on_download_progress(self, progress: int):
-            """Update progress bar"""
-            self.progress.setValue(progress)
-        
-        def on_download_status(self, status: str):
-            """Update status label"""
-            self.status_label.setText(status)
-            self.details_text.append(f"[{datetime.now().strftime('%H:%M:%S')}] {status}")
-        
-        def on_download_finished(self, zip_path: str):
-            """Handle download completion"""
-            self.download_thread.quit()
-            self.download_thread.wait()
-            
-            if zip_path:
-                # Start installation
-                self.start_install(zip_path)
-            else:
-                QMessageBox.critical(self,
-                    "Download Failed",
-                    f"Failed to download update:\n\n{chr(10).join(self.update_manager.errors)}")
-                self.reject()
-        
-        def start_install(self, zip_path: str):
-            """Start installation in thread"""
-            self.status_label.setText("Installing update...")
-            self.progress.setValue(50)
-            
-            self.install_thread = QThread()
-            self.install_worker = UpdateInstallWorker(self.update_manager, zip_path)
-            self.install_worker.moveToThread(self.install_thread)
-            
-            self.install_worker.progress.connect(self.on_install_progress)
-            self.install_worker.status.connect(self.on_install_status)
-            self.install_worker.finished.connect(self.on_install_finished)
-            
-            self.install_thread.started.connect(self.install_worker.run)
-            self.install_thread.start()
-        
-        def on_install_progress(self, progress: int):
-            """Update install progress"""
-            self.progress.setValue(progress)
-        
-        def on_install_status(self, status: str):
-            """Update install status"""
-            self.status_label.setText(status)
-            self.details_text.append(f"[{datetime.now().strftime('%H:%M:%S')}] {status}")
-        
-        def on_install_finished(self, success: bool):
-            """Handle installation completion"""
-            self.install_thread.quit()
-            self.install_thread.wait()
+        def on_finished(self, success: bool, message: str):
+            self.thread.quit()
+            self.thread.wait()
             
             if success:
-                reply = QMessageBox.information(self,
-                    "Update Complete",
-                    f"Update to v{self.version_info['version']} installed successfully!\n\n"
-                    "The application will restart now.",
-                    QMessageBox.Ok)
+                self.progress.setValue(100)
+                self.add_log(f"✅ {message}")
+                self.btn.setText("Restart Now")
+                self.btn.setStyleSheet("background: #FFD700; color: black; font-weight: bold; padding: 8px 20px; border-radius: 4px;")
+                self.btn.clicked.disconnect()
+                self.btn.clicked.connect(self.do_restart)
                 
-                self.accept()
-                
-                # Restart app
-                self.update_manager.restart_app()
+                QMessageBox.information(self, "Update Complete",
+                    f"✅ {message}\n\nClick 'Restart Now' to apply.")
             else:
-                QMessageBox.critical(self,
-                    "Installation Failed",
-                    f"Failed to install update:\n\n{chr(10).join(self.update_manager.errors)}")
+                self.add_log(f"❌ {message}")
+                QMessageBox.critical(self, "Update Failed", f"❌ {message}")
                 self.reject()
+        
+        def do_restart(self):
+            self.accept()
+            # Truyền pending_update_dir nếu có
+            pending_dir = getattr(self.manager, '_pending_update_dir', None)
+            self.manager.restart_app(pending_update_dir=pending_dir)
 
-
-# ============ Configuration Guide ============
-"""
-SETUP INSTRUCTIONS:
-
-1. Create GitHub Repository:
-   - Create repository: https://github.com/new
-   - Clone locally
-   - Push your code
-
-2. Configure update_manager.py:
-   - Update GITHUB_REPO = "your-username/my_trading_bot"
-   - Set CURRENT_VERSION = current version number
-
-3. Create Release on GitHub:
-   - Go to: https://github.com/your-username/my_trading_bot/releases
-   - Click "Create a new release"
-   - Tag: v4.3.2 (format: vX.Y.Z)
-   - Title: Release v4.3.2
-   - Description: Your release notes
-   - Attach: my_trading_bot_v4.3.2.zip (create this file)
-   - Publish release
-
-4. Create ZIP file:
-   - Package all files in directory
-   - Create: my_trading_bot_v4.3.2.zip
-   - Upload to GitHub release
-
-5. Test:
-   - User clicks "Check for Updates"
-   - Should detect new version
-   - Download and install
-
-6. Update CURRENT_VERSION in this file for next check
-"""
 
 if __name__ == "__main__":
-    # Test update manager
     manager = UpdateManager()
     
-    print("Checking for updates...")
+    print("=" * 50)
+    print("Gold Killer AI - Update Manager v3.0")
+    print("=" * 50)
+    print(f"Version: v{manager.CURRENT_VERSION}")
+    print(f"Mode: {'EXE' if manager.is_exe_mode else 'Python'}")
+    print(f"Path: {manager.app_dir}")
+    print()
+    
     if manager.check_updates():
-        print(f"Update available: {manager.latest_version}")
-        print(f"Release notes: {manager.latest_info['notes']}")
+        print()
+        print(f"✅ Update: v{manager.latest_version}")
+        print(f"   File: {manager.latest_info['filename']}")
+        print(f"   Size: {manager.latest_info['size_mb']} MB")
     else:
-        print("Already on latest version")
+        print()
+        print("✅ Already on latest version")
